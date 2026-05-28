@@ -35,7 +35,11 @@ def create_app(database_url: str = "sqlite:///./dev.db") -> FastAPI:
 
     @app.get("/me")
     def me() -> DevIdentity:
-        return DevIdentity(user_id="dev_user", workspace_id="dev_workspace")
+        return DevIdentity(
+            user_id="dev_user",
+            workspace_id="dev_workspace",
+            organization_id="dev_organization",
+        )
 
     app.include_router(router)
     return app

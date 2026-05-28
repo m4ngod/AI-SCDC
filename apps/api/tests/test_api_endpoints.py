@@ -24,6 +24,7 @@ def test_me_returns_dev_identity() -> None:
     assert response.status_code == 200
     assert response.json()["user_id"] == "dev_user"
     assert response.json()["workspace_id"] == "dev_workspace"
+    assert response.json()["organization_id"] == "dev_organization"
 
 
 def test_project_conversation_message_task_flow_records_created_event() -> None:

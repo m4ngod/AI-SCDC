@@ -8,7 +8,18 @@ describe("App", () => {
   it("renders sidebar, main thread, and right context panel", () => {
     render(<App />);
 
-    expect(screen.getByRole("banner")).toHaveTextContent("AI Company");
+    const topbar = screen.getByRole("banner");
+    for (const item of [
+      "AI Company",
+      "Demo Workspace",
+      "Demo Project",
+      "main",
+      "Local Runner: Mock",
+      "Cost: $0.00",
+      "Settings"
+    ]) {
+      expect(topbar).toHaveTextContent(item);
+    }
     const primaryNav = screen.getByRole("navigation", { name: "Primary" });
     for (const item of [
       "Workspace",

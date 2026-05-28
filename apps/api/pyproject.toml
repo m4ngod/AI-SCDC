@@ -8,14 +8,16 @@ version = "0.0.0"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
-    "httpx>=0.28.0",
     "pydantic>=2.10.0",
     "sqlmodel>=0.0.22",
     "uvicorn>=0.32.0",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8.3.0"]
+test = [
+    "httpx>=0.28.0",
+    "pytest>=8.3.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["app"]

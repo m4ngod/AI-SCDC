@@ -44,3 +44,4 @@ class TaskUpdate(BaseModel):
 class DevIdentity(BaseModel):
     user_id: str
     workspace_id: str
+    organization_id: str

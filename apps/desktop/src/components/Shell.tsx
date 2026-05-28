@@ -10,7 +10,14 @@ export function Shell({ children, contextPanel }: ShellProps) {
     <div className="console-shell">
       <header className="topbar" role="banner">
         <div className="brand">AI Company</div>
-        <div className="topbar-meta">Phase 0 Console</div>
+        <div className="topbar-meta" aria-label="Workspace metadata">
+          <span>Demo Workspace</span>
+          <span>Demo Project</span>
+          <span>main</span>
+          <span>Local Runner: Mock</span>
+          <span>Cost: $0.00</span>
+          <button type="button">Settings</button>
+        </div>
       </header>
       <nav className="sidebar" aria-label="Primary">
         <a href="#workspace" aria-current="page">

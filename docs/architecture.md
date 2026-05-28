@@ -40,6 +40,12 @@ User enters goal
   -> desktop right panel shows task state
 ```
 
+The desktop task client defaults to mock mode when `VITE_API_BASE_URL` is unset
+so demos and tests stay deterministic. Setting
+`VITE_API_BASE_URL=http://127.0.0.1:8000` enables the minimal HTTP integration:
+the desktop resolves or creates a demo project, posts a FastAPI task, and maps
+the response into the right-panel task board.
+
 ## Future Phases
 
 1. Planner-only real model path that creates TaskSpec for user approval.

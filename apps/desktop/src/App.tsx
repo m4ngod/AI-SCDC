@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ConsoleApiClient, TaskCard } from "./api/client";
-import { fakeApiClient } from "./api/client";
+import { createConfiguredApiClient } from "./api/client";
 import { GoalInput } from "./components/GoalInput";
 import { Shell } from "./components/Shell";
 import { TaskBoard } from "./components/TaskBoard";
@@ -11,7 +11,9 @@ type AppProps = {
   apiClient?: ConsoleApiClient;
 };
 
-export function App({ apiClient = fakeApiClient }: AppProps) {
+const defaultApiClient = createConfiguredApiClient();
+
+export function App({ apiClient = defaultApiClient }: AppProps) {
   const [tasks, setTasks] = useState<TaskCard[]>(demoTasks);
 
   async function handleCreateTask(goal: string) {

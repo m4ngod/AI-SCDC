@@ -44,13 +44,32 @@ textarea {
   font-weight: 700;
 }
 
-.topbar-meta,
 .section-heading span,
 .task-main p,
 .context-section p,
 dd {
   color: #5f6b73;
   font-size: 12px;
+}
+
+.topbar-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 12px;
+  color: #5f6b73;
+  font-size: 12px;
+}
+
+.topbar-meta button {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid #c9d0d5;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #344047;
+  cursor: pointer;
 }
 
 .sidebar {
@@ -327,6 +346,13 @@ dd {
     position: sticky;
     top: 0;
     z-index: 1;
+    height: auto;
+    min-height: 48px;
+    gap: 8px;
+  }
+
+  .topbar-meta {
+    justify-content: flex-start;
   }
 
   .sidebar {
