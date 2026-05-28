@@ -137,11 +137,18 @@ def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
     task = Task(
         project_id=project_id,
         conversation_id=data.conversation_id,
+        parent_task_id=data.parent_task_id,
         title=data.title,
         description=data.description,
         role_required=data.role_required,
+        priority=data.priority,
         risk_level=data.risk_level,
         acceptance_criteria=data.acceptance_criteria,
+        assigned_agent_profile_id=data.assigned_agent_profile_id,
+        repo_id=data.repo_id,
+        branch_name=data.branch_name,
+        worktree_ref=data.worktree_ref,
+        budget_limit=data.budget_limit,
     )
     session.add(task)
     session.flush()

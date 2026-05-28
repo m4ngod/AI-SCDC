@@ -26,8 +26,15 @@ class TaskCreate(BaseModel):
     description: str = ""
     role_required: str
     conversation_id: str | None = None
+    parent_task_id: str | None = None
+    priority: int = 0
     risk_level: str = "medium"
     acceptance_criteria: list[str] = Field(default_factory=list)
+    assigned_agent_profile_id: str | None = None
+    repo_id: str | None = None
+    branch_name: str | None = None
+    worktree_ref: str | None = None
+    budget_limit: int | None = None
 
 
 class TaskUpdate(BaseModel):

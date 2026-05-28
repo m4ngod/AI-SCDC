@@ -67,18 +67,32 @@ def test_project_conversation_message_task_flow_records_created_event() -> None:
             "title": "Build demo",
             "description": "Create a demo task.",
             "conversation_id": conversation["id"],
+            "parent_task_id": "task_parent000001",
             "role_required": "engineer",
+            "priority": 7,
             "risk_level": "high",
             "acceptance_criteria": ["Endpoint flow works"],
+            "assigned_agent_profile_id": "agent_profile_backend",
+            "repo_id": "repo_api",
+            "branch_name": "codex/task-4",
+            "worktree_ref": "worktree_task_4",
+            "budget_limit": 120,
         },
     )
     assert task_response.status_code == 201
     task = task_response.json()
     assert task["status"] == "CREATED"
     assert task["conversation_id"] == conversation["id"]
+    assert task["parent_task_id"] == "task_parent000001"
     assert task["role_required"] == "engineer"
+    assert task["priority"] == 7
     assert task["risk_level"] == "high"
     assert task["acceptance_criteria"] == ["Endpoint flow works"]
+    assert task["assigned_agent_profile_id"] == "agent_profile_backend"
+    assert task["repo_id"] == "repo_api"
+    assert task["branch_name"] == "codex/task-4"
+    assert task["worktree_ref"] == "worktree_task_4"
+    assert task["budget_limit"] == 120
 
     events_response = client.get(f"/tasks/{task['id']}/events")
     assert events_response.status_code == 200
