@@ -1,4 +1,5 @@
 .superpowers/
+.dev-server/
 .worktrees
 .worktrees/
 .venv/
