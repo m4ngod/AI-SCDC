@@ -134,6 +134,23 @@ def create_task_event(
 
 def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
     get_project(session, project_id)
+
+    if data.conversation_id is not None:
+        conversation = get_conversation(session, data.conversation_id)
+        if conversation.project_id != project_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Conversation does not belong to project",
+            )
+
+    if data.parent_task_id is not None:
+        parent_task = get_task(session, data.parent_task_id)
+        if parent_task.project_id != project_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Parent task does not belong to project",
+            )
+
     task = Task(
         project_id=project_id,
         conversation_id=data.conversation_id,

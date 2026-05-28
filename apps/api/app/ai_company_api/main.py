@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from sqlmodel import Session
@@ -15,9 +16,13 @@ from ai_company_api.schemas.api import DevIdentity
 
 def create_app(database_url: str = "sqlite:///./dev.db") -> FastAPI:
     engine = build_engine(database_url)
-    init_db(engine)
 
-    app = FastAPI(title="AI Company API")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        init_db(engine)
+        yield
+
+    app = FastAPI(title="AI Company API", lifespan=lifespan)
 
     def session_dependency() -> Generator[Session, None, None]:
         yield from session_generator(engine)
