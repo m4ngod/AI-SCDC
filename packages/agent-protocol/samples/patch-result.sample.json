@@ -1,0 +1,9 @@
+{
+  "status": "patch_ready",
+  "summary": "Added TaskBoard component and task stream hook.",
+  "files_changed": ["apps/desktop/src/components/TaskBoard.tsx"],
+  "tests_run": ["pnpm --filter @ai-scdc/desktop test"],
+  "test_result": "passed",
+  "diff_artifact_id": "artifact_123",
+  "risks": ["Reconnect behavior is not implemented in Phase 0."]
+}

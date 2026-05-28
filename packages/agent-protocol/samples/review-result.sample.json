@@ -1,0 +1,13 @@
+{
+  "verdict": "changes_requested",
+  "issues": [
+    {
+      "severity": "medium",
+      "category": "reliability",
+      "file": "apps/desktop/src/components/TaskBoard.tsx",
+      "problem": "Task status labels do not distinguish blocked tasks.",
+      "recommendation": "Add a visible status treatment for FIX_REQUESTED."
+    }
+  ],
+  "required_changes": ["Render FIX_REQUESTED with a warning treatment."]
+}

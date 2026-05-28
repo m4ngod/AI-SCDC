@@ -1,0 +1,6 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "agent-role.schema.json",
+  "type": "string",
+  "enum": ["planner", "frontend", "backend", "reviewer", "debugger", "security", "product", "documentation"]
+}

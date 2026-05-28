@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "tool-call.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tool_name", "input_json", "status", "risk_level"],
+  "properties": {
+    "tool_name": { "type": "string", "minLength": 1 },
+    "input_json": { "type": "object" },
+    "output_json": { "type": "object" },
+    "status": { "type": "string", "enum": ["pending", "running", "succeeded", "failed", "awaiting_approval"] },
+    "risk_level": { "type": "string", "enum": ["low", "medium", "high"] },
+    "error_message": { "type": "string", "minLength": 1 }
+  }
+}

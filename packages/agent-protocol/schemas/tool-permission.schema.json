@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "tool-permission.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tool_name", "permission_level", "requires_approval", "risk_level"],
+  "properties": {
+    "tool_name": { "type": "string", "minLength": 1 },
+    "permission_level": { "type": "string", "enum": ["none", "read", "write", "admin"] },
+    "requires_approval": { "type": "boolean" },
+    "risk_level": { "type": "string", "enum": ["low", "medium", "high"] },
+    "allowed_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

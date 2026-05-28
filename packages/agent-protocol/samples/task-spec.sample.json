@@ -1,0 +1,12 @@
+{
+  "title": "Implement task board UI",
+  "role_required": "frontend",
+  "objective": "Show all active agent tasks in the right panel.",
+  "acceptance_criteria": [
+    "Display task title, status, assigned agent, and updated time.",
+    "Support opening task details from the task board."
+  ],
+  "allowed_paths": ["apps/desktop/**", "packages/agent-protocol/**"],
+  "required_tests": ["TaskBoard component renders task list"],
+  "risk_level": "medium"
+}

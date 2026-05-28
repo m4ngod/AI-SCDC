@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "patch-result.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "files_changed", "tests_run", "test_result", "risks"],
+  "properties": {
+    "status": { "type": "string", "enum": ["patch_ready", "changes_requested", "failed"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "files_changed": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "tests_run": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "test_result": { "type": "string", "enum": ["passed", "failed", "not_run"] },
+    "diff_artifact_id": { "type": "string", "minLength": 1 },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}
