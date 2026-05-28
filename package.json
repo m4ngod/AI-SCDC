@@ -1,0 +1,14 @@
+{
+  "name": "ai-scdc",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev:desktop": "pnpm --filter desktop dev",
+    "dev:api": "python -m uvicorn ai_company_api.main:app --app-dir apps/api/app --reload",
+    "test": "pnpm test:js && pnpm test:python",
+    "test:js": "pnpm -r test",
+    "test:python": "pytest apps/api/tests apps/worker/tests services/llm-gateway/tests",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint"
+  }
+}

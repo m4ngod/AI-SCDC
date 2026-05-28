@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pnpm dependencies
+        run: pnpm install
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "apps/api[test]"
+          python -m pip install -e "apps/worker[test]"
+          python -m pip install -e "services/llm-gateway[test]"
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test JavaScript
+        run: pnpm test:js
+
+      - name: Test Python
+        run: pnpm test:python
