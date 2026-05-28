@@ -1,4 +1,4 @@
-import { Ajv } from "ajv/dist/ajv.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -10,14 +10,34 @@ function readJson(path: string) {
   return JSON.parse(readFileSync(join(root, path), "utf8"));
 }
 
-function validatorFor(schemaName: string) {
-  const ajv = new Ajv({ allErrors: true, strict: true });
+const schemaNames = [
+  "agent-role.schema.json",
+  "task-status.schema.json",
+  "task-spec.schema.json",
+  "patch-result.schema.json",
+  "review-result.schema.json",
+  "debug-result.schema.json",
+  "tool-call.schema.json",
+  "tool-permission.schema.json"
+];
+
+function createAjv() {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
   ajv.addSchema(readJson("schemas/agent-role.schema.json"), "agent-role.schema.json");
   ajv.addSchema(readJson("schemas/task-status.schema.json"), "task-status.schema.json");
-  return ajv.compile(readJson(`schemas/${schemaName}`));
+  return ajv;
+}
+
+function validatorFor(schemaName: string) {
+  const ajv = createAjv();
+  return ajv.getSchema(schemaName) ?? ajv.compile(readJson(`schemas/${schemaName}`));
 }
 
 describe("agent protocol schemas", () => {
+  test.each(schemaNames)("%s compiles under strict Ajv2020", (schemaName) => {
+    expect(() => validatorFor(schemaName)).not.toThrow();
+  });
+
   test("TaskSpec sample validates", () => {
     const validate = validatorFor("task-spec.schema.json");
     const sample = readJson("samples/task-spec.sample.json");
@@ -47,5 +67,55 @@ describe("agent protocol schemas", () => {
       risk_level: "medium"
     };
     expect(validate(invalid)).toBe(false);
+  });
+
+  test("DebugResult accepts valid results and rejects invalid status", () => {
+    const validate = validatorFor("debug-result.schema.json");
+    const valid = {
+      root_cause: "The task stream ignored PATCH_READY events.",
+      fix_summary: "Handled PATCH_READY in the state reducer.",
+      tests_run: ["pnpm --filter @ai-scdc/desktop test"],
+      status: "fixed"
+    };
+    const invalid = { ...valid, status: "inconclusive" };
+
+    expect(validate(valid), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate(invalid)).toBe(false);
+  });
+
+  test("ToolCall accepts valid calls and rejects extra error message", () => {
+    const validate = validatorFor("tool-call.schema.json");
+    const valid = {
+      tool_name: "shell_command",
+      input_json: { command: "pnpm test" },
+      output_json: { exit_code: 0 },
+      status: "succeeded",
+      risk_level: "low"
+    };
+    const invalid = { ...valid, error_message: "not allowed by the protocol" };
+
+    expect(validate(valid), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate(invalid)).toBe(false);
+  });
+
+  test("ToolPermission accepts valid permissions and rejects allowed paths", () => {
+    const validate = validatorFor("tool-permission.schema.json");
+    const valid = {
+      tool_name: "shell_command",
+      permission_level: "write",
+      requires_approval: true,
+      risk_level: "medium"
+    };
+    const invalid = { ...valid, allowed_paths: ["packages/agent-protocol/**"] };
+
+    expect(validate(valid), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate(invalid)).toBe(false);
+  });
+
+  test("TaskStatus accepts known statuses and rejects unknown statuses", () => {
+    const validate = validatorFor("task-status.schema.json");
+
+    expect(validate("PATCH_READY"), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate("BLOCKED")).toBe(false);
   });
 });
