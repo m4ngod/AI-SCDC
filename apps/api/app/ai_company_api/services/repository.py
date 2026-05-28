@@ -26,7 +26,7 @@ from ai_company_api.services.task_state import (
 
 
 def create_project(session: Session, data: ProjectCreate) -> Project:
-    project = Project(name=data.name)
+    project = Project(name=data.name, description=data.description)
     session.add(project)
     session.commit()
     session.refresh(project)
@@ -50,7 +50,11 @@ def create_conversation(
     data: ConversationCreate,
 ) -> Conversation:
     get_project(session, project_id)
-    conversation = Conversation(project_id=project_id, title=data.title)
+    conversation = Conversation(
+        project_id=project_id,
+        title=data.title,
+        conversation_type=data.conversation_type,
+    )
     session.add(conversation)
     session.commit()
     session.refresh(conversation)
@@ -82,7 +86,7 @@ def create_message(
     get_conversation(session, conversation_id)
     message = Message(
         conversation_id=conversation_id,
-        role=data.role,
+        sender_type=data.sender_type,
         content=data.content,
         structured_payload=data.structured_payload,
     )
@@ -132,8 +136,11 @@ def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
     get_project(session, project_id)
     task = Task(
         project_id=project_id,
+        conversation_id=data.conversation_id,
         title=data.title,
         description=data.description,
+        role_required=data.role_required,
+        risk_level=data.risk_level,
         acceptance_criteria=data.acceptance_criteria,
     )
     session.add(task)

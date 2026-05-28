@@ -7,14 +7,16 @@ from ai_company_api.services.task_state import TaskStatus
 
 class ProjectCreate(BaseModel):
     name: str
+    description: str = ""
 
 
 class ConversationCreate(BaseModel):
     title: str = "New conversation"
+    conversation_type: str = "planning"
 
 
 class MessageCreate(BaseModel):
-    role: str
+    sender_type: str
     content: str
     structured_payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -22,7 +24,10 @@ class MessageCreate(BaseModel):
 class TaskCreate(BaseModel):
     title: str
     description: str = ""
-    acceptance_criteria: list[dict[str, Any]] = Field(default_factory=list)
+    role_required: str
+    conversation_id: str | None = None
+    risk_level: str = "medium"
+    acceptance_criteria: list[str] = Field(default_factory=list)
 
 
 class TaskUpdate(BaseModel):
