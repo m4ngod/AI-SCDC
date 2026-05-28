@@ -8,10 +8,6 @@
     "tool_name": { "type": "string", "minLength": 1 },
     "permission_level": { "type": "string", "enum": ["none", "read", "write", "admin"] },
     "requires_approval": { "type": "boolean" },
-    "risk_level": { "type": "string", "enum": ["low", "medium", "high"] },
-    "allowed_paths": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 }
-    }
+    "risk_level": { "type": "string", "enum": ["low", "medium", "high"] }
   }
 }

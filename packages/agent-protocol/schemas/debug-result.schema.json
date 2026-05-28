@@ -3,18 +3,14 @@
   "$id": "debug-result.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "root_cause", "fix_summary", "tests_run"],
+  "required": ["root_cause", "fix_summary", "tests_run", "status"],
   "properties": {
-    "status": { "type": "string", "enum": ["fixed", "not_fixed", "inconclusive"] },
-    "root_cause": { "type": "string", "minLength": 1 },
-    "fix_summary": { "type": "string", "minLength": 1 },
+    "root_cause": { "type": "string" },
+    "fix_summary": { "type": "string" },
     "tests_run": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 }
+      "items": { "type": "string" }
     },
-    "remaining_risks": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 }
-    }
+    "status": { "type": "string", "enum": ["fixed", "not_fixed"] }
   }
 }

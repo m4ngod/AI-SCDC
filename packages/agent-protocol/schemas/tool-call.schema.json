@@ -9,7 +9,6 @@
     "input_json": { "type": "object" },
     "output_json": { "type": "object" },
     "status": { "type": "string", "enum": ["pending", "running", "succeeded", "failed", "awaiting_approval"] },
-    "risk_level": { "type": "string", "enum": ["low", "medium", "high"] },
-    "error_message": { "type": "string", "minLength": 1 }
+    "risk_level": { "type": "string", "enum": ["low", "medium", "high"] }
   }
 }
