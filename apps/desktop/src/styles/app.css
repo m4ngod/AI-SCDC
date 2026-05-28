@@ -191,6 +191,14 @@ dd {
   outline: 2px solid #c7dde5;
 }
 
+.goal-input-error {
+  margin: 0;
+  color: #9d2d20;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
 .goal-input button {
   justify-self: start;
   min-height: 34px;

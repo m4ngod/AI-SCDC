@@ -6,6 +6,7 @@ type GoalInputProps = {
 
 export function GoalInput({ onCreateTask }: GoalInputProps) {
   const [goal, setGoal] = useState("");
+  const [taskError, setTaskError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -19,7 +20,10 @@ export function GoalInput({ onCreateTask }: GoalInputProps) {
     setIsSubmitting(true);
     try {
       await onCreateTask(trimmedGoal);
+      setTaskError(null);
       setGoal("");
+    } catch (error) {
+      setTaskError(error instanceof Error ? error.message : "Failed to create task");
     } finally {
       setIsSubmitting(false);
     }
@@ -35,6 +39,11 @@ export function GoalInput({ onCreateTask }: GoalInputProps) {
         value={goal}
         onChange={(event) => setGoal(event.target.value)}
       />
+      {taskError ? (
+        <p className="goal-input-error" role="alert">
+          {taskError}
+        </p>
+      ) : null}
       <button type="submit" disabled={isSubmitting}>
         Create task
       </button>

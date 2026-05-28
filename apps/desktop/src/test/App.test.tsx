@@ -79,4 +79,35 @@ describe("App", () => {
     expect(createTask).toHaveBeenCalledWith("Build task board");
     expect(await screen.findByText("Build task board")).toBeInTheDocument();
   });
+
+  it("shows task creation errors inline and clears them after a successful submission", async () => {
+    const user = userEvent.setup();
+    const createTask = vi
+      .fn<ConsoleApiClient["createTask"]>()
+      .mockRejectedValueOnce(new Error("API unavailable"))
+      .mockResolvedValueOnce({
+        id: "task_recovered",
+        title: "Recovered task",
+        status: "CREATED",
+        role_required: "frontend",
+        assigned_agent: "Frontend Engineer",
+        updated_at: "2026-05-29T00:00:00Z"
+      });
+    const apiClient: ConsoleApiClient = { createTask };
+
+    render(<App apiClient={apiClient} />);
+
+    await user.type(screen.getByLabelText("Goal"), "Build when offline");
+    await user.click(screen.getByRole("button", { name: "Create task" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("API unavailable");
+
+    await user.clear(screen.getByLabelText("Goal"));
+    await user.type(screen.getByLabelText("Goal"), "Build after recovery");
+    await user.click(screen.getByRole("button", { name: "Create task" }));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(await screen.findByText("Recovered task")).toBeInTheDocument();
+  });
 });
