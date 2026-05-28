@@ -1,0 +1,206 @@
+from typing import Any
+
+from fastapi import HTTPException
+from sqlmodel import Session, select
+
+from ai_company_api.models.entities import (
+    Conversation,
+    Message,
+    Project,
+    Task,
+    TaskEvent,
+    utc_now,
+)
+from ai_company_api.schemas.api import (
+    ConversationCreate,
+    MessageCreate,
+    ProjectCreate,
+    TaskCreate,
+)
+from ai_company_api.services.task_state import (
+    InvalidTaskTransition,
+    TaskStatus,
+    allowed_next_statuses,
+    validate_transition,
+)
+
+
+def create_project(session: Session, data: ProjectCreate) -> Project:
+    project = Project(name=data.name)
+    session.add(project)
+    session.commit()
+    session.refresh(project)
+    return project
+
+
+def list_projects(session: Session) -> list[Project]:
+    return list(session.exec(select(Project).order_by(Project.created_at)).all())
+
+
+def get_project(session: Session, project_id: str) -> Project:
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def create_conversation(
+    session: Session,
+    project_id: str,
+    data: ConversationCreate,
+) -> Conversation:
+    get_project(session, project_id)
+    conversation = Conversation(project_id=project_id, title=data.title)
+    session.add(conversation)
+    session.commit()
+    session.refresh(conversation)
+    return conversation
+
+
+def list_conversations(session: Session, project_id: str) -> list[Conversation]:
+    get_project(session, project_id)
+    statement = (
+        select(Conversation)
+        .where(Conversation.project_id == project_id)
+        .order_by(Conversation.created_at)
+    )
+    return list(session.exec(statement).all())
+
+
+def get_conversation(session: Session, conversation_id: str) -> Conversation:
+    conversation = session.get(Conversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
+
+
+def create_message(
+    session: Session,
+    conversation_id: str,
+    data: MessageCreate,
+) -> Message:
+    get_conversation(session, conversation_id)
+    message = Message(
+        conversation_id=conversation_id,
+        role=data.role,
+        content=data.content,
+        structured_payload=data.structured_payload,
+    )
+    session.add(message)
+    session.commit()
+    session.refresh(message)
+    return message
+
+
+def list_messages(session: Session, conversation_id: str) -> list[Message]:
+    get_conversation(session, conversation_id)
+    statement = (
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at)
+    )
+    return list(session.exec(statement).all())
+
+
+def get_task(session: Session, task_id: str) -> Task:
+    task = session.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+def create_task_event(
+    session: Session,
+    task_id: str,
+    event_type: str,
+    actor_type: str,
+    actor_id: str,
+    payload: dict[str, Any] | None = None,
+) -> TaskEvent:
+    event = TaskEvent(
+        task_id=task_id,
+        event_type=event_type,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        payload=payload or {},
+    )
+    session.add(event)
+    return event
+
+
+def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
+    get_project(session, project_id)
+    task = Task(
+        project_id=project_id,
+        title=data.title,
+        description=data.description,
+        acceptance_criteria=data.acceptance_criteria,
+    )
+    session.add(task)
+    session.flush()
+    create_task_event(
+        session,
+        task.id,
+        "task_created",
+        "user",
+        "dev_user",
+        {"status": task.status.value},
+    )
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def list_tasks(session: Session, project_id: str) -> list[Task]:
+    get_project(session, project_id)
+    statement = select(Task).where(Task.project_id == project_id).order_by(Task.created_at)
+    return list(session.exec(statement).all())
+
+
+def list_task_events(session: Session, task_id: str) -> list[TaskEvent]:
+    get_task(session, task_id)
+    statement = (
+        select(TaskEvent)
+        .where(TaskEvent.task_id == task_id)
+        .order_by(TaskEvent.created_at, TaskEvent.id)
+    )
+    return list(session.exec(statement).all())
+
+
+def transition_task(
+    session: Session,
+    task_id: str,
+    requested_status: TaskStatus,
+    actor_type: str,
+    actor_id: str,
+) -> Task:
+    task = get_task(session, task_id)
+    current_status = TaskStatus(task.status)
+
+    try:
+        next_status = validate_transition(current_status, requested_status, actor_type)
+    except InvalidTaskTransition as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": str(exc),
+                "current_status": current_status.value,
+                "requested_status": requested_status.value,
+                "allowed_next_statuses": allowed_next_statuses(current_status),
+            },
+        ) from exc
+
+    task.status = next_status
+    task.updated_at = utc_now()
+    create_task_event(
+        session,
+        task.id,
+        "task_transitioned",
+        actor_type,
+        actor_id,
+        {"from_status": current_status.value, "to_status": next_status.value},
+    )
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+    return task
