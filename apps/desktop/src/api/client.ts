@@ -12,10 +12,10 @@ export type ConsoleApiClient = {
 };
 
 export const fakeApiClient: ConsoleApiClient = {
-  async createTask(goal: string) {
+  async createTask() {
     return {
       id: "task_demo_created",
-      title: goal,
+      title: "Build task board",
       status: "CREATED",
       role_required: "frontend",
       assigned_agent: "Frontend Engineer",

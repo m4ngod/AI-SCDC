@@ -34,6 +34,7 @@ export function App({ apiClient = fakeApiClient }: AppProps) {
           </div>
         </dl>
       </section>
+      <TaskBoard tasks={tasks} />
       <section className="context-section">
         <h2>Test results</h2>
         <p>Vitest pending for current patch.</p>
@@ -60,7 +61,16 @@ export function App({ apiClient = fakeApiClient }: AppProps) {
           <span className="run-state">Online</span>
         </div>
         <GoalInput onCreateTask={handleCreateTask} />
-        <TaskBoard tasks={tasks} />
+        <div className="thread-tabs" aria-label="Project command context">
+          <section>
+            <h2>Diff</h2>
+            <p>No patch selected. Created tasks appear in the context panel.</p>
+          </section>
+          <section>
+            <h2>Logs</h2>
+            <p>Command thread is ready for the next project goal.</p>
+          </section>
+        </div>
       </section>
     </Shell>
   );

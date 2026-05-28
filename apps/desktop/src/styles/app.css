@@ -13,7 +13,6 @@
 
 body {
   margin: 0;
-  min-width: 960px;
 }
 
 button,
@@ -25,6 +24,7 @@ textarea {
   display: grid;
   grid-template-columns: 180px minmax(420px, 1fr) 320px;
   grid-template-rows: 48px calc(100vh - 48px);
+  width: 100%;
   min-height: 100vh;
 }
 
@@ -193,6 +193,9 @@ dd {
 .task-board {
   display: grid;
   gap: 10px;
+  padding: 0 0 16px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid #d7dee2;
 }
 
 .task-list {
@@ -202,9 +205,7 @@ dd {
 
 .task-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
+  gap: 8px;
   min-height: 64px;
   padding: 12px;
   border: 1px solid #c7d0d5;
@@ -227,7 +228,35 @@ dd {
 }
 
 .status-pill {
+  justify-self: start;
   padding: 7px 9px;
+}
+
+.thread-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.thread-tabs section {
+  min-height: 96px;
+  padding: 12px;
+  border: 1px solid #c7d0d5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.thread-tabs h2 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.thread-tabs p {
+  margin: 10px 0 0;
+  color: #5f6b73;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .context-section {
@@ -259,4 +288,55 @@ dd {
 .context-section p {
   margin: 10px 0 0;
   line-height: 1.5;
+}
+
+@media (max-width: 920px) {
+  .console-shell {
+    grid-template-columns: minmax(132px, 160px) minmax(0, 1fr);
+    grid-template-rows: 48px minmax(0, 1fr) auto;
+  }
+
+  .sidebar {
+    grid-row: 2 / 4;
+  }
+
+  .workspace {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .context-panel {
+    grid-column: 2;
+    grid-row: 3;
+    max-height: none;
+    border-top: 1px solid #c9d0d5;
+    border-left: 0;
+  }
+
+  .thread-tabs {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .console-shell {
+    display: block;
+  }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
+  .sidebar {
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid #c9d0d5;
+  }
+
+  .sidebar a {
+    flex: 0 0 auto;
+  }
 }

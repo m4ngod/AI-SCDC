@@ -9,9 +9,18 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByRole("banner")).toHaveTextContent("AI Company");
-    expect(
-      within(screen.getByRole("navigation", { name: "Primary" })).getByText("Projects")
-    ).toBeInTheDocument();
+    const primaryNav = screen.getByRole("navigation", { name: "Primary" });
+    for (const item of [
+      "Workspace",
+      "Projects",
+      "Conversations",
+      "Agents",
+      "Approvals",
+      "Settings"
+    ]) {
+      expect(within(primaryNav).getByText(item)).toBeInTheDocument();
+    }
+    expect(within(primaryNav).queryByText("Runs")).not.toBeInTheDocument();
     expect(screen.getByRole("main")).toHaveTextContent("Project command thread");
     expect(screen.getByLabelText("Task context panel")).toHaveTextContent("Agent status");
   });
@@ -19,10 +28,24 @@ describe("App", () => {
   it("renders task title, status, and agent", () => {
     render(<App />);
 
-    const board = screen.getByLabelText("Task board");
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
     expect(within(board).getByText("Implement task board UI")).toBeInTheDocument();
     expect(within(board).getByText("PATCH_READY")).toBeInTheDocument();
     expect(within(board).getByText("Frontend Engineer")).toBeInTheDocument();
+    expect(within(screen.getByRole("main")).queryByLabelText("Task board")).not.toBeInTheDocument();
+  });
+
+  it("submitting a goal with the fake client creates the deterministic demo task", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.type(screen.getByLabelText("Goal"), "Any non-empty goal");
+    await user.click(screen.getByRole("button", { name: "Create task" }));
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    expect(await within(contextPanel).findByText("Build task board")).toBeInTheDocument();
   });
 
   it("submitting a goal calls task creation client", async () => {
