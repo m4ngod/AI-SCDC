@@ -11,3 +11,4 @@ dist/
 coverage/
 dev.db
 *.pyc
+*.egg-info/
