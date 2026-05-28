@@ -1,3 +1,5 @@
+import builtins
+
 import pytest
 
 from ai_company_worker.simulator import (
@@ -53,3 +55,17 @@ def test_simulator_transition_sequence_is_valid_against_api_state_machine():
 def test_simulator_validation_fails_when_sequence_drifts():
     with pytest.raises(InvalidTaskTransition):
         validate_transitions_against_api_state_machine(["PATCH_READY"])
+
+
+def test_simulator_validation_fails_when_api_state_machine_is_unavailable(monkeypatch):
+    original_import = builtins.__import__
+
+    def block_api_task_state_import(name, *args, **kwargs):
+        if name == "ai_company_api.services.task_state":
+            raise ImportError("blocked for test")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", block_api_task_state_import)
+
+    with pytest.raises(RuntimeError, match="API task state machine is required"):
+        validate_transitions_against_api_state_machine(["ASSIGNED"])

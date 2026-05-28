@@ -1,8 +1,26 @@
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from ai_company_api.services.task_state import TaskStatus
+
+
+class AgentRole(str, Enum):
+    PLANNER = "planner"
+    FRONTEND = "frontend"
+    BACKEND = "backend"
+    REVIEWER = "reviewer"
+    DEBUGGER = "debugger"
+    SECURITY = "security"
+    PRODUCT = "product"
+    DOCUMENTATION = "documentation"
+
+
+class RiskLevel(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 
 class ProjectCreate(BaseModel):
@@ -24,11 +42,11 @@ class MessageCreate(BaseModel):
 class TaskCreate(BaseModel):
     title: str
     description: str = ""
-    role_required: str
+    role_required: AgentRole
     conversation_id: str | None = None
     parent_task_id: str | None = None
     priority: int = 0
-    risk_level: str = "medium"
+    risk_level: RiskLevel = RiskLevel.MEDIUM
     acceptance_criteria: list[str] = Field(default_factory=list)
     assigned_agent_profile_id: str | None = None
     repo_id: str | None = None

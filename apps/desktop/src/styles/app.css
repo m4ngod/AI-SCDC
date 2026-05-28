@@ -317,6 +317,11 @@ dd {
   line-height: 1.5;
 }
 
+.context-error p {
+  color: #9d2d20;
+  font-weight: 700;
+}
+
 @media (max-width: 920px) {
   .console-shell {
     grid-template-columns: minmax(132px, 160px) minmax(0, 1fr);

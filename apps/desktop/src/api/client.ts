@@ -1,3 +1,5 @@
+import { demoTasks } from "../fixtures/demoData";
+
 export type TaskCard = {
   id: string;
   title: string;
@@ -8,6 +10,7 @@ export type TaskCard = {
 };
 
 export type ConsoleApiClient = {
+  listTasks: () => Promise<TaskCard[]>;
   createTask: (goal: string) => Promise<TaskCard>;
 };
 
@@ -30,6 +33,9 @@ type HttpApiClientOptions = {
 };
 
 export const fakeApiClient: ConsoleApiClient = {
+  async listTasks() {
+    return [...demoTasks];
+  },
   async createTask() {
     return {
       id: "task_demo_created",
@@ -51,10 +57,42 @@ async function readJsonResponse<T>(response: Response, context: string): Promise
     return (await response.json()) as T;
   }
 
-  const detail = await response.text();
+  const detail = await readErrorDetail(response);
   throw new Error(
     `${context} failed with ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`
   );
+}
+
+async function readErrorDetail(response: Response) {
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return response.text();
+  }
+
+  const body = (await response.json().catch(() => undefined)) as
+    | { detail?: unknown }
+    | undefined;
+  if (typeof body?.detail === "string") {
+    return body.detail;
+  }
+  if (
+    typeof body?.detail === "object" &&
+    body.detail !== null &&
+    "message" in body.detail &&
+    typeof body.detail.message === "string"
+  ) {
+    return body.detail.message;
+  }
+  if (Array.isArray(body?.detail)) {
+    return body.detail
+      .map((item) =>
+        typeof item === "object" && item !== null && "msg" in item ? item.msg : undefined
+      )
+      .filter((message): message is string => typeof message === "string")
+      .join("; ");
+  }
+
+  return body ? JSON.stringify(body) : "";
 }
 
 function agentNameForRole(role: string) {
@@ -107,6 +145,15 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
   }
 
   return {
+    async listTasks() {
+      const projectId = await getProjectId();
+      const response = await fetch(apiUrl(options.baseUrl, `/projects/${projectId}/tasks`));
+      const tasks = await readJsonResponse<ApiTask[]>(
+        response,
+        `GET /projects/${projectId}/tasks`
+      );
+      return tasks.map(mapTaskCard);
+    },
     async createTask(goal: string) {
       const projectId = await getProjectId();
       const response = await fetch(apiUrl(options.baseUrl, `/projects/${projectId}/tasks`), {

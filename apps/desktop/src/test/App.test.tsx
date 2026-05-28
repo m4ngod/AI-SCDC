@@ -36,15 +36,50 @@ describe("App", () => {
     expect(screen.getByLabelText("Task context panel")).toHaveTextContent("Agent status");
   });
 
-  it("renders task title, status, and agent", () => {
+  it("renders task title, status, and agent", async () => {
     render(<App />);
 
     const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
     const board = within(contextPanel).getByLabelText("Task board");
-    expect(within(board).getByText("Implement task board UI")).toBeInTheDocument();
-    expect(within(board).getByText("PATCH_READY")).toBeInTheDocument();
-    expect(within(board).getByText("Frontend Engineer")).toBeInTheDocument();
+    expect(await within(board).findByText("Implement task board UI")).toBeInTheDocument();
+    expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
+    expect(await within(board).findByText("Frontend Engineer")).toBeInTheDocument();
     expect(within(screen.getByRole("main")).queryByLabelText("Task board")).not.toBeInTheDocument();
+  });
+
+  it("loads the initial task board from the API client", async () => {
+    const apiClient: ConsoleApiClient = {
+      listTasks: vi.fn().mockResolvedValue([
+        {
+          id: "task_api_persisted",
+          title: "Persisted API task",
+          status: "REVIEWING",
+          role_required: "backend",
+          assigned_agent: "Backend Engineer",
+          updated_at: "2026-05-29T01:00:00Z"
+        }
+      ]),
+      createTask: vi.fn()
+    };
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    expect(await within(contextPanel).findByText("Persisted API task")).toBeInTheDocument();
+    expect(within(contextPanel).queryByText("Implement task board UI")).not.toBeInTheDocument();
+    expect(apiClient.listTasks).toHaveBeenCalledOnce();
+  });
+
+  it("shows initial task loading errors in the context panel", async () => {
+    const apiClient: ConsoleApiClient = {
+      listTasks: vi.fn().mockRejectedValue(new Error("API unavailable")),
+      createTask: vi.fn()
+    };
+
+    render(<App apiClient={apiClient} />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("API unavailable");
   });
 
   it("submitting a goal with the fake client creates the deterministic demo task", async () => {
@@ -69,7 +104,7 @@ describe("App", () => {
       assigned_agent: "Frontend Engineer",
       updated_at: "2026-05-29T00:00:00Z"
     });
-    const apiClient: ConsoleApiClient = { createTask };
+    const apiClient: ConsoleApiClient = { listTasks: vi.fn().mockResolvedValue([]), createTask };
 
     render(<App apiClient={apiClient} />);
 
@@ -93,7 +128,7 @@ describe("App", () => {
         assigned_agent: "Frontend Engineer",
         updated_at: "2026-05-29T00:00:00Z"
       });
-    const apiClient: ConsoleApiClient = { createTask };
+    const apiClient: ConsoleApiClient = { listTasks: vi.fn().mockResolvedValue([]), createTask };
 
     render(<App apiClient={apiClient} />);
 

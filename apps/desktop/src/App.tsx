@@ -1,10 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ConsoleApiClient, TaskCard } from "./api/client";
 import { createConfiguredApiClient } from "./api/client";
 import { GoalInput } from "./components/GoalInput";
 import { Shell } from "./components/Shell";
 import { TaskBoard } from "./components/TaskBoard";
-import { demoTasks } from "./fixtures/demoData";
 import "./styles/app.css";
 
 type AppProps = {
@@ -13,8 +12,35 @@ type AppProps = {
 
 const defaultApiClient = createConfiguredApiClient();
 
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
 export function App({ apiClient = defaultApiClient }: AppProps) {
-  const [tasks, setTasks] = useState<TaskCard[]>(demoTasks);
+  const [tasks, setTasks] = useState<TaskCard[]>([]);
+  const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    setTaskLoadError(null);
+    void apiClient
+      .listTasks()
+      .then((initialTasks) => {
+        if (!cancelled) {
+          setTasks((currentTasks) => (currentTasks.length === 0 ? initialTasks : currentTasks));
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setTaskLoadError(errorMessage(error, "Failed to load tasks"));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiClient]);
 
   async function handleCreateTask(goal: string) {
     const task = await apiClient.createTask(goal);
@@ -37,6 +63,12 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         </dl>
       </section>
       <TaskBoard tasks={tasks} />
+      {taskLoadError ? (
+        <section className="context-section context-error" role="alert">
+          <h2>Task loading</h2>
+          <p>{taskLoadError}</p>
+        </section>
+      ) : null}
       <section className="context-section">
         <h2>Test results</h2>
         <p>Vitest pending for current patch.</p>

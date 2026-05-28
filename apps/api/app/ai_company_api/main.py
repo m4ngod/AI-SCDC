@@ -2,6 +2,7 @@ from collections.abc import Generator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
 from ai_company_api.api.routes import router
@@ -14,7 +15,16 @@ from ai_company_api.db.session import (
 from ai_company_api.schemas.api import DevIdentity
 
 
-def create_app(database_url: str = "sqlite:///./dev.db") -> FastAPI:
+DEV_CORS_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+)
+
+
+def create_app(
+    database_url: str = "sqlite:///./dev.db",
+    cors_origins: tuple[str, ...] = DEV_CORS_ORIGINS,
+) -> FastAPI:
     engine = build_engine(database_url)
 
     @asynccontextmanager
@@ -23,6 +33,12 @@ def create_app(database_url: str = "sqlite:///./dev.db") -> FastAPI:
         yield
 
     app = FastAPI(title="AI Company API", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(cors_origins),
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def session_dependency() -> Generator[Session, None, None]:
         yield from session_generator(engine)

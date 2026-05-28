@@ -1,4 +1,6 @@
+import json
 import importlib
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -25,6 +27,21 @@ def test_me_returns_dev_identity() -> None:
     assert response.json()["user_id"] == "dev_user"
     assert response.json()["workspace_id"] == "dev_workspace"
     assert response.json()["organization_id"] == "dev_organization"
+
+
+def test_dev_cors_preflight_allows_vite_desktop_origin() -> None:
+    with build_client() as client:
+        response = client.options(
+            "/projects",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "POST" in response.headers["access-control-allow-methods"]
 
 
 def test_project_conversation_message_task_flow_records_created_event() -> None:
@@ -63,7 +80,7 @@ def test_project_conversation_message_task_flow_records_created_event() -> None:
 
         parent_response = client.post(
             f"/projects/{project['id']}/tasks",
-            json={"title": "Parent task", "role_required": "lead"},
+            json={"title": "Parent task", "role_required": "planner"},
         )
         assert parent_response.status_code == 201
         parent_task = parent_response.json()
@@ -75,7 +92,7 @@ def test_project_conversation_message_task_flow_records_created_event() -> None:
                 "description": "Create a demo task.",
                 "conversation_id": conversation["id"],
                 "parent_task_id": parent_task["id"],
-                "role_required": "engineer",
+                "role_required": "frontend",
                 "priority": 7,
                 "risk_level": "high",
                 "acceptance_criteria": ["Endpoint flow works"],
@@ -91,7 +108,7 @@ def test_project_conversation_message_task_flow_records_created_event() -> None:
         assert task["status"] == "CREATED"
         assert task["conversation_id"] == conversation["id"]
         assert task["parent_task_id"] == parent_task["id"]
-        assert task["role_required"] == "engineer"
+        assert task["role_required"] == "frontend"
         assert task["priority"] == 7
         assert task["risk_level"] == "high"
         assert task["acceptance_criteria"] == ["Endpoint flow works"]
@@ -111,7 +128,7 @@ def test_run_task_transitions_created_task_to_assigned() -> None:
         project = client.post("/projects", json={"name": "Demo Project"}).json()
         task = client.post(
             f"/projects/{project['id']}/tasks",
-            json={"title": "Build demo", "role_required": "engineer"},
+            json={"title": "Build demo", "role_required": "backend"},
         ).json()
 
         response = client.post(f"/tasks/{task['id']}/run")
@@ -130,7 +147,7 @@ def test_invalid_patch_transition_returns_current_requested_and_allowed_statuses
         project = client.post("/projects", json={"name": "Demo Project"}).json()
         task = client.post(
             f"/projects/{project['id']}/tasks",
-            json={"title": "Build demo", "role_required": "engineer"},
+            json={"title": "Build demo", "role_required": "backend"},
         ).json()
 
         response = client.patch(f"/tasks/{task['id']}", json={"status": "MERGED"})
@@ -153,7 +170,7 @@ def test_task_create_with_nonexistent_conversation_id_returns_404() -> None:
             f"/projects/{project['id']}/tasks",
             json={
                 "title": "Build demo",
-                "role_required": "engineer",
+                "role_required": "backend",
                 "conversation_id": "conversation_missing",
             },
         )
@@ -174,7 +191,7 @@ def test_task_create_with_cross_project_conversation_id_returns_400() -> None:
             f"/projects/{project['id']}/tasks",
             json={
                 "title": "Build demo",
-                "role_required": "engineer",
+                "role_required": "backend",
                 "conversation_id": conversation["id"],
             },
         )
@@ -190,7 +207,7 @@ def test_task_create_with_nonexistent_parent_task_id_returns_404() -> None:
             f"/projects/{project['id']}/tasks",
             json={
                 "title": "Build demo",
-                "role_required": "engineer",
+                "role_required": "backend",
                 "parent_task_id": "task_missing",
             },
         )
@@ -204,19 +221,49 @@ def test_task_create_with_cross_project_parent_task_id_returns_400() -> None:
         other_project = client.post("/projects", json={"name": "Other Project"}).json()
         parent_task = client.post(
             f"/projects/{other_project['id']}/tasks",
-            json={"title": "Other task", "role_required": "engineer"},
+            json={"title": "Other task", "role_required": "backend"},
         ).json()
 
         response = client.post(
             f"/projects/{project['id']}/tasks",
             json={
                 "title": "Build demo",
-                "role_required": "engineer",
+                "role_required": "backend",
                 "parent_task_id": parent_task["id"],
             },
         )
 
         assert response.status_code == 400
+
+
+def test_task_create_rejects_values_outside_agent_protocol_enums() -> None:
+    role_schema = json.loads(
+        Path("packages/agent-protocol/schemas/agent-role.schema.json").read_text()
+    )
+    task_spec_schema = json.loads(
+        Path("packages/agent-protocol/schemas/task-spec.schema.json").read_text()
+    )
+    assert "engineer" not in role_schema["enum"]
+    assert "critical" not in task_spec_schema["properties"]["risk_level"]["enum"]
+
+    with build_client() as client:
+        project = client.post("/projects", json={"name": "Demo Project"}).json()
+
+        invalid_role_response = client.post(
+            f"/projects/{project['id']}/tasks",
+            json={"title": "Build demo", "role_required": "engineer"},
+        )
+        invalid_risk_response = client.post(
+            f"/projects/{project['id']}/tasks",
+            json={
+                "title": "Build demo",
+                "role_required": "backend",
+                "risk_level": "critical",
+            },
+        )
+
+    assert invalid_role_response.status_code == 422
+    assert invalid_risk_response.status_code == 422
 
 
 def test_importing_main_does_not_create_default_dev_db(tmp_path, monkeypatch) -> None:

@@ -44,8 +44,8 @@ class MockWorkerSimulator:
 def validate_transitions_against_api_state_machine(transitions: list[str]) -> None:
     try:
         from ai_company_api.services.task_state import TaskStatus, validate_transition
-    except ImportError:
-        return
+    except ImportError as exc:
+        raise RuntimeError("API task state machine is required for worker validation") from exc
 
     current_status = TaskStatus.CREATED
     for requested_status in transitions:

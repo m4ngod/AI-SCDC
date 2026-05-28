@@ -24,6 +24,78 @@ describe("desktop API clients", () => {
     });
   });
 
+  it("fake client lists the deterministic demo board", async () => {
+    await expect(fakeApiClient.listTasks()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_board_ui",
+          title: "Implement task board UI",
+          status: "PATCH_READY"
+        })
+      ])
+    );
+  });
+
+  it("HTTP client lists mapped tasks for the resolved project", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse([{ id: "project_demo" }]))
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "task_api_persisted",
+            title: "Persisted API task",
+            status: "REVIEWING",
+            role_required: "backend",
+            created_at: "2026-05-29T01:00:00Z"
+          }
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({ baseUrl: "http://127.0.0.1:8000/" });
+    const tasks = await client.listTasks();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8000/projects");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:8000/projects/project_demo/tasks"
+    );
+    expect(tasks).toEqual([
+      {
+        id: "task_api_persisted",
+        title: "Persisted API task",
+        status: "REVIEWING",
+        role_required: "backend",
+        assigned_agent: "Backend Engineer",
+        updated_at: "2026-05-29T01:00:00Z"
+      }
+    ]);
+  });
+
+  it("HTTP client formats FastAPI JSON detail errors", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail: {
+            message: "Project not found"
+          }
+        },
+        { status: 404, statusText: "Not Found" }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_missing"
+    });
+
+    await expect(client.listTasks()).rejects.toThrow(
+      "GET /projects/project_missing/tasks failed with 404 Not Found: Project not found"
+    );
+  });
+
   it("HTTP client creates a demo project when none exists and posts a mapped task", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
