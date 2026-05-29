@@ -1,9 +1,12 @@
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from ai_company_api.models.entities import (
+    Approval,
+    ApprovalStatus,
     Conversation,
     Message,
     PlannerRun,
@@ -18,6 +21,7 @@ from ai_company_api.schemas.api import (
     ConversationCreate,
     MessageCreate,
     PlannerRunCreate,
+    PlannerRunDecisionRead,
     PlannerRunRead,
     PlannerTaskDraftRead,
     ProjectCreate,
@@ -243,6 +247,139 @@ def create_planner_run(
     session.commit()
     session.refresh(planner_run)
     return _planner_run_read(session, planner_run)
+
+
+def _ensure_planner_run_is_drafted(planner_run: PlannerRun) -> None:
+    status = planner_run.status
+    if isinstance(status, PlannerRunStatus):
+        status = status.value
+
+    if status != PlannerRunStatus.DRAFTED.value:
+        raise HTTPException(
+            status_code=400,
+            detail="Planner run has already been decided",
+        )
+
+
+def _task_decision_read(task: Task) -> dict[str, Any]:
+    return task.model_dump(mode="json")
+
+
+def approve_planner_run(
+    session: Session,
+    planner_run_id: str,
+) -> PlannerRunDecisionRead:
+    planner_run = get_planner_run(session, planner_run_id)
+    _ensure_planner_run_is_drafted(planner_run)
+    project = get_project(session, planner_run.project_id)
+    drafts = list_planner_task_drafts(session, planner_run.id)
+
+    approval = Approval(
+        workspace_id=project.workspace_id,
+        project_id=project.id,
+        planner_run_id=planner_run.id,
+        status=ApprovalStatus.APPROVED,
+        decided_by="dev_user",
+        decided_at=utc_now(),
+    )
+    session.add(approval)
+
+    created_tasks: list[Task] = []
+    for draft in drafts:
+        task = Task(
+            project_id=project.id,
+            conversation_id=planner_run.conversation_id,
+            title=draft.title,
+            description=draft.objective,
+            role_required=draft.role_required,
+            risk_level=draft.risk_level,
+            acceptance_criteria=draft.acceptance_criteria,
+        )
+        session.add(task)
+        session.flush()
+        create_task_event(
+            session,
+            task.id,
+            "task_created",
+            "user",
+            "dev_user",
+            {
+                "status": task.status.value,
+                "planner_run_id": planner_run.id,
+                "planner_task_draft_id": draft.id,
+            },
+        )
+        created_tasks.append(task)
+
+    planner_run.status = PlannerRunStatus.APPROVED
+    planner_run.updated_at = utc_now()
+    session.add(planner_run)
+
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Planner run has already been decided",
+        ) from exc
+
+    session.refresh(approval)
+    session.refresh(planner_run)
+    for task in created_tasks:
+        session.refresh(task)
+
+    return PlannerRunDecisionRead(
+        planner_run_id=planner_run.id,
+        approval_id=approval.id,
+        status="APPROVED",
+        created_tasks=[_task_decision_read(task) for task in created_tasks],
+    )
+
+
+def reject_planner_run(
+    session: Session,
+    planner_run_id: str,
+    reason: str = "",
+) -> PlannerRunDecisionRead:
+    planner_run = get_planner_run(session, planner_run_id)
+    _ensure_planner_run_is_drafted(planner_run)
+    project = get_project(session, planner_run.project_id)
+
+    approval = Approval(
+        workspace_id=project.workspace_id,
+        project_id=project.id,
+        planner_run_id=planner_run.id,
+        action_type="reject_planner_run",
+        reason=reason,
+        status=ApprovalStatus.REJECTED,
+        decided_by="dev_user",
+        decided_at=utc_now(),
+    )
+    session.add(approval)
+
+    planner_run.status = PlannerRunStatus.REJECTED
+    planner_run.updated_at = utc_now()
+    session.add(planner_run)
+
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Planner run has already been decided",
+        ) from exc
+
+    session.refresh(approval)
+    session.refresh(planner_run)
+
+    return PlannerRunDecisionRead(
+        planner_run_id=planner_run.id,
+        approval_id=approval.id,
+        status="REJECTED",
+        created_tasks=[],
+    )
 
 
 def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:

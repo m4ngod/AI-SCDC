@@ -173,3 +173,79 @@ def test_create_planner_run_with_missing_project_returns_404() -> None:
         )
 
         assert response.status_code == 404
+
+
+def test_approve_planner_run_creates_tasks_and_task_events() -> None:
+    with build_client() as client:
+        project = client.post("/projects", json={"name": "Demo Project"}).json()
+        planner_run = client.post(
+            f"/projects/{project['id']}/planner-runs",
+            json={"goal": "Build model route settings"},
+        ).json()
+
+        response = client.post(f"/planner-runs/{planner_run['id']}/approve")
+
+        assert response.status_code == 200
+        approval = response.json()
+        assert approval["planner_run_id"] == planner_run["id"]
+        assert approval["status"] == "APPROVED"
+        assert len(approval["created_tasks"]) == 2
+        assert [task["role_required"] for task in approval["created_tasks"]] == [
+            "frontend",
+            "backend",
+        ]
+
+        tasks = client.get(f"/projects/{project['id']}/tasks").json()
+        assert len(tasks) == 2
+        assert all(task["status"] == "CREATED" for task in tasks)
+
+        for task in tasks:
+            events = client.get(f"/tasks/{task['id']}/events").json()
+            assert [event["event_type"] for event in events] == ["task_created"]
+
+        updated_run = client.get(f"/planner-runs/{planner_run['id']}").json()
+        assert updated_run["status"] == "APPROVED"
+
+
+def test_reject_planner_run_creates_no_tasks() -> None:
+    with build_client() as client:
+        project = client.post("/projects", json={"name": "Demo Project"}).json()
+        planner_run = client.post(
+            f"/projects/{project['id']}/planner-runs",
+            json={"goal": "Build model route settings"},
+        ).json()
+
+        response = client.post(
+            f"/planner-runs/{planner_run['id']}/reject",
+            json={"reason": "Too broad for this project."},
+        )
+
+        assert response.status_code == 200
+        rejection = response.json()
+        assert rejection["planner_run_id"] == planner_run["id"]
+        assert rejection["status"] == "REJECTED"
+        assert rejection["created_tasks"] == []
+        assert client.get(f"/projects/{project['id']}/tasks").json() == []
+        assert client.get(f"/planner-runs/{planner_run['id']}").json()["status"] == "REJECTED"
+
+
+def test_planner_run_can_only_be_decided_once() -> None:
+    with build_client() as client:
+        project = client.post("/projects", json={"name": "Demo Project"}).json()
+        planner_run = client.post(
+            f"/projects/{project['id']}/planner-runs",
+            json={"goal": "Build model route settings"},
+        ).json()
+
+        first = client.post(f"/planner-runs/{planner_run['id']}/approve")
+        second = client.post(f"/planner-runs/{planner_run['id']}/approve")
+        third = client.post(
+            f"/planner-runs/{planner_run['id']}/reject",
+            json={"reason": "Changed my mind."},
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 400
+        assert second.json()["detail"] == "Planner run has already been decided"
+        assert third.status_code == 400
+        assert third.json()["detail"] == "Planner run has already been decided"

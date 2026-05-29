@@ -14,6 +14,7 @@ from ai_company_api.schemas.api import (
     TaskUpdate,
 )
 from ai_company_api.services.repository import (
+    approve_planner_run,
     create_conversation,
     create_message,
     create_planner_run,
@@ -26,6 +27,7 @@ from ai_company_api.services.repository import (
     list_projects,
     list_task_events,
     list_tasks,
+    reject_planner_run,
     transition_task,
 )
 from ai_company_api.services.task_state import TaskStatus
@@ -90,6 +92,20 @@ def post_project_planner_run(
 @router.get("/planner-runs/{planner_run_id}")
 def get_planner_run_by_id(planner_run_id: str, session: SessionDep):
     return get_planner_run_read(session, planner_run_id)
+
+
+@router.post("/planner-runs/{planner_run_id}/approve")
+def approve_planner_run_by_id(planner_run_id: str, session: SessionDep):
+    return approve_planner_run(session, planner_run_id)
+
+
+@router.post("/planner-runs/{planner_run_id}/reject")
+def reject_planner_run_by_id(
+    planner_run_id: str,
+    data: PlannerRunReject,
+    session: SessionDep,
+):
+    return reject_planner_run(session, planner_run_id, data.reason)
 
 
 @router.get("/projects/{project_id}/tasks")

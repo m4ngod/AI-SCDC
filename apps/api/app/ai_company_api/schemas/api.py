@@ -71,6 +71,13 @@ class PlannerRunReject(BaseModel):
     reason: str = ""
 
 
+class PlannerRunDecisionRead(BaseModel):
+    planner_run_id: str
+    approval_id: str
+    status: str
+    created_tasks: list[dict[str, Any]]
+
+
 class TaskCreate(BaseModel):
     title: str
     description: str = ""
