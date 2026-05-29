@@ -1,17 +1,22 @@
-from typing import Protocol
+from typing import Annotated, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from ai_company_api.schemas.api import AgentRole, RiskLevel
 
 
+NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+
+
 class TaskSpecDraft(BaseModel):
-    title: str
+    model_config = ConfigDict(extra="forbid")
+
+    title: NonEmptyString
     role_required: AgentRole
-    objective: str
-    acceptance_criteria: list[str] = Field(min_length=1)
-    allowed_paths: list[str] = Field(min_length=1)
-    required_tests: list[str] = Field(default_factory=list)
+    objective: NonEmptyString
+    acceptance_criteria: list[NonEmptyString] = Field(min_length=1)
+    allowed_paths: list[NonEmptyString] = Field(min_length=1)
+    required_tests: list[NonEmptyString] = Field(default_factory=list)
     risk_level: RiskLevel
 
 
