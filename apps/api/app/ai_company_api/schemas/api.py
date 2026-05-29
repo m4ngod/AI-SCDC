@@ -39,6 +39,38 @@ class MessageCreate(BaseModel):
     structured_payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class PlannerRunCreate(BaseModel):
+    goal: str = Field(min_length=1)
+    conversation_id: str | None = None
+
+
+class PlannerTaskDraftRead(BaseModel):
+    id: str
+    sequence: int
+    title: str
+    role_required: str
+    objective: str
+    acceptance_criteria: list[str]
+    allowed_paths: list[str]
+    required_tests: list[str]
+    risk_level: str
+
+
+class PlannerRunRead(BaseModel):
+    id: str
+    project_id: str
+    conversation_id: str | None
+    goal: str
+    status: str
+    planner_kind: str
+    draft_count: int
+    drafts: list[PlannerTaskDraftRead]
+
+
+class PlannerRunReject(BaseModel):
+    reason: str = ""
+
+
 class TaskCreate(BaseModel):
     title: str
     description: str = ""

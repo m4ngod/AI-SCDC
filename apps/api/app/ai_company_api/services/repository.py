@@ -6,6 +6,9 @@ from sqlmodel import Session, select
 from ai_company_api.models.entities import (
     Conversation,
     Message,
+    PlannerRun,
+    PlannerRunStatus,
+    PlannerTaskDraft,
     Project,
     Task,
     TaskEvent,
@@ -14,9 +17,13 @@ from ai_company_api.models.entities import (
 from ai_company_api.schemas.api import (
     ConversationCreate,
     MessageCreate,
+    PlannerRunCreate,
+    PlannerRunRead,
+    PlannerTaskDraftRead,
     ProjectCreate,
     TaskCreate,
 )
+from ai_company_api.services.planner import FakePlanner, PlannerService
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
@@ -130,6 +137,112 @@ def create_task_event(
     )
     session.add(event)
     return event
+
+
+def _planner_draft_read(draft: PlannerTaskDraft) -> PlannerTaskDraftRead:
+    return PlannerTaskDraftRead(
+        id=draft.id,
+        sequence=draft.sequence,
+        title=draft.title,
+        role_required=draft.role_required,
+        objective=draft.objective,
+        acceptance_criteria=draft.acceptance_criteria,
+        allowed_paths=draft.allowed_paths,
+        required_tests=draft.required_tests,
+        risk_level=draft.risk_level,
+    )
+
+
+def list_planner_task_drafts(
+    session: Session,
+    planner_run_id: str,
+) -> list[PlannerTaskDraft]:
+    statement = (
+        select(PlannerTaskDraft)
+        .where(PlannerTaskDraft.planner_run_id == planner_run_id)
+        .order_by(PlannerTaskDraft.sequence)
+    )
+    return list(session.exec(statement).all())
+
+
+def _planner_run_read(session: Session, planner_run: PlannerRun) -> PlannerRunRead:
+    status = planner_run.status
+    if isinstance(status, PlannerRunStatus):
+        status = status.value
+
+    return PlannerRunRead(
+        id=planner_run.id,
+        project_id=planner_run.project_id,
+        conversation_id=planner_run.conversation_id,
+        goal=planner_run.goal,
+        status=status,
+        planner_kind=planner_run.planner_kind,
+        draft_count=planner_run.draft_count,
+        drafts=[
+            _planner_draft_read(draft)
+            for draft in list_planner_task_drafts(session, planner_run.id)
+        ],
+    )
+
+
+def get_planner_run(session: Session, planner_run_id: str) -> PlannerRun:
+    planner_run = session.get(PlannerRun, planner_run_id)
+    if planner_run is None:
+        raise HTTPException(status_code=404, detail="Planner run not found")
+    return planner_run
+
+
+def get_planner_run_read(session: Session, planner_run_id: str) -> PlannerRunRead:
+    return _planner_run_read(session, get_planner_run(session, planner_run_id))
+
+
+def create_planner_run(
+    session: Session,
+    project_id: str,
+    data: PlannerRunCreate,
+    planner: PlannerService | None = None,
+) -> PlannerRunRead:
+    get_project(session, project_id)
+
+    if data.conversation_id is not None:
+        conversation = get_conversation(session, data.conversation_id)
+        if conversation.project_id != project_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Conversation does not belong to project",
+            )
+
+    planner_service = planner or FakePlanner()
+    task_specs = planner_service.plan(project_id=project_id, goal=data.goal)
+    planner_run = PlannerRun(
+        project_id=project_id,
+        conversation_id=data.conversation_id,
+        goal=data.goal,
+        status=PlannerRunStatus.DRAFTED,
+        planner_kind="fake",
+        draft_count=len(task_specs),
+    )
+    session.add(planner_run)
+    session.flush()
+
+    for sequence, task_spec in enumerate(task_specs, start=1):
+        session.add(
+            PlannerTaskDraft(
+                planner_run_id=planner_run.id,
+                sequence=sequence,
+                title=task_spec.title,
+                role_required=task_spec.role_required.value,
+                objective=task_spec.objective,
+                acceptance_criteria=list(task_spec.acceptance_criteria),
+                allowed_paths=list(task_spec.allowed_paths),
+                required_tests=list(task_spec.required_tests),
+                risk_level=task_spec.risk_level.value,
+            )
+        )
+
+    session.commit()
+    session.refresh(planner_run)
+    return _planner_run_read(session, planner_run)
 
 
 def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:

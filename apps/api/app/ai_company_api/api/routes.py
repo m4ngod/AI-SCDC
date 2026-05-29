@@ -7,6 +7,8 @@ from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     ConversationCreate,
     MessageCreate,
+    PlannerRunCreate,
+    PlannerRunReject,
     ProjectCreate,
     TaskCreate,
     TaskUpdate,
@@ -14,8 +16,10 @@ from ai_company_api.schemas.api import (
 from ai_company_api.services.repository import (
     create_conversation,
     create_message,
+    create_planner_run,
     create_project,
     create_task,
+    get_planner_run_read,
     get_task,
     list_conversations,
     list_messages,
@@ -72,6 +76,20 @@ def post_conversation_message(
     session: SessionDep,
 ):
     return create_message(session, conversation_id, data)
+
+
+@router.post("/projects/{project_id}/planner-runs", status_code=status.HTTP_201_CREATED)
+def post_project_planner_run(
+    project_id: str,
+    data: PlannerRunCreate,
+    session: SessionDep,
+):
+    return create_planner_run(session, project_id, data)
+
+
+@router.get("/planner-runs/{planner_run_id}")
+def get_planner_run_by_id(planner_run_id: str, session: SessionDep):
+    return get_planner_run_read(session, planner_run_id)
 
 
 @router.get("/projects/{project_id}/tasks")

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 from uuid import uuid4
 
@@ -47,6 +48,71 @@ class Message(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSON),
     )
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class PlannerRunStatus(str, Enum):
+    DRAFTED = "DRAFTED"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class ApprovalStatus(str, Enum):
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class PlannerRun(SQLModel, table=True):
+    __tablename__ = "planner_run"
+
+    id: str = Field(default_factory=lambda: prefixed_id("planner_run"), primary_key=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    conversation_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="conversation.id",
+    )
+    goal: str
+    status: PlannerRunStatus = Field(default=PlannerRunStatus.DRAFTED, index=True)
+    planner_kind: str = "fake"
+    draft_count: int = 0
+    created_by: str = "dev_user"
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class PlannerTaskDraft(SQLModel, table=True):
+    __tablename__ = "planner_task_draft"
+
+    id: str = Field(default_factory=lambda: prefixed_id("planner_draft"), primary_key=True)
+    planner_run_id: str = Field(index=True, foreign_key="planner_run.id")
+    sequence: int = Field(index=True)
+    title: str
+    role_required: str
+    objective: str
+    acceptance_criteria: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
+    allowed_paths: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    required_tests: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    risk_level: str = "medium"
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class Approval(SQLModel, table=True):
+    __tablename__ = "approval"
+
+    id: str = Field(default_factory=lambda: prefixed_id("approval"), primary_key=True)
+    workspace_id: str = "dev_workspace"
+    project_id: str = Field(index=True, foreign_key="project.id")
+    planner_run_id: str = Field(index=True, foreign_key="planner_run.id")
+    action_type: str = "approve_planner_run"
+    risk_level: str = "medium"
+    reason: str = ""
+    status: ApprovalStatus
+    decided_by: str | None = None
+    decided_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 
