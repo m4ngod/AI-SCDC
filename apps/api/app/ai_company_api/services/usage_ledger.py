@@ -119,6 +119,15 @@ def list_usage_ledger_entries(
     planner_run_id: str | None = None,
     task_id: str | None = None,
 ) -> list[UsageLedgerRead]:
+    _validate_project(session, project_id)
+    task = _validate_task(session, task_id, project_id)
+    if project_id is None and task is not None:
+        project_id = task.project_id
+
+    planner_run = _validate_planner_run(session, planner_run_id, project_id)
+    if project_id is None and planner_run is not None:
+        project_id = planner_run.project_id
+
     statement = select(UsageLedgerEntry)
     if project_id is not None:
         statement = statement.where(UsageLedgerEntry.project_id == project_id)

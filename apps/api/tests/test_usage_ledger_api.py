@@ -97,6 +97,78 @@ def test_list_usage_ledger_filters_by_project_planner_run_and_task() -> None:
     assert [item["id"] for item in by_planner.json()] == [first["id"]]
 
 
+def test_list_usage_ledger_rejects_missing_project_filter() -> None:
+    with build_client() as client:
+        response = client.get(
+            "/usage-ledger",
+            params={"project_id": "project_missing"},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+
+
+def test_list_usage_ledger_rejects_missing_task_filter() -> None:
+    with build_client() as client:
+        response = client.get(
+            "/usage-ledger",
+            params={"task_id": "task_missing"},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Task not found"
+
+
+def test_list_usage_ledger_rejects_missing_planner_run_filter() -> None:
+    with build_client() as client:
+        response = client.get(
+            "/usage-ledger",
+            params={"planner_run_id": "planner_run_missing"},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Planner run not found"
+
+
+def test_list_usage_ledger_rejects_cross_project_task_filter() -> None:
+    with build_client() as client:
+        project = client.post("/projects", json={"name": "Demo Project"}).json()
+        other_project = client.post("/projects", json={"name": "Other Project"}).json()
+        other_task = client.post(
+            f"/projects/{other_project['id']}/tasks",
+            json={"title": "Other task", "role_required": "backend"},
+        ).json()
+
+        response = client.get(
+            "/usage-ledger",
+            params={"project_id": project["id"], "task_id": other_task["id"]},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Task does not belong to project"
+
+
+def test_list_usage_ledger_rejects_cross_project_planner_run_filter() -> None:
+    with build_client() as client:
+        project = client.post("/projects", json={"name": "Demo Project"}).json()
+        other_project = client.post("/projects", json={"name": "Other Project"}).json()
+        other_planner_run = client.post(
+            f"/projects/{other_project['id']}/planner-runs",
+            json={"goal": "Build model route settings"},
+        ).json()
+
+        response = client.get(
+            "/usage-ledger",
+            params={
+                "project_id": project["id"],
+                "planner_run_id": other_planner_run["id"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Planner run does not belong to project"
+
+
 def test_usage_ledger_rejects_cross_project_task_reference() -> None:
     with build_client() as client:
         project = client.post("/projects", json={"name": "Demo Project"}).json()
