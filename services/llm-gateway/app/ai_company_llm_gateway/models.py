@@ -1,6 +1,6 @@
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProviderType(str, Enum):
@@ -10,6 +10,8 @@ class ProviderType(str, Enum):
 
 
 class ModelProvider(BaseModel):
+    model_config = ConfigDict(use_enum_values=True)
+
     name: str
     provider_type: ProviderType
     base_url: str | None = None
@@ -37,6 +39,8 @@ class UsageRecord(BaseModel):
 
 
 class ResolvedModelRoute(BaseModel):
+    model_config = ConfigDict(use_enum_values=True)
+
     agent_role: str
     provider_name: str
     provider_type: ProviderType

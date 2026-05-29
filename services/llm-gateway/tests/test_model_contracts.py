@@ -20,11 +20,14 @@ def test_provider_config_supports_deepseek_without_network_behavior() -> None:
         base_url="https://api.deepseek.com",
     )
 
-    assert provider.model_dump() == {
+    payload = provider.model_dump()
+
+    assert payload == {
         "name": "deepseek-dev",
         "provider_type": "deepseek",
         "base_url": "https://api.deepseek.com",
     }
+    assert type(payload["provider_type"]) is str
 
 
 def test_credential_ref_serializes_without_secret_material() -> None:
@@ -59,7 +62,9 @@ def test_resolved_route_serializes_availability_metadata() -> None:
         route_id=None,
     )
 
-    assert route.model_dump() == {
+    payload = route.model_dump()
+
+    assert payload == {
         "agent_role": "planner",
         "provider_name": "fake",
         "provider_type": "fake",
@@ -71,3 +76,4 @@ def test_resolved_route_serializes_availability_metadata() -> None:
         "resolution_source": "fallback_fake",
         "route_id": None,
     }
+    assert type(payload["provider_type"]) is str
