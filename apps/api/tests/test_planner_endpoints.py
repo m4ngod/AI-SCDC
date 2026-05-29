@@ -1,4 +1,5 @@
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlmodel import Session
@@ -12,6 +13,8 @@ from ai_company_api.models.entities import (
     PlannerRun,
     Project,
 )
+from ai_company_api.schemas.api import PlannerRunCreate
+from ai_company_api.services.repository import approve_planner_run, create_planner_run
 
 
 def build_client() -> TestClient:
@@ -199,9 +202,14 @@ def test_approve_planner_run_creates_tasks_and_task_events() -> None:
         assert len(tasks) == 2
         assert all(task["status"] == "CREATED" for task in tasks)
 
-        for task in tasks:
+        for task, draft in zip(tasks, planner_run["drafts"], strict=True):
             events = client.get(f"/tasks/{task['id']}/events").json()
             assert [event["event_type"] for event in events] == ["task_created"]
+            assert events[0]["payload"] == {
+                "status": "CREATED",
+                "planner_run_id": planner_run["id"],
+                "planner_task_draft_id": draft["id"],
+            }
 
         updated_run = client.get(f"/planner-runs/{planner_run['id']}").json()
         assert updated_run["status"] == "APPROVED"
@@ -249,3 +257,48 @@ def test_planner_run_can_only_be_decided_once() -> None:
         assert second.json()["detail"] == "Planner run has already been decided"
         assert third.status_code == 400
         assert third.json()["detail"] == "Planner run has already been decided"
+
+
+def test_stale_approve_duplicate_integrity_error_returns_400() -> None:
+    engine = build_engine("sqlite://")
+    init_db(engine)
+
+    with Session(engine) as setup_session:
+        project = Project(name="Demo Project")
+        setup_session.add(project)
+        setup_session.commit()
+        planner_run = create_planner_run(
+            setup_session,
+            project.id,
+            PlannerRunCreate(goal="Build model route settings"),
+        )
+
+    with Session(engine) as stale_session, Session(engine) as current_session:
+        stale_planner_run = stale_session.get(PlannerRun, planner_run.id)
+        assert stale_planner_run is not None
+        assert stale_planner_run.status == "DRAFTED"
+        approve_planner_run(current_session, planner_run.id)
+
+        with pytest.raises(HTTPException) as exc_info:
+            approve_planner_run(stale_session, planner_run.id)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Planner run has already been decided"
+
+
+def test_planner_decision_routes_have_stable_openapi_response_schema() -> None:
+    with build_client() as client:
+        schema = client.get("/openapi.json").json()
+
+    approve_schema = schema["paths"]["/planner-runs/{planner_run_id}/approve"]["post"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]
+    reject_schema = schema["paths"]["/planner-runs/{planner_run_id}/reject"]["post"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]
+
+    assert approve_schema == {"$ref": "#/components/schemas/PlannerRunDecisionRead"}
+    assert reject_schema == {"$ref": "#/components/schemas/PlannerRunDecisionRead"}
+    decision_schema = schema["components"]["schemas"]["PlannerRunDecisionRead"]
+    created_tasks = decision_schema["properties"]["created_tasks"]
+    assert created_tasks["items"] == {"$ref": "#/components/schemas/TaskRead"}

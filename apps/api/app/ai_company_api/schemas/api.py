@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
@@ -71,13 +72,6 @@ class PlannerRunReject(BaseModel):
     reason: str = ""
 
 
-class PlannerRunDecisionRead(BaseModel):
-    planner_run_id: str
-    approval_id: str
-    status: str
-    created_tasks: list[dict[str, Any]]
-
-
 class TaskCreate(BaseModel):
     title: str
     description: str = ""
@@ -96,6 +90,34 @@ class TaskCreate(BaseModel):
 
 class TaskUpdate(BaseModel):
     status: TaskStatus
+
+
+class TaskRead(BaseModel):
+    id: str
+    project_id: str
+    conversation_id: str | None
+    parent_task_id: str | None
+    title: str
+    description: str
+    role_required: str
+    status: TaskStatus
+    priority: int
+    risk_level: str
+    acceptance_criteria: list[str]
+    assigned_agent_profile_id: str | None
+    repo_id: str | None
+    branch_name: str | None
+    worktree_ref: str | None
+    budget_limit: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlannerRunDecisionRead(BaseModel):
+    planner_run_id: str
+    approval_id: str
+    status: str
+    created_tasks: list[TaskRead]
 
 
 class DevIdentity(BaseModel):

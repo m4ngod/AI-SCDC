@@ -26,6 +26,7 @@ from ai_company_api.schemas.api import (
     PlannerTaskDraftRead,
     ProjectCreate,
     TaskCreate,
+    TaskRead,
 )
 from ai_company_api.services.planner import FakePlanner, PlannerService
 from ai_company_api.services.task_state import (
@@ -261,8 +262,27 @@ def _ensure_planner_run_is_drafted(planner_run: PlannerRun) -> None:
         )
 
 
-def _task_decision_read(task: Task) -> dict[str, Any]:
-    return task.model_dump(mode="json")
+def _task_read(task: Task) -> TaskRead:
+    return TaskRead(
+        id=task.id,
+        project_id=task.project_id,
+        conversation_id=task.conversation_id,
+        parent_task_id=task.parent_task_id,
+        title=task.title,
+        description=task.description,
+        role_required=task.role_required,
+        status=TaskStatus(task.status),
+        priority=task.priority,
+        risk_level=task.risk_level,
+        acceptance_criteria=task.acceptance_criteria,
+        assigned_agent_profile_id=task.assigned_agent_profile_id,
+        repo_id=task.repo_id,
+        branch_name=task.branch_name,
+        worktree_ref=task.worktree_ref,
+        budget_limit=task.budget_limit,
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+    )
 
 
 def approve_planner_run(
@@ -274,48 +294,47 @@ def approve_planner_run(
     project = get_project(session, planner_run.project_id)
     drafts = list_planner_task_drafts(session, planner_run.id)
 
-    approval = Approval(
-        workspace_id=project.workspace_id,
-        project_id=project.id,
-        planner_run_id=planner_run.id,
-        status=ApprovalStatus.APPROVED,
-        decided_by="dev_user",
-        decided_at=utc_now(),
-    )
-    session.add(approval)
-
     created_tasks: list[Task] = []
-    for draft in drafts:
-        task = Task(
-            project_id=project.id,
-            conversation_id=planner_run.conversation_id,
-            title=draft.title,
-            description=draft.objective,
-            role_required=draft.role_required,
-            risk_level=draft.risk_level,
-            acceptance_criteria=draft.acceptance_criteria,
-        )
-        session.add(task)
-        session.flush()
-        create_task_event(
-            session,
-            task.id,
-            "task_created",
-            "user",
-            "dev_user",
-            {
-                "status": task.status.value,
-                "planner_run_id": planner_run.id,
-                "planner_task_draft_id": draft.id,
-            },
-        )
-        created_tasks.append(task)
-
-    planner_run.status = PlannerRunStatus.APPROVED
-    planner_run.updated_at = utc_now()
-    session.add(planner_run)
-
     try:
+        approval = Approval(
+            workspace_id=project.workspace_id,
+            project_id=project.id,
+            planner_run_id=planner_run.id,
+            status=ApprovalStatus.APPROVED,
+            decided_by="dev_user",
+            decided_at=utc_now(),
+        )
+        session.add(approval)
+
+        for draft in drafts:
+            task = Task(
+                project_id=project.id,
+                conversation_id=planner_run.conversation_id,
+                title=draft.title,
+                description=draft.objective,
+                role_required=draft.role_required,
+                risk_level=draft.risk_level,
+                acceptance_criteria=draft.acceptance_criteria,
+            )
+            session.add(task)
+            session.flush()
+            create_task_event(
+                session,
+                task.id,
+                "task_created",
+                "user",
+                "dev_user",
+                {
+                    "status": task.status.value,
+                    "planner_run_id": planner_run.id,
+                    "planner_task_draft_id": draft.id,
+                },
+            )
+            created_tasks.append(task)
+
+        planner_run.status = PlannerRunStatus.APPROVED
+        planner_run.updated_at = utc_now()
+        session.add(planner_run)
         session.commit()
     except IntegrityError as exc:
         session.rollback()
@@ -333,7 +352,7 @@ def approve_planner_run(
         planner_run_id=planner_run.id,
         approval_id=approval.id,
         status="APPROVED",
-        created_tasks=[_task_decision_read(task) for task in created_tasks],
+        created_tasks=[_task_read(task) for task in created_tasks],
     )
 
 
@@ -346,23 +365,22 @@ def reject_planner_run(
     _ensure_planner_run_is_drafted(planner_run)
     project = get_project(session, planner_run.project_id)
 
-    approval = Approval(
-        workspace_id=project.workspace_id,
-        project_id=project.id,
-        planner_run_id=planner_run.id,
-        action_type="reject_planner_run",
-        reason=reason,
-        status=ApprovalStatus.REJECTED,
-        decided_by="dev_user",
-        decided_at=utc_now(),
-    )
-    session.add(approval)
-
-    planner_run.status = PlannerRunStatus.REJECTED
-    planner_run.updated_at = utc_now()
-    session.add(planner_run)
-
     try:
+        approval = Approval(
+            workspace_id=project.workspace_id,
+            project_id=project.id,
+            planner_run_id=planner_run.id,
+            action_type="reject_planner_run",
+            reason=reason,
+            status=ApprovalStatus.REJECTED,
+            decided_by="dev_user",
+            decided_at=utc_now(),
+        )
+        session.add(approval)
+
+        planner_run.status = PlannerRunStatus.REJECTED
+        planner_run.updated_at = utc_now()
+        session.add(planner_run)
         session.commit()
     except IntegrityError as exc:
         session.rollback()

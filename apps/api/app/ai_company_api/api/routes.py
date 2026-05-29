@@ -8,6 +8,7 @@ from ai_company_api.schemas.api import (
     ConversationCreate,
     MessageCreate,
     PlannerRunCreate,
+    PlannerRunDecisionRead,
     PlannerRunReject,
     ProjectCreate,
     TaskCreate,
@@ -94,17 +95,26 @@ def get_planner_run_by_id(planner_run_id: str, session: SessionDep):
     return get_planner_run_read(session, planner_run_id)
 
 
-@router.post("/planner-runs/{planner_run_id}/approve")
-def approve_planner_run_by_id(planner_run_id: str, session: SessionDep):
+@router.post(
+    "/planner-runs/{planner_run_id}/approve",
+    response_model=PlannerRunDecisionRead,
+)
+def approve_planner_run_by_id(
+    planner_run_id: str,
+    session: SessionDep,
+) -> PlannerRunDecisionRead:
     return approve_planner_run(session, planner_run_id)
 
 
-@router.post("/planner-runs/{planner_run_id}/reject")
+@router.post(
+    "/planner-runs/{planner_run_id}/reject",
+    response_model=PlannerRunDecisionRead,
+)
 def reject_planner_run_by_id(
     planner_run_id: str,
     data: PlannerRunReject,
     session: SessionDep,
-):
+) -> PlannerRunDecisionRead:
     return reject_planner_run(session, planner_run_id, data.reason)
 
 
