@@ -1,9 +1,17 @@
+from enum import Enum
+
 from pydantic import BaseModel, Field
+
+
+class ProviderType(str, Enum):
+    FAKE = "fake"
+    OPENAI_COMPATIBLE = "openai_compatible"
+    DEEPSEEK = "deepseek"
 
 
 class ModelProvider(BaseModel):
     name: str
-    provider_type: str
+    provider_type: ProviderType
     base_url: str | None = None
 
 
@@ -16,6 +24,7 @@ class ModelRoute(BaseModel):
 class ModelCredentialRef(BaseModel):
     credential_id: str
     provider_name: str
+    secret_last4: str | None = None
 
 
 class UsageRecord(BaseModel):
@@ -25,6 +34,19 @@ class UsageRecord(BaseModel):
     @property
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.completion_tokens
+
+
+class ResolvedModelRoute(BaseModel):
+    agent_role: str
+    provider_name: str
+    provider_type: ProviderType
+    model_name: str
+    fallback_models: list[str] = Field(default_factory=list)
+    credential_required: bool
+    credential_available: bool
+    is_available: bool
+    resolution_source: str
+    route_id: str | None = None
 
 
 class ProviderRequest(BaseModel):
