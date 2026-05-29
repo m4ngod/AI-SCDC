@@ -1,6 +1,6 @@
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, StatementError
 from sqlmodel import Session
 from fastapi.testclient import TestClient
 
@@ -66,6 +66,38 @@ def test_approval_planner_run_id_is_unique() -> None:
         session.add(second)
 
         with pytest.raises(IntegrityError):
+            session.commit()
+
+
+def test_planner_run_status_rejects_invalid_raw_string() -> None:
+    with build_session() as session:
+        project = Project(name="Demo Project")
+        planner_run = PlannerRun(
+            project_id=project.id,
+            goal="Build model route settings",
+            status="INVALID_STATUS",
+        )
+        session.add(project)
+        session.add(planner_run)
+
+        with pytest.raises((IntegrityError, StatementError)):
+            session.commit()
+
+
+def test_approval_status_rejects_invalid_raw_string() -> None:
+    with build_session() as session:
+        project = Project(name="Demo Project")
+        planner_run = PlannerRun(project_id=project.id, goal="Build model route settings")
+        approval = Approval(
+            project_id=project.id,
+            planner_run_id=planner_run.id,
+            status="invalid_status",
+        )
+        session.add(project)
+        session.add(planner_run)
+        session.add(approval)
+
+        with pytest.raises((IntegrityError, StatementError)):
             session.commit()
 
 

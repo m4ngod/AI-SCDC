@@ -73,7 +73,20 @@ class PlannerRun(SQLModel, table=True):
         foreign_key="conversation.id",
     )
     goal: str
-    status: PlannerRunStatus = Field(default=PlannerRunStatus.DRAFTED, index=True)
+    status: PlannerRunStatus = Field(
+        default=PlannerRunStatus.DRAFTED,
+        sa_column=Column(
+            SAEnum(
+                PlannerRunStatus,
+                name="planner_run_status",
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
     planner_kind: str = "fake"
     draft_count: int = 0
     created_by: str = "dev_user"
@@ -117,8 +130,11 @@ class Approval(SQLModel, table=True):
         sa_column=Column(
             SAEnum(
                 ApprovalStatus,
+                name="approval_status",
                 values_callable=lambda enum_cls: [member.value for member in enum_cls],
                 native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
             ),
             nullable=False,
         ),
