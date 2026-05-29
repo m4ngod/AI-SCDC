@@ -62,6 +62,31 @@ class ApprovalStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class ModelProviderType(str, Enum):
+    FAKE = "fake"
+    OPENAI_COMPATIBLE = "openai_compatible"
+    DEEPSEEK = "deepseek"
+
+
+class ModelProviderStatus(str, Enum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+class ModelCredentialStatus(str, Enum):
+    ACTIVE = "active"
+    DELETED = "deleted"
+
+
+class ModelRouteStatus(str, Enum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+class UsageType(str, Enum):
+    MODEL_TOKENS = "model_tokens"
+
+
 class PlannerRun(SQLModel, table=True):
     __tablename__ = "planner_run"
 
@@ -142,6 +167,156 @@ class Approval(SQLModel, table=True):
     decided_by: str | None = None
     decided_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class ModelProvider(SQLModel, table=True):
+    __tablename__ = "model_provider"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_model_provider_workspace_name"),
+    )
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("model_provider"),
+        primary_key=True,
+    )
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    name: str = Field(index=True)
+    provider_type: ModelProviderType = Field(
+        sa_column=Column(
+            SAEnum(
+                ModelProviderType,
+                name="model_provider_type",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+        ),
+    )
+    base_url: str | None = None
+    default_headers: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
+    status: ModelProviderStatus = Field(
+        default=ModelProviderStatus.ACTIVE,
+        sa_column=Column(
+            SAEnum(
+                ModelProviderStatus,
+                name="model_provider_status",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ModelCredential(SQLModel, table=True):
+    __tablename__ = "model_credential"
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("model_credential"),
+        primary_key=True,
+    )
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    provider_id: str = Field(index=True, foreign_key="model_provider.id")
+    display_name: str
+    secret_last4: str = ""
+    encrypted_secret: str
+    status: ModelCredentialStatus = Field(
+        default=ModelCredentialStatus.ACTIVE,
+        sa_column=Column(
+            SAEnum(
+                ModelCredentialStatus,
+                name="model_credential_status",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ModelRoute(SQLModel, table=True):
+    __tablename__ = "model_route"
+
+    id: str = Field(default_factory=lambda: prefixed_id("model_route"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    agent_role: str = Field(index=True)
+    provider_id: str = Field(index=True, foreign_key="model_provider.id")
+    credential_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="model_credential.id",
+    )
+    model_name: str
+    fallback_models: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    status: ModelRouteStatus = Field(
+        default=ModelRouteStatus.ACTIVE,
+        sa_column=Column(
+            SAEnum(
+                ModelRouteStatus,
+                name="model_route_status",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class UsageLedgerEntry(SQLModel, table=True):
+    __tablename__ = "usage_ledger_entry"
+
+    id: str = Field(default_factory=lambda: prefixed_id("usage"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    organization_id: str = Field(default="dev_organization", index=True)
+    user_id: str = Field(default="dev_user", index=True)
+    project_id: str | None = Field(default=None, index=True, foreign_key="project.id")
+    task_id: str | None = Field(default=None, index=True, foreign_key="task.id")
+    planner_run_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="planner_run.id",
+    )
+    usage_type: UsageType = Field(
+        default=UsageType.MODEL_TOKENS,
+        sa_column=Column(
+            SAEnum(
+                UsageType,
+                name="usage_type",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    provider_name: str
+    model_name: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    unit_price_cents: int = 0
+    amount_cents: int = 0
+    raw_usage_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
 class Task(SQLModel, table=True):
