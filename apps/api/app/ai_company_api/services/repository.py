@@ -370,7 +370,6 @@ def reject_planner_run(
             workspace_id=project.workspace_id,
             project_id=project.id,
             planner_run_id=planner_run.id,
-            action_type="reject_planner_run",
             reason=reason,
             status=ApprovalStatus.REJECTED,
             decided_by="dev_user",

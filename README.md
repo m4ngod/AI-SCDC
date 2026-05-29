@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-Phase 0 is a contract-first monorepo foundation for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation and Phase 1 planner approval loop for a desktop multi-agent software engineering console.
 
 ## Local Commands
 

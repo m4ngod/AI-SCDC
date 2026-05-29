@@ -14,7 +14,11 @@ from ai_company_api.models.entities import (
     Project,
 )
 from ai_company_api.schemas.api import PlannerRunCreate
-from ai_company_api.services.repository import approve_planner_run, create_planner_run
+from ai_company_api.services.repository import (
+    approve_planner_run,
+    create_planner_run,
+    reject_planner_run,
+)
 
 
 def build_client() -> TestClient:
@@ -237,6 +241,32 @@ def test_reject_planner_run_creates_no_tasks() -> None:
         assert client.get(f"/planner-runs/{planner_run['id']}").json()["status"] == "REJECTED"
 
 
+def test_reject_planner_run_keeps_approval_action_type() -> None:
+    with build_session() as session:
+        project = Project(name="Demo Project")
+        session.add(project)
+        session.commit()
+        planner_run = create_planner_run(
+            session,
+            project.id,
+            PlannerRunCreate(goal="Build model route settings"),
+        )
+
+        reject_planner_run(session, planner_run.id, reason="Too broad.")
+
+        raw_approval = session.connection().execute(
+            text(
+                "select action_type, reason, status from approval "
+                "where planner_run_id = :planner_run_id"
+            ),
+            {"planner_run_id": planner_run.id},
+        ).mappings().one()
+
+    assert raw_approval["action_type"] == "approve_planner_run"
+    assert raw_approval["reason"] == "Too broad."
+    assert raw_approval["status"] == "rejected"
+
+
 def test_planner_run_can_only_be_decided_once() -> None:
     with build_client() as client:
         project = client.post("/projects", json={"name": "Demo Project"}).json()
@@ -302,3 +332,18 @@ def test_planner_decision_routes_have_stable_openapi_response_schema() -> None:
     decision_schema = schema["components"]["schemas"]["PlannerRunDecisionRead"]
     created_tasks = decision_schema["properties"]["created_tasks"]
     assert created_tasks["items"] == {"$ref": "#/components/schemas/TaskRead"}
+
+
+def test_planner_run_routes_have_stable_openapi_response_schema() -> None:
+    with build_client() as client:
+        schema = client.get("/openapi.json").json()
+
+    create_schema = schema["paths"]["/projects/{project_id}/planner-runs"]["post"][
+        "responses"
+    ]["201"]["content"]["application/json"]["schema"]
+    read_schema = schema["paths"]["/planner-runs/{planner_run_id}"]["get"]["responses"][
+        "200"
+    ]["content"]["application/json"]["schema"]
+
+    assert create_schema == {"$ref": "#/components/schemas/PlannerRunRead"}
+    assert read_schema == {"$ref": "#/components/schemas/PlannerRunRead"}

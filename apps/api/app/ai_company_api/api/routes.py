@@ -9,6 +9,7 @@ from ai_company_api.schemas.api import (
     MessageCreate,
     PlannerRunCreate,
     PlannerRunDecisionRead,
+    PlannerRunRead,
     PlannerRunReject,
     ProjectCreate,
     TaskCreate,
@@ -81,17 +82,24 @@ def post_conversation_message(
     return create_message(session, conversation_id, data)
 
 
-@router.post("/projects/{project_id}/planner-runs", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/projects/{project_id}/planner-runs",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PlannerRunRead,
+)
 def post_project_planner_run(
     project_id: str,
     data: PlannerRunCreate,
     session: SessionDep,
-):
+) -> PlannerRunRead:
     return create_planner_run(session, project_id, data)
 
 
-@router.get("/planner-runs/{planner_run_id}")
-def get_planner_run_by_id(planner_run_id: str, session: SessionDep):
+@router.get(
+    "/planner-runs/{planner_run_id}",
+    response_model=PlannerRunRead,
+)
+def get_planner_run_by_id(planner_run_id: str, session: SessionDep) -> PlannerRunRead:
     return get_planner_run_read(session, planner_run_id)
 
 
