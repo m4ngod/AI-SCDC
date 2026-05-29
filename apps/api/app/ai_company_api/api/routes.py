@@ -5,26 +5,35 @@ from sqlmodel import Session
 
 from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
+    AgentRole,
     ConversationCreate,
     MessageCreate,
     ModelCredentialCreate,
     ModelCredentialRead,
     ModelProviderCreate,
     ModelProviderRead,
+    ModelRouteCreate,
+    ModelRouteRead,
+    ModelRouteUpdate,
     PlannerRunCreate,
     PlannerRunDecisionRead,
     PlannerRunRead,
     PlannerRunReject,
     ProjectCreate,
+    ResolvedModelRouteRead,
     TaskCreate,
     TaskUpdate,
 )
 from ai_company_api.services.model_settings import (
     create_model_credential,
     create_model_provider,
+    create_model_route,
     delete_model_credential,
     list_model_credentials,
     list_model_providers,
+    list_model_routes,
+    resolve_model_route,
+    update_model_route,
 )
 from ai_company_api.services.repository import (
     approve_planner_run,
@@ -180,6 +189,40 @@ def delete_model_credential_by_id(
     session: SessionDep,
 ) -> ModelCredentialRead:
     return delete_model_credential(session, credential_id)
+
+
+@router.get("/model-routes", response_model=list[ModelRouteRead])
+def get_model_routes(session: SessionDep) -> list[ModelRouteRead]:
+    return list_model_routes(session)
+
+
+@router.post(
+    "/model-routes",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ModelRouteRead,
+)
+def post_model_route(
+    data: ModelRouteCreate,
+    session: SessionDep,
+) -> ModelRouteRead:
+    return create_model_route(session, data)
+
+
+@router.patch("/model-routes/{route_id}", response_model=ModelRouteRead)
+def patch_model_route(
+    route_id: str,
+    data: ModelRouteUpdate,
+    session: SessionDep,
+) -> ModelRouteRead:
+    return update_model_route(session, route_id, data)
+
+
+@router.get("/model-routes/resolve", response_model=ResolvedModelRouteRead)
+def resolve_model_route_for_role(
+    agent_role: AgentRole,
+    session: SessionDep,
+) -> ResolvedModelRouteRead:
+    return resolve_model_route(session, agent_role)
 
 
 @router.get("/projects/{project_id}/tasks")

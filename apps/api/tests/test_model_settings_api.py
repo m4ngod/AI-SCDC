@@ -311,3 +311,210 @@ def test_create_model_credential_api_rejects_disabled_provider(tmp_path) -> None
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Model provider is disabled"
+
+
+def create_provider_and_credential(client: TestClient) -> tuple[dict, dict]:
+    provider = client.post(
+        "/model-providers",
+        json={"name": "deepseek-dev", "provider_type": "deepseek"},
+    ).json()
+    credential = client.post(
+        "/model-credentials",
+        json={
+            "provider_id": provider["id"],
+            "display_name": "Personal DeepSeek key",
+            "secret_value": "sk-example1234",
+        },
+    ).json()
+    return provider, credential
+
+
+def test_create_list_and_update_model_route() -> None:
+    with build_client() as client:
+        provider, credential = create_provider_and_credential(client)
+        create_response = client.post(
+            "/model-routes",
+            json={
+                "agent_role": "planner",
+                "provider_id": provider["id"],
+                "credential_id": credential["id"],
+                "model_name": "deepseek-chat",
+                "fallback_models": ["deepseek-reasoner"],
+            },
+        )
+        list_response = client.get("/model-routes")
+        update_response = client.patch(
+            f"/model-routes/{create_response.json()['id']}",
+            json={
+                "model_name": "deepseek-reasoner",
+                "fallback_models": ["deepseek-chat"],
+            },
+        )
+
+    assert create_response.status_code == 201
+    route = create_response.json()
+    assert route["agent_role"] == "planner"
+    assert route["provider_id"] == provider["id"]
+    assert route["credential_id"] == credential["id"]
+    assert route["model_name"] == "deepseek-chat"
+    assert route["fallback_models"] == ["deepseek-reasoner"]
+    assert route["status"] == "active"
+    assert list_response.status_code == 200
+    assert [item["id"] for item in list_response.json()] == [route["id"]]
+    assert update_response.status_code == 200
+    assert update_response.json()["model_name"] == "deepseek-reasoner"
+    assert update_response.json()["fallback_models"] == ["deepseek-chat"]
+
+
+def test_duplicate_active_model_route_for_role_returns_409() -> None:
+    with build_client() as client:
+        provider, credential = create_provider_and_credential(client)
+        first = client.post(
+            "/model-routes",
+            json={
+                "agent_role": "planner",
+                "provider_id": provider["id"],
+                "credential_id": credential["id"],
+                "model_name": "deepseek-chat",
+            },
+        )
+        second = client.post(
+            "/model-routes",
+            json={
+                "agent_role": "planner",
+                "provider_id": provider["id"],
+                "credential_id": credential["id"],
+                "model_name": "deepseek-reasoner",
+            },
+        )
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Active model route already exists for role"
+
+
+def test_route_rejects_credential_from_different_provider() -> None:
+    with build_client() as client:
+        provider, _credential = create_provider_and_credential(client)
+        other_provider = client.post(
+            "/model-providers",
+            json={"name": "openai-dev", "provider_type": "openai_compatible"},
+        ).json()
+        other_credential = client.post(
+            "/model-credentials",
+            json={
+                "provider_id": other_provider["id"],
+                "display_name": "Personal OpenAI key",
+                "secret_value": "sk-openai1234",
+            },
+        ).json()
+
+        response = client.post(
+            "/model-routes",
+            json={
+                "agent_role": "planner",
+                "provider_id": provider["id"],
+                "credential_id": other_credential["id"],
+                "model_name": "deepseek-chat",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Credential does not belong to provider"
+
+
+def test_resolve_model_route_returns_fake_fallback_when_unconfigured() -> None:
+    with build_client() as client:
+        response = client.get("/model-routes/resolve", params={"agent_role": "planner"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "agent_role": "planner",
+        "provider_name": "fake",
+        "provider_type": "fake",
+        "model_name": "fake-planner",
+        "fallback_models": [],
+        "credential_required": False,
+        "credential_available": False,
+        "is_available": True,
+        "resolution_source": "fallback_fake",
+        "route_id": None,
+    }
+
+
+def test_resolve_model_route_returns_configured_route() -> None:
+    with build_client() as client:
+        provider, credential = create_provider_and_credential(client)
+        route = client.post(
+            "/model-routes",
+            json={
+                "agent_role": "planner",
+                "provider_id": provider["id"],
+                "credential_id": credential["id"],
+                "model_name": "deepseek-chat",
+                "fallback_models": ["deepseek-reasoner"],
+            },
+        ).json()
+
+        response = client.get("/model-routes/resolve", params={"agent_role": "planner"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "agent_role": "planner",
+        "provider_name": "deepseek-dev",
+        "provider_type": "deepseek",
+        "model_name": "deepseek-chat",
+        "fallback_models": ["deepseek-reasoner"],
+        "credential_required": True,
+        "credential_available": True,
+        "is_available": True,
+        "resolution_source": "configured",
+        "route_id": route["id"],
+    }
+
+
+def test_resolve_non_fake_route_without_credential_is_unavailable() -> None:
+    with build_client() as client:
+        provider = client.post(
+            "/model-providers",
+            json={"name": "deepseek-dev", "provider_type": "deepseek"},
+        ).json()
+        route = client.post(
+            "/model-routes",
+            json={
+                "agent_role": "planner",
+                "provider_id": provider["id"],
+                "model_name": "deepseek-chat",
+            },
+        ).json()
+
+        response = client.get("/model-routes/resolve", params={"agent_role": "planner"})
+
+    assert response.status_code == 200
+    assert response.json()["route_id"] == route["id"]
+    assert response.json()["credential_required"] is True
+    assert response.json()["credential_available"] is False
+    assert response.json()["is_available"] is False
+
+
+def test_resolve_model_route_marks_deleted_credential_unavailable() -> None:
+    with build_client() as client:
+        provider, credential = create_provider_and_credential(client)
+        route = client.post(
+            "/model-routes",
+            json={
+                "agent_role": "planner",
+                "provider_id": provider["id"],
+                "credential_id": credential["id"],
+                "model_name": "deepseek-chat",
+            },
+        ).json()
+        client.delete(f"/model-credentials/{credential['id']}")
+
+        response = client.get("/model-routes/resolve", params={"agent_role": "planner"})
+
+    assert response.status_code == 200
+    assert response.json()["route_id"] == route["id"]
+    assert response.json()["credential_required"] is True
+    assert response.json()["credential_available"] is False
+    assert response.json()["is_available"] is False
