@@ -1,10 +1,72 @@
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session
 from fastapi.testclient import TestClient
 
+from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
+from ai_company_api.models.entities import (
+    Approval,
+    ApprovalStatus,
+    PlannerRun,
+    Project,
+)
 
 
 def build_client() -> TestClient:
     return TestClient(create_app(database_url="sqlite://"))
+
+
+def build_session() -> Session:
+    engine = build_engine("sqlite://")
+    init_db(engine)
+    return Session(engine)
+
+
+def test_approval_status_persists_lowercase_enum_value() -> None:
+    with build_session() as session:
+        project = Project(name="Demo Project")
+        planner_run = PlannerRun(project_id=project.id, goal="Build model route settings")
+        approval = Approval(
+            project_id=project.id,
+            planner_run_id=planner_run.id,
+            status=ApprovalStatus.APPROVED,
+        )
+        session.add(project)
+        session.add(planner_run)
+        session.add(approval)
+        session.commit()
+
+        raw_status = session.connection().execute(
+            text("select status from approval where id = :id"),
+            {"id": approval.id},
+        ).scalar_one()
+
+    assert raw_status == "approved"
+
+
+def test_approval_planner_run_id_is_unique() -> None:
+    with build_session() as session:
+        project = Project(name="Demo Project")
+        planner_run = PlannerRun(project_id=project.id, goal="Build model route settings")
+        first = Approval(
+            project_id=project.id,
+            planner_run_id=planner_run.id,
+            status=ApprovalStatus.APPROVED,
+        )
+        second = Approval(
+            project_id=project.id,
+            planner_run_id=planner_run.id,
+            status=ApprovalStatus.REJECTED,
+        )
+        session.add(project)
+        session.add(planner_run)
+        session.add(first)
+        session.add(second)
+
+        with pytest.raises(IntegrityError):
+            session.commit()
 
 
 def test_create_planner_run_creates_ordered_drafts_and_no_tasks() -> None:

@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, Enum as SAEnum, JSON, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from ai_company_api.services.task_state import TaskStatus
@@ -102,6 +102,9 @@ class PlannerTaskDraft(SQLModel, table=True):
 
 class Approval(SQLModel, table=True):
     __tablename__ = "approval"
+    __table_args__ = (
+        UniqueConstraint("planner_run_id", name="uq_approval_planner_run_id"),
+    )
 
     id: str = Field(default_factory=lambda: prefixed_id("approval"), primary_key=True)
     workspace_id: str = "dev_workspace"
@@ -110,7 +113,16 @@ class Approval(SQLModel, table=True):
     action_type: str = "approve_planner_run"
     risk_level: str = "medium"
     reason: str = ""
-    status: ApprovalStatus
+    status: ApprovalStatus = Field(
+        sa_column=Column(
+            SAEnum(
+                ApprovalStatus,
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+            ),
+            nullable=False,
+        ),
+    )
     decided_by: str | None = None
     decided_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)
