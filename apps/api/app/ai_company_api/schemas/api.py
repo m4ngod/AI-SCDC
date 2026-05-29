@@ -172,7 +172,7 @@ class ModelProviderRead(BaseModel):
 class ModelCredentialCreate(BaseModel):
     provider_id: str
     display_name: str = Field(min_length=1)
-    secret_value: str = Field(min_length=1)
+    secret_value: str = Field(min_length=5)
 
 
 class ModelCredentialRead(BaseModel):

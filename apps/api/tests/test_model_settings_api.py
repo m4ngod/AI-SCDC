@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import text
 from sqlmodel import Session
 
@@ -135,6 +136,31 @@ def test_model_provider_rejects_secret_bearing_default_headers() -> None:
     assert response.json()["detail"] == "Default headers must not contain secrets"
 
 
+@pytest.mark.parametrize(
+    "header_name",
+    [
+        "Cookie",
+        "Proxy-Authorization",
+        "X-Auth-Token",
+    ],
+)
+def test_model_provider_rejects_additional_secret_bearing_default_headers(
+    header_name: str,
+) -> None:
+    with build_client() as client:
+        response = client.post(
+            "/model-providers",
+            json={
+                "name": f"bad-provider-{header_name.lower()}",
+                "provider_type": "openai_compatible",
+                "default_headers": {header_name: "secret"},
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Default headers must not contain secrets"
+
+
 def test_model_provider_rejects_unsupported_provider_type() -> None:
     with build_client() as client:
         response = client.post(
@@ -171,6 +197,27 @@ def test_create_and_list_model_credential_never_returns_secret_fields() -> None:
     assert "encrypted_secret" not in credential
     assert list_response.status_code == 200
     assert list_response.json() == [credential]
+
+
+def test_create_model_credential_rejects_short_secret_and_does_not_persist() -> None:
+    with build_client() as client:
+        provider = client.post(
+            "/model-providers",
+            json={"name": "deepseek-dev", "provider_type": "deepseek"},
+        ).json()
+        create_response = client.post(
+            "/model-credentials",
+            json={
+                "provider_id": provider["id"],
+                "display_name": "Too short key",
+                "secret_value": "abcd",
+            },
+        )
+        list_response = client.get("/model-credentials")
+
+    assert create_response.status_code == 422
+    assert list_response.status_code == 200
+    assert list_response.json() == []
 
 
 def test_model_credential_openapi_schema_excludes_secret_outputs() -> None:
@@ -235,3 +282,32 @@ def test_create_model_credential_rejects_disabled_provider() -> None:
             assert exc.detail == "Model provider is disabled"
         else:
             raise AssertionError("Expected disabled provider to reject credentials")
+
+
+def test_create_model_credential_api_rejects_disabled_provider(tmp_path) -> None:
+    database_path = tmp_path / "disabled-provider.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        provider = ModelProvider(
+            name="disabled-provider",
+            provider_type=ModelProviderType.DEEPSEEK,
+            status=ModelProviderStatus.DISABLED,
+        )
+        session.add(provider)
+        session.commit()
+        provider_id = provider.id
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.post(
+            "/model-credentials",
+            json={
+                "provider_id": provider_id,
+                "display_name": "Disabled provider key",
+                "secret_value": "sk-disabled1234",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Model provider is disabled"

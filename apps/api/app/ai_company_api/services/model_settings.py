@@ -23,7 +23,21 @@ SECRET_HEADER_NAMES = {
     "authorization",
     "api-key",
     "apikey",
+    "cookie",
+    "proxy-authorization",
     "x-api-key",
+    "x-auth-token",
+}
+
+SECRET_HEADER_SUBSTRINGS = {
+    "api-key",
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "secret",
+    "token",
 }
 
 
@@ -34,7 +48,9 @@ def _enum_value(value) -> str:
 def _reject_secret_headers(headers: dict[str, str]) -> None:
     for key in headers:
         normalized = key.strip().lower().replace("_", "-")
-        if normalized in SECRET_HEADER_NAMES:
+        if normalized in SECRET_HEADER_NAMES or any(
+            secret_name in normalized for secret_name in SECRET_HEADER_SUBSTRINGS
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="Default headers must not contain secrets",
