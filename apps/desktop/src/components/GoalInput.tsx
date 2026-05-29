@@ -1,10 +1,10 @@
 import { FormEvent, useState } from "react";
 
 type GoalInputProps = {
-  onCreateTask: (goal: string) => Promise<void> | void;
+  onSubmitGoal: (goal: string) => Promise<void> | void;
 };
 
-export function GoalInput({ onCreateTask }: GoalInputProps) {
+export function GoalInput({ onSubmitGoal }: GoalInputProps) {
   const [goal, setGoal] = useState("");
   const [taskError, setTaskError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -19,11 +19,11 @@ export function GoalInput({ onCreateTask }: GoalInputProps) {
 
     setIsSubmitting(true);
     try {
-      await onCreateTask(trimmedGoal);
+      await onSubmitGoal(trimmedGoal);
       setTaskError(null);
       setGoal("");
     } catch (error) {
-      setTaskError(error instanceof Error ? error.message : "Failed to create task");
+      setTaskError(error instanceof Error ? error.message : "Failed to plan tasks");
     } finally {
       setIsSubmitting(false);
     }
@@ -45,7 +45,7 @@ export function GoalInput({ onCreateTask }: GoalInputProps) {
         </p>
       ) : null}
       <button type="submit" disabled={isSubmitting}>
-        Create task
+        Plan tasks
       </button>
     </form>
   );

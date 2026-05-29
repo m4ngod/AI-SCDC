@@ -2,7 +2,75 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import type { ConsoleApiClient } from "../api/client";
+import type { ConsoleApiClient, PlannerRunDraft, TaskCard } from "../api/client";
+
+function plannerRunFixture(goal = "Build model route settings"): PlannerRunDraft {
+  return {
+    id: "planner_run_test",
+    project_id: "project_demo",
+    conversation_id: null,
+    goal,
+    status: "DRAFTED",
+    planner_kind: "fake",
+    draft_count: 2,
+    drafts: [
+      {
+        id: "planner_draft_frontend",
+        sequence: 1,
+        title: "Design desktop flow",
+        role_required: "frontend",
+        objective: `Create UI for ${goal}.`,
+        acceptance_criteria: ["Draft is visible"],
+        allowed_paths: ["apps/desktop/**"],
+        required_tests: ["App renders planner draft preview"],
+        risk_level: "medium"
+      },
+      {
+        id: "planner_draft_backend",
+        sequence: 2,
+        title: "Implement planner API",
+        role_required: "backend",
+        objective: `Persist data for ${goal}.`,
+        acceptance_criteria: ["Approval creates tasks"],
+        allowed_paths: ["apps/api/**"],
+        required_tests: ["Planner approval endpoint creates tasks"],
+        risk_level: "medium"
+      }
+    ]
+  };
+}
+
+function taskCardFixture(title = "Design desktop flow"): TaskCard {
+  return {
+    id: "task_created_from_planner",
+    title,
+    status: "CREATED",
+    role_required: "frontend",
+    assigned_agent: "Frontend Engineer",
+    updated_at: "2026-05-29T00:00:00Z"
+  };
+}
+
+function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): ConsoleApiClient {
+  return {
+    listTasks: vi.fn().mockResolvedValue([]),
+    createTask: vi.fn(),
+    createPlannerRun: vi.fn().mockResolvedValue(plannerRunFixture()),
+    approvePlannerRun: vi.fn().mockResolvedValue({
+      planner_run_id: "planner_run_test",
+      approval_id: "approval_test",
+      status: "APPROVED",
+      created_tasks: []
+    }),
+    rejectPlannerRun: vi.fn().mockResolvedValue({
+      planner_run_id: "planner_run_test",
+      approval_id: "approval_test",
+      status: "REJECTED",
+      created_tasks: []
+    }),
+    ...overrides
+  };
+}
 
 describe("App", () => {
   it("renders sidebar, main thread, and right context panel", () => {
@@ -48,7 +116,7 @@ describe("App", () => {
   });
 
   it("loads the initial task board from the API client", async () => {
-    const apiClient: ConsoleApiClient = {
+    const apiClient = createMockApiClient({
       listTasks: vi.fn().mockResolvedValue([
         {
           id: "task_api_persisted",
@@ -58,12 +126,8 @@ describe("App", () => {
           assigned_agent: "Backend Engineer",
           updated_at: "2026-05-29T01:00:00Z"
         }
-      ]),
-      createTask: vi.fn(),
-      createPlannerRun: vi.fn(),
-      approvePlannerRun: vi.fn(),
-      rejectPlannerRun: vi.fn()
-    };
+      ])
+    });
 
     render(<App apiClient={apiClient} />);
 
@@ -74,93 +138,107 @@ describe("App", () => {
   });
 
   it("shows initial task loading errors in the context panel", async () => {
-    const apiClient: ConsoleApiClient = {
-      listTasks: vi.fn().mockRejectedValue(new Error("API unavailable")),
-      createTask: vi.fn(),
-      createPlannerRun: vi.fn(),
-      approvePlannerRun: vi.fn(),
-      rejectPlannerRun: vi.fn()
-    };
-
-    render(<App apiClient={apiClient} />);
-
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("API unavailable");
-  });
-
-  it("submitting a goal with the fake client creates the deterministic demo task", async () => {
-    const user = userEvent.setup();
-
-    render(<App />);
-
-    await user.type(screen.getByLabelText("Goal"), "Any non-empty goal");
-    await user.click(screen.getByRole("button", { name: "Create task" }));
-
-    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
-    expect(await within(contextPanel).findByText("Build task board")).toBeInTheDocument();
-  });
-
-  it("submitting a goal calls task creation client", async () => {
-    const user = userEvent.setup();
-    const createTask = vi.fn<ConsoleApiClient["createTask"]>().mockResolvedValue({
-      id: "task_new",
-      title: "Build task board",
-      status: "CREATED",
-      role_required: "frontend",
-      assigned_agent: "Frontend Engineer",
-      updated_at: "2026-05-29T00:00:00Z"
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockRejectedValue(new Error("API unavailable"))
     });
-    const apiClient: ConsoleApiClient = {
-      listTasks: vi.fn().mockResolvedValue([]),
-      createTask,
-      createPlannerRun: vi.fn(),
-      approvePlannerRun: vi.fn(),
-      rejectPlannerRun: vi.fn()
-    };
 
     render(<App apiClient={apiClient} />);
-
-    await user.type(screen.getByLabelText("Goal"), "Build task board");
-    await user.click(screen.getByRole("button", { name: "Create task" }));
-
-    expect(createTask).toHaveBeenCalledWith("Build task board");
-    expect(await screen.findByText("Build task board")).toBeInTheDocument();
-  });
-
-  it("shows task creation errors inline and clears them after a successful submission", async () => {
-    const user = userEvent.setup();
-    const createTask = vi
-      .fn<ConsoleApiClient["createTask"]>()
-      .mockRejectedValueOnce(new Error("API unavailable"))
-      .mockResolvedValueOnce({
-        id: "task_recovered",
-        title: "Recovered task",
-        status: "CREATED",
-        role_required: "frontend",
-        assigned_agent: "Frontend Engineer",
-        updated_at: "2026-05-29T00:00:00Z"
-      });
-    const apiClient: ConsoleApiClient = {
-      listTasks: vi.fn().mockResolvedValue([]),
-      createTask,
-      createPlannerRun: vi.fn(),
-      approvePlannerRun: vi.fn(),
-      rejectPlannerRun: vi.fn()
-    };
-
-    render(<App apiClient={apiClient} />);
-
-    await user.type(screen.getByLabelText("Goal"), "Build when offline");
-    await user.click(screen.getByRole("button", { name: "Create task" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("API unavailable");
+  });
 
-    await user.clear(screen.getByLabelText("Goal"));
-    await user.type(screen.getByLabelText("Goal"), "Build after recovery");
-    await user.click(screen.getByRole("button", { name: "Create task" }));
+  it("submitting a goal renders planner draft preview", async () => {
+    const user = userEvent.setup();
+    const createPlannerRun = vi
+      .fn<ConsoleApiClient["createPlannerRun"]>()
+      .mockImplementation(async (goal) => plannerRunFixture(goal));
+    const apiClient = createMockApiClient({ createPlannerRun });
 
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(await screen.findByText("Recovered task")).toBeInTheDocument();
+    render(<App apiClient={apiClient} />);
+
+    await user.type(screen.getByLabelText("Goal"), "Build model route settings");
+    await user.click(screen.getByRole("button", { name: "Plan tasks" }));
+
+    expect(createPlannerRun).toHaveBeenCalledWith("Build model route settings");
+    expect(await screen.findAllByText("Planner draft")).not.toHaveLength(0);
+    expect(screen.getByText("Design desktop flow")).toBeInTheDocument();
+    expect(screen.getByText("Implement planner API")).toBeInTheDocument();
+  });
+
+  it("approving planner drafts adds created tasks to the task board", async () => {
+    const user = userEvent.setup();
+    const approvePlannerRun = vi.fn<ConsoleApiClient["approvePlannerRun"]>().mockResolvedValue({
+      planner_run_id: "planner_run_test",
+      approval_id: "approval_test",
+      status: "APPROVED",
+      created_tasks: [taskCardFixture("Design desktop flow")]
+    });
+    const apiClient = createMockApiClient({
+      createPlannerRun: vi.fn().mockResolvedValue(plannerRunFixture()),
+      approvePlannerRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    await user.type(screen.getByLabelText("Goal"), "Build model route settings");
+    await user.click(screen.getByRole("button", { name: "Plan tasks" }));
+    await user.click(await screen.findByRole("button", { name: "Approve drafts" }));
+
+    expect(approvePlannerRun).toHaveBeenCalledWith("planner_run_test");
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    expect(await within(board).findByText("Design desktop flow")).toBeInTheDocument();
+    expect(screen.getByText("Approved")).toBeInTheDocument();
+  });
+
+  it("rejecting planner drafts does not add tasks", async () => {
+    const user = userEvent.setup();
+    const rejectPlannerRun = vi.fn<ConsoleApiClient["rejectPlannerRun"]>().mockResolvedValue({
+      planner_run_id: "planner_run_test",
+      approval_id: "approval_test",
+      status: "REJECTED",
+      created_tasks: []
+    });
+    const apiClient = createMockApiClient({
+      createPlannerRun: vi.fn().mockResolvedValue(plannerRunFixture()),
+      rejectPlannerRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    await user.type(screen.getByLabelText("Goal"), "Build model route settings");
+    await user.click(screen.getByRole("button", { name: "Plan tasks" }));
+    await user.click(await screen.findByRole("button", { name: "Reject drafts" }));
+
+    expect(rejectPlannerRun).toHaveBeenCalledWith(
+      "planner_run_test",
+      "Rejected from desktop shell."
+    );
+    expect(screen.getByText("Rejected")).toBeInTheDocument();
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    expect(within(board).queryByText("Design desktop flow")).not.toBeInTheDocument();
+  });
+
+  it("shows planner approval errors inline", async () => {
+    const user = userEvent.setup();
+    const approvePlannerRun = vi
+      .fn<ConsoleApiClient["approvePlannerRun"]>()
+      .mockRejectedValue(new Error("Planner run has already been decided"));
+    const apiClient = createMockApiClient({
+      createPlannerRun: vi.fn().mockResolvedValue(plannerRunFixture()),
+      approvePlannerRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    await user.type(screen.getByLabelText("Goal"), "Build model route settings");
+    await user.click(screen.getByRole("button", { name: "Plan tasks" }));
+    await user.click(await screen.findByRole("button", { name: "Approve drafts" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Planner run has already been decided"
+    );
   });
 });

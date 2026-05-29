@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import type { ConsoleApiClient, TaskCard } from "./api/client";
+import type { ConsoleApiClient, PlannerRunDraft, TaskCard } from "./api/client";
 import { createConfiguredApiClient } from "./api/client";
 import { GoalInput } from "./components/GoalInput";
+import { PlannerDraftPanel } from "./components/PlannerDraftPanel";
 import { Shell } from "./components/Shell";
 import { TaskBoard } from "./components/TaskBoard";
 import "./styles/app.css";
@@ -19,6 +20,10 @@ function errorMessage(error: unknown, fallback: string) {
 export function App({ apiClient = defaultApiClient }: AppProps) {
   const [tasks, setTasks] = useState<TaskCard[]>([]);
   const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
+  const [plannerRun, setPlannerRun] = useState<PlannerRunDraft | null>(null);
+  const [plannerDecisionStatus, setPlannerDecisionStatus] = useState<string | null>(null);
+  const [plannerDecisionError, setPlannerDecisionError] = useState<string | null>(null);
+  const [isDecidingPlannerRun, setIsDecidingPlannerRun] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,9 +47,46 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     };
   }, [apiClient]);
 
-  async function handleCreateTask(goal: string) {
-    const task = await apiClient.createTask(goal);
-    setTasks((currentTasks) => [task, ...currentTasks]);
+  async function handleSubmitGoal(goal: string) {
+    const run = await apiClient.createPlannerRun(goal);
+    setPlannerRun(run);
+    setPlannerDecisionStatus(null);
+    setPlannerDecisionError(null);
+  }
+
+  async function handleApprovePlannerRun() {
+    if (!plannerRun || isDecidingPlannerRun) {
+      return;
+    }
+
+    setIsDecidingPlannerRun(true);
+    try {
+      const decision = await apiClient.approvePlannerRun(plannerRun.id);
+      setTasks((currentTasks) => [...decision.created_tasks, ...currentTasks]);
+      setPlannerDecisionStatus("Approved");
+      setPlannerDecisionError(null);
+    } catch (error) {
+      setPlannerDecisionError(errorMessage(error, "Failed to approve planner run"));
+    } finally {
+      setIsDecidingPlannerRun(false);
+    }
+  }
+
+  async function handleRejectPlannerRun() {
+    if (!plannerRun || isDecidingPlannerRun) {
+      return;
+    }
+
+    setIsDecidingPlannerRun(true);
+    try {
+      await apiClient.rejectPlannerRun(plannerRun.id, "Rejected from desktop shell.");
+      setPlannerDecisionStatus("Rejected");
+      setPlannerDecisionError(null);
+    } catch (error) {
+      setPlannerDecisionError(errorMessage(error, "Failed to reject planner run"));
+    } finally {
+      setIsDecidingPlannerRun(false);
+    }
   }
 
   const contextPanel = (
@@ -94,7 +136,15 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
           </div>
           <span className="run-state">Online</span>
         </div>
-        <GoalInput onCreateTask={handleCreateTask} />
+        <GoalInput onSubmitGoal={handleSubmitGoal} />
+        <PlannerDraftPanel
+          plannerRun={plannerRun}
+          decisionStatus={plannerDecisionStatus}
+          decisionError={plannerDecisionError}
+          isDeciding={isDecidingPlannerRun}
+          onApprove={handleApprovePlannerRun}
+          onReject={handleRejectPlannerRun}
+        />
         <div className="thread-tabs" aria-label="Project command context">
           <section>
             <h2>Diff</h2>

@@ -322,6 +322,98 @@ dd {
   font-weight: 700;
 }
 
+.planner-draft-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #c7d0d5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.planner-goal {
+  margin: 0;
+  color: #344047;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.planner-draft-list {
+  display: grid;
+  gap: 10px;
+}
+
+.planner-draft-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d7dee2;
+  border-radius: 8px;
+  background: #f8f9fa;
+}
+
+.planner-draft-card h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.planner-draft-card p {
+  margin: 0;
+  color: #344047;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.planner-draft-card dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.planner-draft-card dt {
+  color: #344047;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.planner-draft-card dd {
+  margin: 2px 0 0;
+  color: #5f6b73;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.planner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.planner-actions button {
+  min-height: 32px;
+  border: 1px solid #24586a;
+  border-radius: 6px;
+  padding: 0 10px;
+  color: #ffffff;
+  background: #2f6f86;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.planner-actions button:last-child {
+  border-color: #b8c4cb;
+  color: #344047;
+  background: #ffffff;
+}
+
+.planner-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 @media (max-width: 920px) {
   .console-shell {
     grid-template-columns: minmax(132px, 160px) minmax(0, 1fr);
