@@ -54,11 +54,18 @@ Phase 2 adds backend control-plane records for model providers, BYOK credentials
 
 Credentials are write-only through the API. The server stores a development encrypted-secret placeholder and returns only credential metadata such as `secret_last4`. Phase 2 does not make real OpenAI-compatible or DeepSeek network calls.
 
-## Future Phases
+## Roadmap
 
-1. Planner-only real model path that creates TaskSpec for user approval.
-2. Backend-first model router and BYOK foundation with provider metadata, write-only credential records, role-based route resolution, fake fallback routes, and append-only usage logging.
-3. Local Runner that reads repositories, creates worktrees, generates diffs, and lets users review patches.
-4. Automated tests, reviewer loop, and debug loop.
-5. Cloud sandbox workers, GitHub/GitLab integration, artifacts, and PR creation.
-6. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.
+Completed:
+
+1. Phase 0 monorepo foundation with desktop shell, API, agent protocol, deterministic gateway interface, mock worker simulator, and local test infrastructure.
+2. Phase 1 planner approval loop with fake planner drafts, human approval or rejection, task creation, and audit trail events.
+3. Backend-first model router and BYOK foundation with provider metadata, write-only credential records, role-based route resolution, fake fallback routes, and append-only usage logging.
+
+Future:
+
+1. Real model-backed planner path that uses route resolution to create TaskSpec for approval.
+2. Local Runner that reads repositories, creates worktrees, generates diffs, and lets users review patches.
+3. Automated tests, reviewer loop, and debug loop.
+4. Cloud sandbox workers, GitHub/GitLab integration, artifacts, and PR creation.
+5. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.
