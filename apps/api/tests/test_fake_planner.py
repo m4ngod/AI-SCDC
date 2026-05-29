@@ -79,6 +79,26 @@ def test_task_spec_draft_rejects_extra_fields() -> None:
         TaskSpecDraft(**_valid_task_spec_draft(), unexpected_field="not allowed")
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "title",
+        "role_required",
+        "objective",
+        "acceptance_criteria",
+        "allowed_paths",
+        "required_tests",
+        "risk_level",
+    ),
+)
+def test_task_spec_draft_rejects_missing_required_fields(field_name: str) -> None:
+    draft = _valid_task_spec_draft()
+    draft.pop(field_name)
+
+    with pytest.raises(ValidationError):
+        TaskSpecDraft(**draft)
+
+
 def _valid_task_spec_draft() -> dict[str, object]:
     return {
         "title": "Implement planner API",

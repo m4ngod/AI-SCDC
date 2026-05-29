@@ -16,7 +16,7 @@ class TaskSpecDraft(BaseModel):
     objective: NonEmptyString
     acceptance_criteria: list[NonEmptyString] = Field(min_length=1)
     allowed_paths: list[NonEmptyString] = Field(min_length=1)
-    required_tests: list[NonEmptyString] = Field(default_factory=list)
+    required_tests: list[NonEmptyString]
     risk_level: RiskLevel
 
 
