@@ -7,6 +7,10 @@ from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     ConversationCreate,
     MessageCreate,
+    ModelCredentialCreate,
+    ModelCredentialRead,
+    ModelProviderCreate,
+    ModelProviderRead,
     PlannerRunCreate,
     PlannerRunDecisionRead,
     PlannerRunRead,
@@ -14,6 +18,13 @@ from ai_company_api.schemas.api import (
     ProjectCreate,
     TaskCreate,
     TaskUpdate,
+)
+from ai_company_api.services.model_settings import (
+    create_model_credential,
+    create_model_provider,
+    delete_model_credential,
+    list_model_credentials,
+    list_model_providers,
 )
 from ai_company_api.services.repository import (
     approve_planner_run,
@@ -124,6 +135,51 @@ def reject_planner_run_by_id(
     session: SessionDep,
 ) -> PlannerRunDecisionRead:
     return reject_planner_run(session, planner_run_id, data.reason)
+
+
+@router.get("/model-providers", response_model=list[ModelProviderRead])
+def get_model_providers(session: SessionDep) -> list[ModelProviderRead]:
+    return list_model_providers(session)
+
+
+@router.post(
+    "/model-providers",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ModelProviderRead,
+)
+def post_model_provider(
+    data: ModelProviderCreate,
+    session: SessionDep,
+) -> ModelProviderRead:
+    return create_model_provider(session, data)
+
+
+@router.get("/model-credentials", response_model=list[ModelCredentialRead])
+def get_model_credentials(session: SessionDep) -> list[ModelCredentialRead]:
+    return list_model_credentials(session)
+
+
+@router.post(
+    "/model-credentials",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ModelCredentialRead,
+)
+def post_model_credential(
+    data: ModelCredentialCreate,
+    session: SessionDep,
+) -> ModelCredentialRead:
+    return create_model_credential(session, data)
+
+
+@router.delete(
+    "/model-credentials/{credential_id}",
+    response_model=ModelCredentialRead,
+)
+def delete_model_credential_by_id(
+    credential_id: str,
+    session: SessionDep,
+) -> ModelCredentialRead:
+    return delete_model_credential(session, credential_id)
 
 
 @router.get("/projects/{project_id}/tasks")
