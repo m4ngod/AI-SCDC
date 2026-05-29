@@ -9,9 +9,42 @@ export type TaskCard = {
   updated_at: string;
 };
 
+export type PlannerTaskDraftCard = {
+  id: string;
+  sequence: number;
+  title: string;
+  role_required: string;
+  objective: string;
+  acceptance_criteria: string[];
+  allowed_paths: string[];
+  required_tests: string[];
+  risk_level: string;
+};
+
+export type PlannerRunDraft = {
+  id: string;
+  project_id: string;
+  conversation_id?: string | null;
+  goal: string;
+  status: string;
+  planner_kind: string;
+  draft_count: number;
+  drafts: PlannerTaskDraftCard[];
+};
+
+export type PlannerRunDecision = {
+  planner_run_id: string;
+  approval_id: string;
+  status: string;
+  created_tasks: TaskCard[];
+};
+
 export type ConsoleApiClient = {
   listTasks: () => Promise<TaskCard[]>;
   createTask: (goal: string) => Promise<TaskCard>;
+  createPlannerRun: (goal: string) => Promise<PlannerRunDraft>;
+  approvePlannerRun: (plannerRunId: string) => Promise<PlannerRunDecision>;
+  rejectPlannerRun: (plannerRunId: string, reason?: string) => Promise<PlannerRunDecision>;
 };
 
 type ApiProject = {
@@ -27,10 +60,44 @@ type ApiTask = {
   updated_at?: string;
 };
 
+type ApiPlannerRunDecision = {
+  planner_run_id: string;
+  approval_id: string;
+  status: string;
+  created_tasks: ApiTask[];
+};
+
 type HttpApiClientOptions = {
   baseUrl: string;
   projectId?: string;
 };
+
+function demoPlannerDrafts(goal: string): PlannerTaskDraftCard[] {
+  return [
+    {
+      id: "planner_draft_frontend",
+      sequence: 1,
+      title: "Design desktop flow for planner approval",
+      role_required: "frontend",
+      objective: `Design the desktop planner approval flow for ${goal}.`,
+      acceptance_criteria: ["Planner drafts are visible before task creation."],
+      allowed_paths: ["apps/desktop/**"],
+      required_tests: ["Desktop planner draft client contract is covered."],
+      risk_level: "medium"
+    },
+    {
+      id: "planner_draft_backend",
+      sequence: 2,
+      title: "Implement planner approval API",
+      role_required: "backend",
+      objective: `Implement the planner approval API for ${goal}.`,
+      acceptance_criteria: ["Approved planner drafts create task cards."],
+      allowed_paths: ["apps/api/**"],
+      required_tests: ["Planner approval API creates tasks."],
+      risk_level: "medium"
+    }
+  ];
+}
 
 export const fakeApiClient: ConsoleApiClient = {
   async listTasks() {
@@ -44,6 +111,52 @@ export const fakeApiClient: ConsoleApiClient = {
       role_required: "frontend",
       assigned_agent: "Frontend Engineer",
       updated_at: "2026-05-29T00:00:00Z"
+    };
+  },
+  async createPlannerRun(goal: string) {
+    const drafts = demoPlannerDrafts(goal);
+    return {
+      id: "planner_run_demo",
+      project_id: "project_demo",
+      conversation_id: null,
+      goal,
+      status: "DRAFTED",
+      planner_kind: "fake",
+      draft_count: drafts.length,
+      drafts
+    };
+  },
+  async approvePlannerRun(plannerRunId: string) {
+    return {
+      planner_run_id: plannerRunId,
+      approval_id: "approval_demo",
+      status: "APPROVED",
+      created_tasks: [
+        {
+          id: "task_planner_frontend",
+          title: "Design desktop flow for planner approval",
+          status: "CREATED",
+          role_required: "frontend",
+          assigned_agent: "Frontend Engineer",
+          updated_at: "2026-05-29T00:00:00Z"
+        },
+        {
+          id: "task_planner_backend",
+          title: "Implement planner approval API",
+          status: "CREATED",
+          role_required: "backend",
+          assigned_agent: "Backend Engineer",
+          updated_at: "2026-05-29T00:00:00Z"
+        }
+      ]
+    };
+  },
+  async rejectPlannerRun(plannerRunId: string) {
+    return {
+      planner_run_id: plannerRunId,
+      approval_id: "approval_demo",
+      status: "REJECTED",
+      created_tasks: []
     };
   }
 };
@@ -116,6 +229,15 @@ function mapTaskCard(task: ApiTask): TaskCard {
   };
 }
 
+function mapPlannerRunDecision(decision: ApiPlannerRunDecision): PlannerRunDecision {
+  return {
+    planner_run_id: decision.planner_run_id,
+    approval_id: decision.approval_id,
+    status: decision.status,
+    created_tasks: decision.created_tasks.map(mapTaskCard)
+  };
+}
+
 export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiClient {
   let resolvedProjectId = options.projectId;
 
@@ -172,6 +294,41 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         `POST /projects/${projectId}/tasks`
       );
       return mapTaskCard(task);
+    },
+    async createPlannerRun(goal: string) {
+      const projectId = await getProjectId();
+      const response = await fetch(apiUrl(options.baseUrl, `/projects/${projectId}/planner-runs`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal })
+      });
+      return readJsonResponse<PlannerRunDraft>(
+        response,
+        `POST /projects/${projectId}/planner-runs`
+      );
+    },
+    async approvePlannerRun(plannerRunId: string) {
+      const response = await fetch(apiUrl(options.baseUrl, `/planner-runs/${plannerRunId}/approve`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      const decision = await readJsonResponse<ApiPlannerRunDecision>(
+        response,
+        `POST /planner-runs/${plannerRunId}/approve`
+      );
+      return mapPlannerRunDecision(decision);
+    },
+    async rejectPlannerRun(plannerRunId: string, reason = "") {
+      const response = await fetch(apiUrl(options.baseUrl, `/planner-runs/${plannerRunId}/reject`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason })
+      });
+      const decision = await readJsonResponse<ApiPlannerRunDecision>(
+        response,
+        `POST /planner-runs/${plannerRunId}/reject`
+      );
+      return mapPlannerRunDecision(decision);
     }
   };
 }

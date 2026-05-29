@@ -59,7 +59,10 @@ describe("App", () => {
           updated_at: "2026-05-29T01:00:00Z"
         }
       ]),
-      createTask: vi.fn()
+      createTask: vi.fn(),
+      createPlannerRun: vi.fn(),
+      approvePlannerRun: vi.fn(),
+      rejectPlannerRun: vi.fn()
     };
 
     render(<App apiClient={apiClient} />);
@@ -73,7 +76,10 @@ describe("App", () => {
   it("shows initial task loading errors in the context panel", async () => {
     const apiClient: ConsoleApiClient = {
       listTasks: vi.fn().mockRejectedValue(new Error("API unavailable")),
-      createTask: vi.fn()
+      createTask: vi.fn(),
+      createPlannerRun: vi.fn(),
+      approvePlannerRun: vi.fn(),
+      rejectPlannerRun: vi.fn()
     };
 
     render(<App apiClient={apiClient} />);
@@ -104,7 +110,13 @@ describe("App", () => {
       assigned_agent: "Frontend Engineer",
       updated_at: "2026-05-29T00:00:00Z"
     });
-    const apiClient: ConsoleApiClient = { listTasks: vi.fn().mockResolvedValue([]), createTask };
+    const apiClient: ConsoleApiClient = {
+      listTasks: vi.fn().mockResolvedValue([]),
+      createTask,
+      createPlannerRun: vi.fn(),
+      approvePlannerRun: vi.fn(),
+      rejectPlannerRun: vi.fn()
+    };
 
     render(<App apiClient={apiClient} />);
 
@@ -128,7 +140,13 @@ describe("App", () => {
         assigned_agent: "Frontend Engineer",
         updated_at: "2026-05-29T00:00:00Z"
       });
-    const apiClient: ConsoleApiClient = { listTasks: vi.fn().mockResolvedValue([]), createTask };
+    const apiClient: ConsoleApiClient = {
+      listTasks: vi.fn().mockResolvedValue([]),
+      createTask,
+      createPlannerRun: vi.fn(),
+      approvePlannerRun: vi.fn(),
+      rejectPlannerRun: vi.fn()
+    };
 
     render(<App apiClient={apiClient} />);
 
