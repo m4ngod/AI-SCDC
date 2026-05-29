@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ConsoleApiClient, PlannerRunDraft, TaskCard } from "./api/client";
 import { createConfiguredApiClient } from "./api/client";
 import { GoalInput } from "./components/GoalInput";
@@ -24,6 +24,11 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const [plannerDecisionStatus, setPlannerDecisionStatus] = useState<string | null>(null);
   const [plannerDecisionError, setPlannerDecisionError] = useState<string | null>(null);
   const [isDecidingPlannerRun, setIsDecidingPlannerRun] = useState(false);
+  const plannerRunRef = useRef<PlannerRunDraft | null>(null);
+
+  useEffect(() => {
+    plannerRunRef.current = plannerRun;
+  }, [plannerRun]);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,6 +53,10 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   }, [apiClient]);
 
   async function handleSubmitGoal(goal: string) {
+    if (isDecidingPlannerRun) {
+      return;
+    }
+
     const run = await apiClient.createPlannerRun(goal);
     setPlannerRun(run);
     setPlannerDecisionStatus(null);
@@ -60,13 +69,18 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     }
 
     setIsDecidingPlannerRun(true);
+    const decidingRunId = plannerRun.id;
     try {
-      const decision = await apiClient.approvePlannerRun(plannerRun.id);
-      setTasks((currentTasks) => [...decision.created_tasks, ...currentTasks]);
-      setPlannerDecisionStatus("Approved");
-      setPlannerDecisionError(null);
+      const decision = await apiClient.approvePlannerRun(decidingRunId);
+      if (plannerRunRef.current?.id === decidingRunId) {
+        setTasks((currentTasks) => [...decision.created_tasks, ...currentTasks]);
+        setPlannerDecisionStatus("Approved");
+        setPlannerDecisionError(null);
+      }
     } catch (error) {
-      setPlannerDecisionError(errorMessage(error, "Failed to approve planner run"));
+      if (plannerRunRef.current?.id === decidingRunId) {
+        setPlannerDecisionError(errorMessage(error, "Failed to approve planner run"));
+      }
     } finally {
       setIsDecidingPlannerRun(false);
     }
@@ -78,12 +92,17 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     }
 
     setIsDecidingPlannerRun(true);
+    const decidingRunId = plannerRun.id;
     try {
-      await apiClient.rejectPlannerRun(plannerRun.id, "Rejected from desktop shell.");
-      setPlannerDecisionStatus("Rejected");
-      setPlannerDecisionError(null);
+      await apiClient.rejectPlannerRun(decidingRunId, "Rejected from desktop shell.");
+      if (plannerRunRef.current?.id === decidingRunId) {
+        setPlannerDecisionStatus("Rejected");
+        setPlannerDecisionError(null);
+      }
     } catch (error) {
-      setPlannerDecisionError(errorMessage(error, "Failed to reject planner run"));
+      if (plannerRunRef.current?.id === decidingRunId) {
+        setPlannerDecisionError(errorMessage(error, "Failed to reject planner run"));
+      }
     } finally {
       setIsDecidingPlannerRun(false);
     }
@@ -136,7 +155,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
           </div>
           <span className="run-state">Online</span>
         </div>
-        <GoalInput onSubmitGoal={handleSubmitGoal} />
+        <GoalInput onSubmitGoal={handleSubmitGoal} disabled={isDecidingPlannerRun} />
         <PlannerDraftPanel
           plannerRun={plannerRun}
           decisionStatus={plannerDecisionStatus}

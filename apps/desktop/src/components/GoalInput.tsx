@@ -2,18 +2,20 @@ import { FormEvent, useState } from "react";
 
 type GoalInputProps = {
   onSubmitGoal: (goal: string) => Promise<void> | void;
+  disabled?: boolean;
 };
 
-export function GoalInput({ onSubmitGoal }: GoalInputProps) {
+export function GoalInput({ onSubmitGoal, disabled = false }: GoalInputProps) {
   const [goal, setGoal] = useState("");
   const [taskError, setTaskError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isDisabled = disabled || isSubmitting;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedGoal = goal.trim();
 
-    if (!trimmedGoal || isSubmitting) {
+    if (!trimmedGoal || isDisabled) {
       return;
     }
 
@@ -37,6 +39,7 @@ export function GoalInput({ onSubmitGoal }: GoalInputProps) {
         name="goal"
         rows={4}
         value={goal}
+        disabled={isDisabled}
         onChange={(event) => setGoal(event.target.value)}
       />
       {taskError ? (
@@ -44,7 +47,7 @@ export function GoalInput({ onSubmitGoal }: GoalInputProps) {
           {taskError}
         </p>
       ) : null}
-      <button type="submit" disabled={isSubmitting}>
+      <button type="submit" disabled={isDisabled}>
         Plan tasks
       </button>
     </form>

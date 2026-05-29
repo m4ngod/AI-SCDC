@@ -333,6 +333,7 @@ dd {
 
 .planner-goal {
   margin: 0;
+  overflow-wrap: anywhere;
   color: #344047;
   font-size: 13px;
   line-height: 1.5;
@@ -380,6 +381,7 @@ dd {
 
 .planner-draft-card dd {
   margin: 2px 0 0;
+  overflow-wrap: anywhere;
   color: #5f6b73;
   font-size: 12px;
   line-height: 1.45;
