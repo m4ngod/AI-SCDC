@@ -2,7 +2,10 @@ from collections.abc import Generator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
 from ai_company_api.api.routes import router
@@ -19,6 +22,43 @@ DEV_CORS_ORIGINS = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 )
+SECRET_REQUEST_FIELDS = {"secret_value"}
+REDACTED_SECRET_INPUT = "[redacted]"
+
+
+def redact_secret_validation_input(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: REDACTED_SECRET_INPUT
+            if str(key).lower() in SECRET_REQUEST_FIELDS
+            else redact_secret_validation_input(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_secret_validation_input(item) for item in value]
+    return value
+
+
+def validation_error_contains_secret_field(error: dict[str, object]) -> bool:
+    location = error.get("loc", ())
+    return any(str(part).lower() in SECRET_REQUEST_FIELDS for part in location)
+
+
+def redact_validation_errors(
+    errors: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    redacted_errors = []
+    for error in errors:
+        redacted_error = dict(error)
+        if "input" in redacted_error:
+            if validation_error_contains_secret_field(redacted_error):
+                redacted_error["input"] = REDACTED_SECRET_INPUT
+            else:
+                redacted_error["input"] = redact_secret_validation_input(
+                    redacted_error["input"],
+                )
+        redacted_errors.append(redacted_error)
+    return redacted_errors
 
 
 def create_app(
@@ -39,6 +79,16 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def redact_secret_validation_errors(
+        _request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content=jsonable_encoder({"detail": redact_validation_errors(exc.errors())}),
+        )
 
     def session_dependency() -> Generator[Session, None, None]:
         yield from session_generator(engine)

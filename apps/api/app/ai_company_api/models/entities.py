@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Column, Enum as SAEnum, JSON, UniqueConstraint
+from sqlalchemy import Column, Enum as SAEnum, Index, JSON, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 from ai_company_api.services.task_state import TaskStatus
@@ -248,6 +248,16 @@ class ModelCredential(SQLModel, table=True):
 
 class ModelRoute(SQLModel, table=True):
     __tablename__ = "model_route"
+    __table_args__ = (
+        Index(
+            "uq_model_route_active_workspace_role",
+            "workspace_id",
+            "agent_role",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
 
     id: str = Field(default_factory=lambda: prefixed_id("model_route"), primary_key=True)
     workspace_id: str = Field(default="dev_workspace", index=True)

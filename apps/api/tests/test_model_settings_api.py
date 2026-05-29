@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text
 from sqlmodel import Session
 
@@ -11,6 +12,7 @@ from ai_company_api.models.entities import (
     ModelProvider,
     ModelProviderStatus,
     ModelProviderType,
+    ModelRoute,
 )
 from ai_company_api.services.secret_vault import DevSecretVault
 
@@ -216,6 +218,7 @@ def test_create_model_credential_rejects_short_secret_and_does_not_persist() -> 
         list_response = client.get("/model-credentials")
 
     assert create_response.status_code == 422
+    assert "abcd" not in create_response.text
     assert list_response.status_code == 200
     assert list_response.json() == []
 
@@ -228,6 +231,7 @@ def test_model_credential_openapi_schema_excludes_secret_outputs() -> None:
     credential_create = schema["components"]["schemas"]["ModelCredentialCreate"]
 
     assert "secret_value" in credential_create["properties"]
+    assert credential_create["properties"]["secret_value"]["writeOnly"] is True
     assert "secret_value" not in credential_read["properties"]
     assert "encrypted_secret" not in credential_read["properties"]
 
@@ -391,6 +395,34 @@ def test_duplicate_active_model_route_for_role_returns_409() -> None:
     assert first.status_code == 201
     assert second.status_code == 409
     assert second.json()["detail"] == "Active model route already exists for role"
+
+
+def test_model_route_active_uniqueness_is_enforced_by_database() -> None:
+    with build_session() as session:
+        provider = ModelProvider(
+            name="deepseek-dev",
+            provider_type=ModelProviderType.DEEPSEEK,
+        )
+        session.add(provider)
+        session.commit()
+
+        session.add(
+            ModelRoute(
+                agent_role="planner",
+                provider_id=provider.id,
+                model_name="deepseek-chat",
+            ),
+        )
+        session.add(
+            ModelRoute(
+                agent_role="planner",
+                provider_id=provider.id,
+                model_name="deepseek-reasoner",
+            ),
+        )
+
+        with pytest.raises(IntegrityError):
+            session.commit()
 
 
 def test_route_rejects_credential_from_different_provider() -> None:

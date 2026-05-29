@@ -208,7 +208,7 @@ def create_model_credential(
     if _enum_value(provider.status) != ModelProviderStatus.ACTIVE.value:
         raise HTTPException(status_code=400, detail="Model provider is disabled")
 
-    sealed = (vault or DevSecretVault()).seal(data.secret_value)
+    sealed = (vault or DevSecretVault()).seal(data.secret_value.get_secret_value())
     credential = ModelCredential(
         provider_id=provider.id,
         display_name=data.display_name,
@@ -256,7 +256,14 @@ def create_model_route(session: Session, data: ModelRouteCreate) -> ModelRouteRe
         fallback_models=data.fallback_models,
     )
     session.add(route)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Active model route already exists for role",
+        ) from exc
     session.refresh(route)
     return _route_read(route)
 
@@ -293,7 +300,14 @@ def update_model_route(
 
     route.updated_at = utc_now()
     session.add(route)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Active model route already exists for role",
+        ) from exc
     session.refresh(route)
     return _route_read(route)
 

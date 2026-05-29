@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, NonNegativeInt
+from pydantic import BaseModel, Field, NonNegativeInt, SecretStr
 
 from ai_company_api.services.task_state import TaskStatus
 
@@ -172,7 +172,7 @@ class ModelProviderRead(BaseModel):
 class ModelCredentialCreate(BaseModel):
     provider_id: str
     display_name: str = Field(min_length=1)
-    secret_value: str = Field(min_length=5)
+    secret_value: SecretStr = Field(min_length=5)
 
 
 class ModelCredentialRead(BaseModel):
