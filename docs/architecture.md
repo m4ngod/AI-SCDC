@@ -48,10 +48,16 @@ the desktop resolves or creates a demo project, creates planner runs, approves
 or rejects generated drafts, and maps approved tasks into the right-panel task
 board.
 
+## Phase 2 Boundary
+
+Phase 2 adds backend control-plane records for model providers, BYOK credentials, model routes, and usage ledger entries. Route resolution is metadata-only: if no planner route is configured, the API returns a deterministic fake planner route so the Phase 1 planner approval flow keeps working.
+
+Credentials are write-only through the API. The server stores a development encrypted-secret placeholder and returns only credential metadata such as `secret_last4`. Phase 2 does not make real OpenAI-compatible or DeepSeek network calls.
+
 ## Future Phases
 
 1. Planner-only real model path that creates TaskSpec for user approval.
-2. Model router and BYOK foundation with encrypted credential placeholder and usage logging.
+2. Backend-first model router and BYOK foundation with provider metadata, write-only credential records, role-based route resolution, fake fallback routes, and append-only usage logging.
 3. Local Runner that reads repositories, creates worktrees, generates diffs, and lets users review patches.
 4. Automated tests, reviewer loop, and debug loop.
 5. Cloud sandbox workers, GitHub/GitLab integration, artifacts, and PR creation.
