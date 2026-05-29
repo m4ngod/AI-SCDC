@@ -23,6 +23,8 @@ from ai_company_api.schemas.api import (
     ResolvedModelRouteRead,
     TaskCreate,
     TaskUpdate,
+    UsageLedgerCreate,
+    UsageLedgerRead,
 )
 from ai_company_api.services.model_settings import (
     create_model_credential,
@@ -53,6 +55,10 @@ from ai_company_api.services.repository import (
     transition_task,
 )
 from ai_company_api.services.task_state import TaskStatus
+from ai_company_api.services.usage_ledger import (
+    append_usage_ledger_entry,
+    list_usage_ledger_entries,
+)
 
 router = APIRouter()
 SessionDep = Annotated[Session, Depends(get_session_dependency)]
@@ -223,6 +229,33 @@ def resolve_model_route_for_role(
     session: SessionDep,
 ) -> ResolvedModelRouteRead:
     return resolve_model_route(session, agent_role)
+
+
+@router.get("/usage-ledger", response_model=list[UsageLedgerRead])
+def get_usage_ledger(
+    session: SessionDep,
+    project_id: str | None = None,
+    planner_run_id: str | None = None,
+    task_id: str | None = None,
+) -> list[UsageLedgerRead]:
+    return list_usage_ledger_entries(
+        session,
+        project_id=project_id,
+        planner_run_id=planner_run_id,
+        task_id=task_id,
+    )
+
+
+@router.post(
+    "/usage-ledger",
+    status_code=status.HTTP_201_CREATED,
+    response_model=UsageLedgerRead,
+)
+def post_usage_ledger_entry(
+    data: UsageLedgerCreate,
+    session: SessionDep,
+) -> UsageLedgerRead:
+    return append_usage_ledger_entry(session, data)
 
 
 @router.get("/projects/{project_id}/tasks")
