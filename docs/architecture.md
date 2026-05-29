@@ -33,18 +33,20 @@ Phase 0 does not perform real model calls, real Tauri builds, real code patching
 
 ```text
 User enters goal
-  -> desktop shell calls task creation client
-  -> API creates task
-  -> task state machine validates transitions
+  -> desktop shell requests a planner run
+  -> FakePlanner creates structured TaskSpec drafts
+  -> user approves or rejects the batch
+  -> approved drafts become normal tasks
   -> task events capture audit trail
-  -> desktop right panel shows task state
+  -> desktop right panel shows created tasks
 ```
 
 The desktop task client defaults to mock mode when `VITE_API_BASE_URL` is unset
 so demos and tests stay deterministic. Setting
 `VITE_API_BASE_URL=http://127.0.0.1:8000` enables the minimal HTTP integration:
-the desktop resolves or creates a demo project, posts a FastAPI task, and maps
-the response into the right-panel task board.
+the desktop resolves or creates a demo project, creates planner runs, approves
+or rejects generated drafts, and maps approved tasks into the right-panel task
+board.
 
 ## Future Phases
 
