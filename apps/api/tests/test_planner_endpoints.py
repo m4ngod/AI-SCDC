@@ -441,6 +441,24 @@ def test_approve_planner_run_creates_tasks_and_task_events() -> None:
         assert updated_run["status"] == "APPROVED"
 
 
+def test_create_planner_run_falls_back_to_fake_and_can_still_be_approved() -> None:
+    with build_client() as client:
+        project = client.post("/projects", json={"name": "Demo Project"}).json()
+        planner_response = client.post(
+            f"/projects/{project['id']}/planner-runs",
+            json={"goal": "Build fallback planner"},
+        )
+        planner_run = planner_response.json()
+        approval_response = client.post(f"/planner-runs/{planner_run['id']}/approve")
+
+    assert planner_response.status_code == 201
+    assert planner_run["planner_kind"] == "model_fallback_fake"
+    assert planner_run["fallback_reason"] == "no_configured_route"
+    assert planner_run["draft_count"] == 2
+    assert approval_response.status_code == 200
+    assert len(approval_response.json()["created_tasks"]) == 2
+
+
 def test_reject_planner_run_creates_no_tasks() -> None:
     with build_client() as client:
         project = client.post("/projects", json={"name": "Demo Project"}).json()

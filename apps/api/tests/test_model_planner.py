@@ -4,7 +4,9 @@ from sqlmodel import Session
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.models.entities import (
     ModelCredential,
+    ModelCredentialStatus,
     ModelProvider,
+    ModelProviderStatus,
     ModelProviderType,
     ModelRoute,
     PlannerRun,
@@ -370,6 +372,133 @@ def test_create_model_planner_result_suppresses_close_failure_after_provider_err
     assert result.planner_kind == "model_fallback_fake"
     assert result.fallback_reason == "provider_request_failed"
     assert adapter.closed is True
+
+
+def test_model_planner_falls_back_when_no_route_is_configured() -> None:
+    with build_session() as session:
+        project = Project(name="Demo Project")
+        session.add(project)
+        session.commit()
+
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build planner",
+            planner_run_id="planner_run_manual",
+            adapter_factory=lambda **_kwargs: object(),
+        )
+
+    assert result.planner_kind == "model_fallback_fake"
+    assert result.fallback_reason == "no_configured_route"
+    assert result.task_specs == []
+
+
+def test_model_planner_falls_back_when_credential_is_deleted() -> None:
+    with build_session() as session:
+        project, route = create_planner_route(session)
+        credential = session.get(ModelCredential, route.credential_id)
+        assert credential is not None
+        credential.status = ModelCredentialStatus.DELETED
+        session.add(credential)
+        session.commit()
+
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build planner",
+            planner_run_id="planner_run_manual",
+            adapter_factory=lambda **_kwargs: object(),
+        )
+
+    assert result.planner_kind == "model_fallback_fake"
+    assert result.fallback_reason == "credential_unavailable"
+    assert result.task_specs == []
+
+
+def test_model_planner_falls_back_when_provider_is_disabled() -> None:
+    with build_session() as session:
+        project, route = create_planner_route(session)
+        provider = session.get(ModelProvider, route.provider_id)
+        assert provider is not None
+        provider.status = ModelProviderStatus.DISABLED
+        session.add(provider)
+        session.commit()
+
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build planner",
+            planner_run_id="planner_run_manual",
+            adapter_factory=lambda **_kwargs: object(),
+        )
+
+    assert result.planner_kind == "model_fallback_fake"
+    assert result.fallback_reason == "provider_unavailable"
+    assert result.task_specs == []
+
+
+def test_model_planner_falls_back_when_provider_request_fails() -> None:
+    class FailingAdapter:
+        def complete_chat(self, _request):
+            raise ProviderRequestError("provider down")
+
+    with build_session() as session:
+        project, _route = create_planner_route(session)
+        planner_run = PlannerRun(
+            id="planner_run_manual",
+            project_id=project.id,
+            goal="Build planner",
+        )
+        session.add(planner_run)
+        session.flush()
+
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build planner",
+            planner_run_id="planner_run_manual",
+            adapter_factory=lambda **_kwargs: FailingAdapter(),
+        )
+        usage = list_usage_ledger_entries(session, planner_run_id="planner_run_manual")
+
+    assert result.planner_kind == "model_fallback_fake"
+    assert result.fallback_reason == "provider_request_failed"
+    assert result.task_specs == []
+    assert usage == []
+
+
+def test_model_planner_falls_back_when_model_output_is_invalid() -> None:
+    with build_session() as session:
+        project, _route = create_planner_route(session)
+        planner_run = PlannerRun(
+            id="planner_run_manual",
+            project_id=project.id,
+            goal="Build planner",
+        )
+        session.add(planner_run)
+        session.flush()
+        adapter = RecordingChatAdapter(
+            ChatProviderResponse(
+                provider_name="deepseek-dev",
+                model_name="deepseek-chat",
+                content="not json",
+                usage=UsageRecord(prompt_tokens=3, completion_tokens=4),
+            )
+        )
+
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build planner",
+            planner_run_id="planner_run_manual",
+            adapter_factory=lambda **_kwargs: adapter,
+        )
+        usage = list_usage_ledger_entries(session, planner_run_id="planner_run_manual")
+
+    assert result.planner_kind == "model_fallback_fake"
+    assert result.fallback_reason == "invalid_model_output"
+    assert result.task_specs == []
+    assert usage == []
 
 
 def test_build_planner_messages_instructs_json_only() -> None:
