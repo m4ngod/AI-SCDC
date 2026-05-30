@@ -261,15 +261,18 @@ The smoke output should show `local_run_status` as `patch_ready`, `files_changed
 
 ## Phase 5 Local Test, Review, and Debug Workflow
 
-Phase 5 extends the Phase 4 patch artifact with deterministic local verification. After the desktop `Run local` action or `POST /tasks/{task_id}/local-runs` creates a patch artifact, the flow is:
+Phase 5 extends the Phase 4 patch artifact with deterministic local verification. It starts after the desktop `Run local` action or `POST /tasks/{task_id}/local-runs` has already moved the task through the Phase 4 local-run path from `CREATED -> ASSIGNED -> IN_PROGRESS -> PATCH_READY` and created a patch artifact. Local-run failures can still move a task to `FIX_REQUESTED` before Phase 5 starts.
+
+Once a patch artifact is `PATCH_READY`, the Phase 5 flow is:
 
 ```text
-CREATED -> PATCH_READY -> SELF_TESTING -> REVIEWING -> APPROVED
-                                             \-> FIX_REQUESTED
-                              \-> FIX_REQUESTED
+PATCH_READY -> SELF_TESTING -> REVIEWING -> APPROVED
+                  |              |
+                  v              v
+             FIX_REQUESTED  FIX_REQUESTED
 ```
 
-Use the desktop `Run tests` action, or call `POST /patch-artifacts/{patch_artifact_id}/test-runs`, to execute the task `required_tests` commands inside the local runner worktree. Passing tests store a `LocalTestRun`, update the patch artifact test result, and move the task from `PATCH_READY` through `SELF_TESTING` to `REVIEWING`. Failed or invalid test runs move the task to `FIX_REQUESTED` and create a `DebugAttempt`.
+Use the desktop `Run tests` action, or call `POST /patch-artifacts/{patch_artifact_id}/test-runs`, to execute the task `required_tests` commands inside the local runner worktree. The API first rejects invalid preconditions, such as a task that is not `PATCH_READY` or a local run without `worktree_path`, with HTTP 400 and without creating a `LocalTestRun` or `DebugAttempt`. Once a test run starts, passing tests store a `LocalTestRun`, update the patch artifact test result, and move the task from `PATCH_READY` through `SELF_TESTING` to `REVIEWING`. Started test command failures store a failed `LocalTestRun`, update the patch artifact test result, move the task to `FIX_REQUESTED`, and create a `DebugAttempt`.
 
 Use the desktop `Review patch` action, or call `POST /patch-artifacts/{patch_artifact_id}/reviews`, once the task is `REVIEWING`. The deterministic review stores one `PatchReview` per patch artifact and reviewer kind, checks that the diff exists, changed files stay inside `allowed_paths`, and the latest local test run passed. An approved review moves the task to `APPROVED`; review findings move it to `FIX_REQUESTED` and create a `DebugAttempt`.
 
