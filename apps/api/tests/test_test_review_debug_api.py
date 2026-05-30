@@ -1,8 +1,10 @@
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -267,6 +269,112 @@ def test_patch_review_is_unique_per_artifact_and_reviewer_kind() -> None:
             session.commit()
 
 
+def test_init_db_adds_patch_review_unique_index_to_existing_sqlite_db(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "old-patch-review.db"
+    engine = build_engine(database_url(database_path))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                create table patch_review (
+                    id varchar not null primary key,
+                    workspace_id varchar not null,
+                    project_id varchar not null,
+                    task_id varchar not null,
+                    local_run_id varchar not null,
+                    patch_artifact_id varchar not null,
+                    test_run_id varchar,
+                    reviewer_kind varchar not null,
+                    verdict varchar not null,
+                    issues json not null,
+                    required_changes json not null,
+                    created_at datetime not null
+                )
+                """
+            )
+        )
+
+    init_db(engine)
+
+    with engine.begin() as connection:
+        indexes = {
+            row["name"]: row
+            for row in connection.execute(
+                text("PRAGMA index_list(patch_review)")
+            ).mappings()
+        }
+        connection.execute(
+            text(
+                """
+                insert into patch_review (
+                    id,
+                    workspace_id,
+                    project_id,
+                    task_id,
+                    local_run_id,
+                    patch_artifact_id,
+                    reviewer_kind,
+                    verdict,
+                    issues,
+                    required_changes,
+                    created_at
+                )
+                values (
+                    'review_one',
+                    'dev_workspace',
+                    'project_one',
+                    'task_one',
+                    'local_run_one',
+                    'patch_one',
+                    'deterministic',
+                    'approved',
+                    '[]',
+                    '[]',
+                    '2026-05-31 00:00:00'
+                )
+                """
+            )
+        )
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text(
+                    """
+                    insert into patch_review (
+                        id,
+                        workspace_id,
+                        project_id,
+                        task_id,
+                        local_run_id,
+                        patch_artifact_id,
+                        reviewer_kind,
+                        verdict,
+                        issues,
+                        required_changes,
+                        created_at
+                    )
+                    values (
+                        'review_two',
+                        'dev_workspace',
+                        'project_one',
+                        'task_one',
+                        'local_run_one',
+                        'patch_one',
+                        'deterministic',
+                        'approved',
+                        '[]',
+                        '[]',
+                        '2026-05-31 00:00:01'
+                    )
+                    """
+                )
+            )
+
+    index = indexes["uq_patch_review_artifact_reviewer_kind"]
+    assert index["unique"] == 1
+
+
 def test_passing_test_run_moves_patch_ready_task_to_reviewing(tmp_path: Path) -> None:
     repo_path = create_git_repo(tmp_path)
     with build_client(tmp_path / "api.db") as client:
@@ -477,6 +585,7 @@ def test_review_requests_changes_for_deterministic_issue(
     repo_path = create_git_repo(tmp_path)
     database_path = tmp_path / "api.db"
     url = database_url(database_path)
+    newest_test_run_id: str | None = None
 
     with build_client(database_path) as client:
         _project, task, _local_run, artifact = create_patch_ready_task(
@@ -510,7 +619,27 @@ def test_review_requests_changes_for_deterministic_issue(
                 session.add(persisted_task)
             elif scenario == "latest_non_passed_test_run":
                 persisted_task.status = TaskStatus.REVIEWING
-                test_run = LocalTestRun(
+                base_created_at = persisted_task.updated_at
+                older_passed_test_run = LocalTestRun(
+                    project_id=persisted_task.project_id,
+                    task_id=persisted_task.id,
+                    local_run_id=persisted_artifact.local_run_id,
+                    patch_artifact_id=persisted_artifact.id,
+                    status="passed",
+                    commands=["python -V"],
+                    command_results=[
+                        {
+                            "command": "python -V",
+                            "exit_code": 0,
+                            "stdout": "Python",
+                            "stderr": "",
+                            "duration_ms": 1,
+                        }
+                    ],
+                    completed_at=base_created_at - timedelta(seconds=1),
+                    created_at=base_created_at - timedelta(seconds=1),
+                )
+                newer_failed_test_run = LocalTestRun(
                     project_id=persisted_task.project_id,
                     task_id=persisted_task.id,
                     local_run_id=persisted_artifact.local_run_id,
@@ -527,10 +656,14 @@ def test_review_requests_changes_for_deterministic_issue(
                         }
                     ],
                     failure_reason="failed",
-                    completed_at=persisted_task.updated_at,
+                    completed_at=base_created_at + timedelta(seconds=1),
+                    created_at=base_created_at + timedelta(seconds=1),
                 )
                 session.add(persisted_task)
-                session.add(test_run)
+                session.add(older_passed_test_run)
+                session.add(newer_failed_test_run)
+                session.flush()
+                newest_test_run_id = newer_failed_test_run.id
             session.commit()
 
         review_response = client.post(f"/patch-artifacts/{artifact['id']}/reviews")
@@ -544,6 +677,8 @@ def test_review_requests_changes_for_deterministic_issue(
     assert expected_issue_code in [
         issue["code"] for issue in result["review"]["issues"]
     ]
+    if scenario == "latest_non_passed_test_run":
+        assert result["review"]["test_run_id"] == newest_test_run_id
 
 
 def test_test_run_start_is_committed_before_commands_execute(

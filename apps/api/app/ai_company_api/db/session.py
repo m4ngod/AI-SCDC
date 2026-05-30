@@ -22,6 +22,7 @@ def init_db(engine) -> None:
     SQLModel.metadata.create_all(engine)
     _upgrade_sqlite_planner_run_metadata(engine)
     _upgrade_sqlite_task_execution_constraints(engine)
+    _upgrade_sqlite_patch_review_uniqueness(engine)
 
 
 def _upgrade_sqlite_planner_run_metadata(engine) -> None:
@@ -82,6 +83,51 @@ def _upgrade_sqlite_task_execution_constraints(engine) -> None:
                 connection.execute(
                     text(f"ALTER TABLE task ADD COLUMN {column_name} {column_type}")
                 )
+
+
+def _upgrade_sqlite_patch_review_uniqueness(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "patch_review" not in existing_tables:
+            return
+
+        columns = ("patch_artifact_id", "reviewer_kind")
+        if _sqlite_has_unique_index(connection, "patch_review", columns):
+            return
+
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_patch_review_artifact_reviewer_kind "
+                "ON patch_review (patch_artifact_id, reviewer_kind)"
+            )
+        )
+
+
+def _sqlite_has_unique_index(connection, table_name: str, columns: tuple[str, ...]) -> bool:
+    for row in connection.execute(text(f"PRAGMA index_list({table_name})")).mappings():
+        if row["unique"] != 1:
+            continue
+
+        index_name = str(row["name"]).replace('"', '""')
+        indexed_columns = tuple(
+            column["name"]
+            for column in connection.execute(
+                text(f'PRAGMA index_info("{index_name}")')
+            ).mappings()
+        )
+        if indexed_columns == columns:
+            return True
+
+    return False
 
 
 def session_generator(engine) -> Generator[Session, None, None]:
