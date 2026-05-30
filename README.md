@@ -24,6 +24,8 @@ Phase 2 was backend-only. It added model providers, write-only BYOK credential m
 
 Phase 3 can call an OpenAI-compatible provider for planner drafts when the API has a configured planner route. DeepSeek can be configured as an OpenAI-compatible provider through the existing backend API. Do not paste API keys into chat, docs, or commits.
 
+These Bash/curl examples are local smoke-test convenience commands. Local shell history may retain commands, so avoid shared shells and clear history if needed.
+
 Example local setup:
 
 ```bash
@@ -48,9 +50,23 @@ curl -X POST http://127.0.0.1:8000/model-routes \
   -d '{"agent_role":"planner","provider_id":"<PROVIDER_ID>","credential_id":"<CREDENTIAL_ID>","model_name":"deepseek-chat"}'
 ```
 
-`<PROVIDER_ID>` and `<CREDENTIAL_ID>` come from the JSON responses of the previous requests. Then run the normal desktop planner flow with `VITE_API_BASE_URL=http://127.0.0.1:8000`.
+`<PROVIDER_ID>` and `<CREDENTIAL_ID>` come from the JSON responses of the previous requests. You can run the normal desktop planner flow with `VITE_API_BASE_URL=http://127.0.0.1:8000`, or perform the smoke test directly through the API:
 
-Verify the created planner run used the real model path, because fallback also creates drafts. The planner run JSON should have `planner_kind == "model"` and `fallback_reason == null`. You can also check `/usage-ledger?planner_run_id=<PLANNER_RUN_ID>` for a model token entry. `<PLANNER_RUN_ID>` comes from the planner run JSON response.
+```bash
+curl -X POST http://127.0.0.1:8000/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Phase 3 smoke","description":"Local real planner smoke test"}'
+
+curl -X POST http://127.0.0.1:8000/projects/<PROJECT_ID>/planner-runs \
+  -H "Content-Type: application/json" \
+  -d '{"goal":"Draft a small implementation plan for a README-only change."}'
+
+curl http://127.0.0.1:8000/planner-runs/<PLANNER_RUN_ID>
+
+curl "http://127.0.0.1:8000/usage-ledger?planner_run_id=<PLANNER_RUN_ID>"
+```
+
+`<PROJECT_ID>` comes from the project response, and `<PLANNER_RUN_ID>` comes from the planner run response. Verify the created planner run used the real model path, because fallback also creates drafts: the planner run JSON must have `planner_kind == "model"` and `fallback_reason == null`, and the usage ledger response must contain a `usage_type == "model_tokens"` entry for `<PLANNER_RUN_ID>`.
 
 Do not commit or share the `DEEPSEEK_API_KEY` value (`<YOUR_LOCAL_API_KEY>` in the example). Credential responses remain metadata-only; the API does not return raw or encrypted secrets.
 
