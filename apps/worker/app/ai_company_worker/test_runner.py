@@ -1,3 +1,5 @@
+import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -64,25 +66,31 @@ def _run_command(
     timeout_seconds: float,
 ) -> CommandResult:
     started = time.monotonic()
+    process: subprocess.Popen[str] | None = None
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
             shell=True,
             cwd=worktree_path,
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_seconds,
+            **_process_group_options(),
         )
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
+        if process is not None:
+            _terminate_process_tree(process)
+            stdout, stderr = process.communicate()
+        else:
+            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
         duration_ms = int((time.monotonic() - started) * 1000)
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
         return CommandResult(
             command=command,
             exit_code=None,
-            stdout=stdout,
-            stderr=(stderr + "\nCommand timed out").strip(),
+            stdout=stdout or "",
+            stderr=((stderr or "") + "\nCommand timed out").strip(),
             duration_ms=duration_ms,
         )
     except OSError as exc:
@@ -98,8 +106,30 @@ def _run_command(
     duration_ms = int((time.monotonic() - started) * 1000)
     return CommandResult(
         command=command,
-        exit_code=result.returncode,
-        stdout=result.stdout,
-        stderr=result.stderr,
+        exit_code=process.returncode if process is not None else None,
+        stdout=stdout or "",
+        stderr=stderr or "",
         duration_ms=duration_ms,
     )
+
+
+def _process_group_options() -> dict[str, object]:
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
