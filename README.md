@@ -30,7 +30,7 @@ Example local setup:
 pnpm dev:api
 ```
 
-In another shell, create a provider, create a credential with your local API key in the request body, and create an active `planner` route:
+In another shell, set `DEEPSEEK_API_KEY` only for the local shell session, create a provider, create a credential, and create an active `planner` route:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/model-providers \
@@ -39,15 +39,17 @@ curl -X POST http://127.0.0.1:8000/model-providers \
 
 curl -X POST http://127.0.0.1:8000/model-credentials \
   -H "Content-Type: application/json" \
-  -d '{"provider_id":"<PROVIDER_ID>","display_name":"Local key","secret_value":"<YOUR_LOCAL_API_KEY>"}'
+  -d "{\"provider_id\":\"<PROVIDER_ID>\",\"display_name\":\"Local key\",\"secret_value\":\"$DEEPSEEK_API_KEY\"}"
 
 curl -X POST http://127.0.0.1:8000/model-routes \
   -H "Content-Type: application/json" \
   -d '{"agent_role":"planner","provider_id":"<PROVIDER_ID>","credential_id":"<CREDENTIAL_ID>","model_name":"deepseek-chat"}'
 ```
 
-Then run the normal desktop planner flow with `VITE_API_BASE_URL=http://127.0.0.1:8000`.
+`<PROVIDER_ID>` and `<CREDENTIAL_ID>` come from the JSON responses of the previous requests. Then run the normal desktop planner flow with `VITE_API_BASE_URL=http://127.0.0.1:8000`.
 
-Use your local key only in the credential request body. Do not commit or share `<YOUR_LOCAL_API_KEY>`. Credential responses remain metadata-only; the API does not return raw or encrypted secrets.
+Verify the created planner run used the real model path, because fallback also creates drafts. The planner run JSON should have `planner_kind == "model"` and `fallback_reason == null`. You can also check `/usage-ledger?planner_run_id=<PLANNER_RUN_ID>` for a model token entry. `<PLANNER_RUN_ID>` comes from the planner run JSON response.
+
+Do not commit or share `<YOUR_LOCAL_API_KEY>` or `$DEEPSEEK_API_KEY`. Credential responses remain metadata-only; the API does not return raw or encrypted secrets.
 
 See `docs/architecture.md` for architecture and phase boundaries.
