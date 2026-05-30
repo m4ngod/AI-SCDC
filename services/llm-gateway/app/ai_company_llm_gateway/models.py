@@ -69,3 +69,33 @@ class OpenAICompatibleProviderConfig(BaseModel):
     provider_name: str
     base_url: str
     default_headers: dict[str, str] = Field(default_factory=dict)
+
+
+class ProviderGatewayError(RuntimeError):
+    """Base error for provider gateway failures."""
+
+
+class ProviderRequestError(ProviderGatewayError):
+    """Raised when the provider request fails or returns a non-success status."""
+
+
+class MalformedProviderResponseError(ProviderGatewayError):
+    """Raised when a provider response does not match the expected shape."""
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatProviderRequest(BaseModel):
+    model_name: str
+    messages: list[ChatMessage]
+    temperature: float = 0.2
+
+
+class ChatProviderResponse(BaseModel):
+    provider_name: str
+    model_name: str
+    content: str
+    usage: UsageRecord
