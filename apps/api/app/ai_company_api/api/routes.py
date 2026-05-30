@@ -7,8 +7,10 @@ from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     AgentRole,
     ConversationCreate,
+    DebugAttemptRead,
     LocalRunCreate,
     LocalTaskRunRead,
+    LocalTestRunRead,
     MessageCreate,
     ModelCredentialCreate,
     ModelCredentialRead,
@@ -22,6 +24,7 @@ from ai_company_api.schemas.api import (
     PlannerRunRead,
     PlannerRunReject,
     PatchArtifactRead,
+    PatchTestRunResultRead,
     ProjectCreate,
     RepositoryCreate,
     RepositoryRead,
@@ -36,6 +39,12 @@ from ai_company_api.services.local_runner import (
     get_patch_artifact,
     list_local_task_runs,
     start_local_task_run,
+)
+from ai_company_api.services.test_review_debug import (
+    get_test_run,
+    list_debug_attempts,
+    list_patch_test_runs,
+    start_patch_test_run,
 )
 from ai_company_api.services.model_settings import (
     create_model_credential,
@@ -354,6 +363,45 @@ def get_patch_artifact_by_id(
     session: SessionDep,
 ) -> PatchArtifactRead:
     return get_patch_artifact(session, patch_artifact_id)
+
+
+@router.post(
+    "/patch-artifacts/{patch_artifact_id}/test-runs",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PatchTestRunResultRead,
+)
+def post_patch_artifact_test_run(
+    patch_artifact_id: str,
+    session: SessionDep,
+) -> PatchTestRunResultRead:
+    return start_patch_test_run(session, patch_artifact_id)
+
+
+@router.get(
+    "/patch-artifacts/{patch_artifact_id}/test-runs",
+    response_model=list[LocalTestRunRead],
+)
+def get_patch_artifact_test_runs(
+    patch_artifact_id: str,
+    session: SessionDep,
+) -> list[LocalTestRunRead]:
+    return list_patch_test_runs(session, patch_artifact_id)
+
+
+@router.get("/test-runs/{test_run_id}", response_model=LocalTestRunRead)
+def get_test_run_by_id(
+    test_run_id: str,
+    session: SessionDep,
+) -> LocalTestRunRead:
+    return get_test_run(session, test_run_id)
+
+
+@router.get("/tasks/{task_id}/debug-attempts", response_model=list[DebugAttemptRead])
+def get_task_debug_attempts(
+    task_id: str,
+    session: SessionDep,
+) -> list[DebugAttemptRead]:
+    return list_debug_attempts(session, task_id)
 
 
 @router.patch("/tasks/{task_id}")
