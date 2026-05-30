@@ -102,19 +102,25 @@ def test_create_model_planner_result_uses_configured_route_and_logs_usage() -> N
                 usage=UsageRecord(prompt_tokens=31, completion_tokens=17),
             )
         )
+        adapter_kwargs = {}
 
         result = create_model_planner_result(
             session,
             project=project,
             goal="Build real planner",
             planner_run_id=planner_run.id,
-            adapter_factory=lambda **_kwargs: adapter,
+            adapter_factory=lambda **kwargs: adapter_kwargs.update(kwargs) or adapter,
         )
         usage_entries = list_usage_ledger_entries(
             session,
             planner_run_id="planner_run_manual",
         )
 
+    assert adapter_kwargs == {
+        "provider_name": "deepseek-dev",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "sk-example1234",
+    }
     assert result.planner_kind == "model"
     assert result.model_route_id == route.id
     assert result.model_provider_name == "deepseek-dev"
@@ -127,6 +133,57 @@ def test_create_model_planner_result_uses_configured_route_and_logs_usage() -> N
     assert usage_entries[0].prompt_tokens == 31
     assert usage_entries[0].completion_tokens == 17
     assert usage_entries[0].total_tokens == 48
+
+
+def test_create_model_planner_result_propagates_usage_ledger_failures(
+    monkeypatch,
+) -> None:
+    with build_session() as session:
+        project, _route = create_planner_route(session)
+        planner_run = PlannerRun(
+            id="planner_run_usage_failure",
+            project_id=project.id,
+            goal="Build real planner",
+        )
+        session.add(planner_run)
+        session.flush()
+        adapter = RecordingChatAdapter(
+            ChatProviderResponse(
+                provider_name="deepseek-dev",
+                model_name="deepseek-chat",
+                content="""
+                [
+                  {
+                    "title": "Implement API planner integration",
+                    "role_required": "backend",
+                    "objective": "Use configured route for planner drafts.",
+                    "acceptance_criteria": ["Model drafts are persisted."],
+                    "allowed_paths": ["apps/api/**"],
+                    "required_tests": ["pytest apps/api/tests/test_model_planner.py -v"],
+                    "risk_level": "medium"
+                  }
+                ]
+                """,
+                usage=UsageRecord(prompt_tokens=31, completion_tokens=17),
+            )
+        )
+
+        def fail_usage_append(*_args, **_kwargs):
+            raise RuntimeError("usage ledger unavailable")
+
+        monkeypatch.setattr(
+            "ai_company_api.services.model_planner.append_usage_ledger_entry",
+            fail_usage_append,
+        )
+
+        with pytest.raises(RuntimeError, match="usage ledger unavailable"):
+            create_model_planner_result(
+                session,
+                project=project,
+                goal="Build real planner",
+                planner_run_id=planner_run.id,
+                adapter_factory=lambda **_kwargs: adapter,
+            )
 
 
 def test_build_planner_messages_instructs_json_only() -> None:

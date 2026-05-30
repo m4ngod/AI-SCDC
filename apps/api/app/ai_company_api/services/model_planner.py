@@ -98,25 +98,22 @@ def create_model_planner_result(
     except ModelPlannerError:
         return _fake_result("invalid_model_output")
 
-    try:
-        append_usage_ledger_entry(
-            session,
-            UsageLedgerCreate(
-                project_id=project.id,
-                planner_run_id=planner_run_id,
-                provider_name=response.provider_name,
-                model_name=response.model_name,
-                prompt_tokens=response.usage.prompt_tokens,
-                completion_tokens=response.usage.completion_tokens,
-                raw_usage_json={
-                    "source": "model_planner",
-                    "route_id": route.id,
-                },
-            ),
-            commit=False,
-        )
-    except Exception:
-        pass
+    append_usage_ledger_entry(
+        session,
+        UsageLedgerCreate(
+            project_id=project.id,
+            planner_run_id=planner_run_id,
+            provider_name=response.provider_name,
+            model_name=response.model_name,
+            prompt_tokens=response.usage.prompt_tokens,
+            completion_tokens=response.usage.completion_tokens,
+            raw_usage_json={
+                "source": "model_planner",
+                "route_id": route.id,
+            },
+        ),
+        commit=False,
+    )
 
     return PlannerExecutionResult(
         task_specs=task_specs,
