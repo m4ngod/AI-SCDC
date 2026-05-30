@@ -235,9 +235,36 @@ def test_openai_compatible_adapter_satisfies_chat_provider_adapter_protocol() ->
     assert isinstance(adapter, ChatProviderAdapter)
 
 
-def test_chat_message_rejects_invalid_role() -> None:
-    with pytest.raises(ValidationError):
-        ChatMessage(role="developer", content="Plan")
+def test_openai_compatible_adapter_passes_through_provider_specific_roles() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "[]"}}]},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = OpenAICompatibleChatAdapter(
+        provider_name="openai-compatible-dev",
+        base_url="https://provider.example/v1/",
+        api_key="sk-secret1234",
+        client=client,
+    )
+
+    adapter.complete_chat(
+        ChatProviderRequest(
+            model_name="model-a",
+            messages=[ChatMessage(role="developer", content="Plan")],
+        )
+    )
+
+    assert captured["body"] == {
+        "model": "model-a",
+        "messages": [{"role": "developer", "content": "Plan"}],
+        "temperature": 0.2,
+    }
 
 
 def test_chat_provider_request_rejects_empty_messages() -> None:
