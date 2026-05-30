@@ -33,6 +33,8 @@ pnpm dev:api
 In another shell, set `DEEPSEEK_API_KEY` only for the local shell session, create a provider, create a credential, and create an active `planner` route:
 
 ```bash
+export DEEPSEEK_API_KEY="<YOUR_LOCAL_API_KEY>"
+
 curl -X POST http://127.0.0.1:8000/model-providers \
   -H "Content-Type: application/json" \
   -d '{"name":"Local DeepSeek","provider_type":"deepseek","base_url":"https://api.deepseek.com"}'
@@ -50,6 +52,6 @@ curl -X POST http://127.0.0.1:8000/model-routes \
 
 Verify the created planner run used the real model path, because fallback also creates drafts. The planner run JSON should have `planner_kind == "model"` and `fallback_reason == null`. You can also check `/usage-ledger?planner_run_id=<PLANNER_RUN_ID>` for a model token entry. `<PLANNER_RUN_ID>` comes from the planner run JSON response.
 
-Do not commit or share `<YOUR_LOCAL_API_KEY>` or `$DEEPSEEK_API_KEY`. Credential responses remain metadata-only; the API does not return raw or encrypted secrets.
+Do not commit or share the `DEEPSEEK_API_KEY` value (`<YOUR_LOCAL_API_KEY>` in the example). Credential responses remain metadata-only; the API does not return raw or encrypted secrets.
 
 See `docs/architecture.md` for architecture and phase boundaries.

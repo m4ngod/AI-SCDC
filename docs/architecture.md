@@ -34,7 +34,8 @@ Phase 0 does not perform real model calls, real Tauri builds, real code patching
 ```text
 User enters goal
   -> desktop shell requests a planner run
-  -> FakePlanner creates structured TaskSpec drafts
+  -> FakePlanner creates structured TaskSpec drafts by default/no-route fallback,
+     or a configured model-backed planner creates drafts
   -> user approves or rejects the batch
   -> approved drafts become normal tasks
   -> task events capture audit trail
