@@ -2,7 +2,9 @@ import json
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
+from ai_company_llm_gateway.adapters import ChatProviderAdapter
 from ai_company_llm_gateway.models import (
     ChatMessage,
     ChatProviderRequest,
@@ -185,3 +187,59 @@ def test_openai_compatible_adapter_suppresses_secret_bearing_transport_cause() -
 
     assert "sk-secret1234" not in str(exc_info.value)
     assert exc_info.value.__cause__ is None
+
+
+def test_openai_compatible_adapter_context_manager_closes_owned_client() -> None:
+    with OpenAICompatibleChatAdapter(
+        provider_name="deepseek-dev",
+        base_url="https://api.deepseek.com",
+        api_key="sk-secret1234",
+    ) as adapter:
+        assert not adapter._client.is_closed
+
+    assert adapter._client.is_closed
+
+
+def test_openai_compatible_adapter_context_manager_does_not_close_injected_client() -> None:
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "[]"}}]},
+            )
+        )
+    )
+
+    with OpenAICompatibleChatAdapter(
+        provider_name="deepseek-dev",
+        base_url="https://api.deepseek.com",
+        api_key="sk-secret1234",
+        client=client,
+    ) as adapter:
+        assert adapter is not None
+
+    assert not client.is_closed
+    client.close()
+
+
+def test_openai_compatible_adapter_satisfies_chat_provider_adapter_protocol() -> None:
+    adapter = OpenAICompatibleChatAdapter(
+        provider_name="deepseek-dev",
+        base_url="https://api.deepseek.com",
+        api_key="sk-secret1234",
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(500))
+        ),
+    )
+
+    assert isinstance(adapter, ChatProviderAdapter)
+
+
+def test_chat_message_rejects_invalid_role() -> None:
+    with pytest.raises(ValidationError):
+        ChatMessage(role="developer", content="Plan")
+
+
+def test_chat_provider_request_rejects_empty_messages() -> None:
+    with pytest.raises(ValidationError):
+        ChatProviderRequest(model_name="deepseek-chat", messages=[])

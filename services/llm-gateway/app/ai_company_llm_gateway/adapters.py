@@ -1,12 +1,26 @@
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
-from ai_company_llm_gateway.models import ProviderRequest, ProviderResponse, UsageRecord
+from ai_company_llm_gateway.models import (
+    ChatProviderRequest,
+    ChatProviderResponse,
+    ProviderRequest,
+    ProviderResponse,
+    UsageRecord,
+)
 
 
 class ProviderAdapter(Protocol):
     provider_name: str
 
     def complete(self, request: ProviderRequest) -> ProviderResponse:
+        ...
+
+
+@runtime_checkable
+class ChatProviderAdapter(Protocol):
+    provider_name: str
+
+    def complete_chat(self, request: ChatProviderRequest) -> ChatProviderResponse:
         ...
 
 

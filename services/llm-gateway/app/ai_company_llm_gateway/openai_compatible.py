@@ -21,7 +21,18 @@ class OpenAICompatibleChatAdapter:
         self.provider_name = provider_name
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self._owns_client = client is None
         self._client = client or httpx.Client(timeout=timeout_seconds)
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+    def __enter__(self) -> "OpenAICompatibleChatAdapter":
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        self.close()
 
     def complete_chat(self, request: ChatProviderRequest) -> ChatProviderResponse:
         try:

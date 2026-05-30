@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -84,13 +85,13 @@ class MalformedProviderResponseError(ProviderGatewayError):
 
 
 class ChatMessage(BaseModel):
-    role: str
+    role: Literal["system", "user", "assistant", "tool"]
     content: str
 
 
 class ChatProviderRequest(BaseModel):
     model_name: str
-    messages: list[ChatMessage]
+    messages: list[ChatMessage] = Field(min_length=1)
     temperature: float = 0.2
 
 
