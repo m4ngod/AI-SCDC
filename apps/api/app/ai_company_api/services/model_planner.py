@@ -152,6 +152,9 @@ def build_planner_messages(goal: str, project_name: str) -> list[ChatMessage]:
                 "allowed_paths, required_tests, and risk_level. role_required must "
                 f"be one of {role_values}. risk_level must be one of "
                 f"{risk_level_values}. "
+                "acceptance_criteria, allowed_paths, and required_tests must be "
+                "JSON arrays of strings, never a single string. Use repository "
+                "path globs such as README.md or apps/api/** for allowed_paths. "
                 "Do not include Markdown or explanatory text."
             ),
         ),

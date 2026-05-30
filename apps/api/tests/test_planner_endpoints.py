@@ -149,6 +149,50 @@ def test_init_db_adds_planner_run_metadata_columns_to_existing_sqlite_db(tmp_pat
     assert "ix_planner_run_model_route_id" in indexes
 
 
+def test_init_db_adds_task_execution_constraint_columns_to_existing_sqlite_db(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "old-task.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                create table task (
+                    id varchar not null primary key,
+                    project_id varchar not null,
+                    conversation_id varchar,
+                    parent_task_id varchar,
+                    title varchar not null,
+                    description varchar not null,
+                    role_required varchar not null,
+                    status varchar not null,
+                    priority integer not null,
+                    risk_level varchar not null,
+                    acceptance_criteria json not null,
+                    assigned_agent_profile_id varchar,
+                    repo_id varchar,
+                    branch_name varchar,
+                    worktree_ref varchar,
+                    budget_limit integer,
+                    created_at datetime not null,
+                    updated_at datetime not null
+                )
+                """
+            )
+        )
+
+    init_db(engine)
+
+    with engine.connect() as connection:
+        columns = {
+            row["name"]
+            for row in connection.execute(text("PRAGMA table_info(task)")).mappings()
+        }
+
+    assert {"allowed_paths", "required_tests"} <= columns
+
+
 def test_approval_status_rejects_invalid_raw_string() -> None:
     with build_session() as session:
         project = Project(name="Demo Project")
@@ -511,6 +555,8 @@ def test_approve_planner_run_creates_tasks_and_task_events() -> None:
         assert all(task["status"] == "CREATED" for task in tasks)
 
         for task, draft in zip(tasks, planner_run["drafts"], strict=True):
+            assert task["allowed_paths"] == draft["allowed_paths"]
+            assert task["required_tests"] == draft["required_tests"]
             events = client.get(f"/tasks/{task['id']}/events").json()
             assert [event["event_type"] for event in events] == ["task_created"]
             assert events[0]["payload"] == {
@@ -654,6 +700,9 @@ def test_planner_decision_routes_have_stable_openapi_response_schema() -> None:
     decision_schema = schema["components"]["schemas"]["PlannerRunDecisionRead"]
     created_tasks = decision_schema["properties"]["created_tasks"]
     assert created_tasks["items"] == {"$ref": "#/components/schemas/TaskRead"}
+    task_schema = schema["components"]["schemas"]["TaskRead"]
+    assert "allowed_paths" in task_schema["properties"]
+    assert "required_tests" in task_schema["properties"]
 
 
 def test_planner_run_routes_have_stable_openapi_response_schema() -> None:

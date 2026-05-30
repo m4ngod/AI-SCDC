@@ -259,6 +259,56 @@ dd {
   padding: 7px 9px;
 }
 
+.task-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-run-button {
+  min-height: 28px;
+  border: 1px solid #24586a;
+  border-radius: 6px;
+  padding: 0 9px;
+  color: #ffffff;
+  background: #2f6f86;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.task-run-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.task-patch-meta {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-top: 4px;
+}
+
+.task-patch-meta dt {
+  color: #344047;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.task-patch-meta dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.task-run-error {
+  margin: 0;
+  color: #9d2d20;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
 .thread-tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

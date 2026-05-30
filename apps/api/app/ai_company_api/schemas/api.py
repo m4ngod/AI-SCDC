@@ -54,6 +54,24 @@ class UsageType(str, Enum):
     MODEL_TOKENS = "model_tokens"
 
 
+class RepositoryCreate(BaseModel):
+    name: str = Field(min_length=1)
+    local_path: str = Field(min_length=1)
+    default_branch: str = Field(default="main", min_length=1)
+
+
+class RepositoryRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    name: str
+    local_path: str
+    default_branch: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class ProjectCreate(BaseModel):
     name: str
     description: str = ""
@@ -115,6 +133,8 @@ class TaskCreate(BaseModel):
     priority: int = 0
     risk_level: RiskLevel = RiskLevel.MEDIUM
     acceptance_criteria: list[str] = Field(default_factory=list)
+    allowed_paths: list[str] = Field(default_factory=list)
+    required_tests: list[str] = Field(default_factory=list)
     assigned_agent_profile_id: str | None = None
     repo_id: str | None = None
     branch_name: str | None = None
@@ -124,6 +144,10 @@ class TaskCreate(BaseModel):
 
 class TaskUpdate(BaseModel):
     status: TaskStatus
+
+
+class LocalRunCreate(BaseModel):
+    repo_id: str = Field(min_length=1)
 
 
 class TaskRead(BaseModel):
@@ -138,6 +162,8 @@ class TaskRead(BaseModel):
     priority: int
     risk_level: str
     acceptance_criteria: list[str]
+    allowed_paths: list[str]
+    required_tests: list[str]
     assigned_agent_profile_id: str | None
     repo_id: str | None
     branch_name: str | None
@@ -145,6 +171,39 @@ class TaskRead(BaseModel):
     budget_limit: int | None
     created_at: datetime
     updated_at: datetime
+
+
+class LocalTaskRunRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    repo_id: str
+    status: str
+    runner_kind: str
+    base_branch: str
+    base_sha: str | None
+    head_sha: str | None
+    worktree_path: str | None
+    patch_artifact_id: str | None
+    failure_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PatchArtifactRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    local_run_id: str
+    summary: str
+    files_changed: list[str]
+    tests_run: list[str]
+    test_result: str
+    risks: list[str]
+    diff_text: str
+    created_at: datetime
 
 
 class PlannerRunDecisionRead(BaseModel):

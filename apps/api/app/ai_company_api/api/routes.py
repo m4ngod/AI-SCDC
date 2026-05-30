@@ -7,6 +7,8 @@ from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     AgentRole,
     ConversationCreate,
+    LocalRunCreate,
+    LocalTaskRunRead,
     MessageCreate,
     ModelCredentialCreate,
     ModelCredentialRead,
@@ -19,12 +21,21 @@ from ai_company_api.schemas.api import (
     PlannerRunDecisionRead,
     PlannerRunRead,
     PlannerRunReject,
+    PatchArtifactRead,
     ProjectCreate,
+    RepositoryCreate,
+    RepositoryRead,
     ResolvedModelRouteRead,
     TaskCreate,
     TaskUpdate,
     UsageLedgerCreate,
     UsageLedgerRead,
+)
+from ai_company_api.services.local_runner import (
+    get_local_task_run,
+    get_patch_artifact,
+    list_local_task_runs,
+    start_local_task_run,
 )
 from ai_company_api.services.model_settings import (
     create_model_credential,
@@ -43,9 +54,12 @@ from ai_company_api.services.repository import (
     create_message,
     create_planner_run,
     create_project,
+    create_repository,
     create_task,
     get_planner_run_read,
+    get_repository_read,
     get_task,
+    list_repositories,
     list_conversations,
     list_messages,
     list_projects,
@@ -72,6 +86,35 @@ def get_projects(session: SessionDep):
 @router.post("/projects", status_code=status.HTTP_201_CREATED)
 def post_project(data: ProjectCreate, session: SessionDep):
     return create_project(session, data)
+
+
+@router.get(
+    "/projects/{project_id}/repositories",
+    response_model=list[RepositoryRead],
+)
+def get_project_repositories(
+    project_id: str,
+    session: SessionDep,
+) -> list[RepositoryRead]:
+    return list_repositories(session, project_id)
+
+
+@router.post(
+    "/projects/{project_id}/repositories",
+    status_code=status.HTTP_201_CREATED,
+    response_model=RepositoryRead,
+)
+def post_project_repository(
+    project_id: str,
+    data: RepositoryCreate,
+    session: SessionDep,
+) -> RepositoryRead:
+    return create_repository(session, project_id, data)
+
+
+@router.get("/repositories/{repo_id}", response_model=RepositoryRead)
+def get_repository_by_id(repo_id: str, session: SessionDep) -> RepositoryRead:
+    return get_repository_read(session, repo_id)
 
 
 @router.get("/projects/{project_id}/conversations")
@@ -271,6 +314,46 @@ def post_project_task(project_id: str, data: TaskCreate, session: SessionDep):
 @router.get("/tasks/{task_id}")
 def get_task_by_id(task_id: str, session: SessionDep):
     return get_task(session, task_id)
+
+
+@router.post(
+    "/tasks/{task_id}/local-runs",
+    status_code=status.HTTP_201_CREATED,
+    response_model=LocalTaskRunRead,
+)
+def post_task_local_run(
+    task_id: str,
+    data: LocalRunCreate,
+    session: SessionDep,
+) -> LocalTaskRunRead:
+    return start_local_task_run(session, task_id, data)
+
+
+@router.get(
+    "/tasks/{task_id}/local-runs",
+    response_model=list[LocalTaskRunRead],
+)
+def get_task_local_runs(
+    task_id: str,
+    session: SessionDep,
+) -> list[LocalTaskRunRead]:
+    return list_local_task_runs(session, task_id)
+
+
+@router.get("/local-runs/{local_run_id}", response_model=LocalTaskRunRead)
+def get_local_run_by_id(
+    local_run_id: str,
+    session: SessionDep,
+) -> LocalTaskRunRead:
+    return get_local_task_run(session, local_run_id)
+
+
+@router.get("/patch-artifacts/{patch_artifact_id}", response_model=PatchArtifactRead)
+def get_patch_artifact_by_id(
+    patch_artifact_id: str,
+    session: SessionDep,
+) -> PatchArtifactRead:
+    return get_patch_artifact(session, patch_artifact_id)
 
 
 @router.patch("/tasks/{task_id}")

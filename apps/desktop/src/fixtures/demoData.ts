@@ -7,7 +7,16 @@ export const demoTasks: TaskCard[] = [
     status: "PATCH_READY",
     role_required: "frontend",
     assigned_agent: "Frontend Engineer",
-    updated_at: "2026-05-29T00:00:00Z"
+    updated_at: "2026-05-29T00:00:00Z",
+    patch_artifact: {
+      id: "patch_demo",
+      task_id: "task_board_ui",
+      local_run_id: "local_run_demo",
+      summary: "Prepared local runner patch.",
+      files_changed: ["apps/desktop/src/components/TaskBoard.tsx"],
+      tests_run: ["pnpm --filter @ai-scdc/desktop test"],
+      test_result: "not_run"
+    }
   },
   {
     id: "task_state_machine",

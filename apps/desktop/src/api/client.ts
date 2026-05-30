@@ -7,6 +7,44 @@ export type TaskCard = {
   role_required: string;
   assigned_agent: string;
   updated_at: string;
+  repo_id?: string | null;
+  branch_name?: string | null;
+  worktree_ref?: string | null;
+  patch_artifact?: PatchArtifactCard;
+};
+
+export type RepositoryCard = {
+  id: string;
+  name: string;
+  local_path: string;
+  default_branch: string;
+  status: string;
+};
+
+export type LocalTaskRunCard = {
+  id: string;
+  task_id: string;
+  repo_id: string;
+  status: string;
+  base_branch: string;
+  worktree_path?: string | null;
+  patch_artifact_id?: string | null;
+  failure_reason?: string | null;
+};
+
+export type PatchArtifactCard = {
+  id: string;
+  task_id: string;
+  local_run_id: string;
+  summary: string;
+  files_changed: string[];
+  tests_run: string[];
+  test_result: string;
+};
+
+export type LocalRunResult = {
+  local_run: LocalTaskRunCard;
+  patch_artifact?: PatchArtifactCard;
 };
 
 export type PlannerTaskDraftCard = {
@@ -45,6 +83,7 @@ export type ConsoleApiClient = {
   createPlannerRun: (goal: string) => Promise<PlannerRunDraft>;
   approvePlannerRun: (plannerRunId: string) => Promise<PlannerRunDecision>;
   rejectPlannerRun: (plannerRunId: string, reason?: string) => Promise<PlannerRunDecision>;
+  startLocalRun: (taskId: string) => Promise<LocalRunResult>;
 };
 
 type ApiProject = {
@@ -58,6 +97,17 @@ type ApiTask = {
   role_required: string;
   created_at?: string;
   updated_at?: string;
+  repo_id?: string | null;
+  branch_name?: string | null;
+  worktree_ref?: string | null;
+};
+
+type ApiRepository = RepositoryCard;
+
+type ApiLocalTaskRun = LocalTaskRunCard;
+
+type ApiPatchArtifact = PatchArtifactCard & {
+  diff_text: string;
 };
 
 type ApiPlannerRunDecision = {
@@ -158,6 +208,29 @@ export const fakeApiClient: ConsoleApiClient = {
       status: "REJECTED",
       created_tasks: []
     };
+  },
+  async startLocalRun(taskId: string) {
+    return {
+      local_run: {
+        id: "local_run_demo",
+        task_id: taskId,
+        repo_id: "repo_demo",
+        status: "patch_ready",
+        base_branch: "main",
+        worktree_path: ".worktrees/task_demo",
+        patch_artifact_id: "patch_demo",
+        failure_reason: null
+      },
+      patch_artifact: {
+        id: "patch_demo",
+        task_id: taskId,
+        local_run_id: "local_run_demo",
+        summary: "Prepared local runner patch.",
+        files_changed: ["README.md"],
+        tests_run: [],
+        test_result: "not_run"
+      }
+    };
   }
 };
 
@@ -219,7 +292,7 @@ function agentNameForRole(role: string) {
 }
 
 function mapTaskCard(task: ApiTask): TaskCard {
-  return {
+  const card: TaskCard = {
     id: task.id,
     title: task.title,
     status: task.status,
@@ -227,6 +300,16 @@ function mapTaskCard(task: ApiTask): TaskCard {
     assigned_agent: agentNameForRole(task.role_required),
     updated_at: task.updated_at ?? task.created_at ?? ""
   };
+  if (task.repo_id !== undefined) {
+    card.repo_id = task.repo_id;
+  }
+  if (task.branch_name !== undefined) {
+    card.branch_name = task.branch_name;
+  }
+  if (task.worktree_ref !== undefined) {
+    card.worktree_ref = task.worktree_ref;
+  }
+  return card;
 }
 
 function mapPlannerRunDecision(decision: ApiPlannerRunDecision): PlannerRunDecision {
@@ -329,6 +412,41 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         `POST /planner-runs/${plannerRunId}/reject`
       );
       return mapPlannerRunDecision(decision);
+    },
+    async startLocalRun(taskId: string) {
+      const projectId = await getProjectId();
+      const repositoriesResponse = await fetch(
+        apiUrl(options.baseUrl, `/projects/${projectId}/repositories`)
+      );
+      const repositories = await readJsonResponse<ApiRepository[]>(
+        repositoriesResponse,
+        `GET /projects/${projectId}/repositories`
+      );
+      const repository = repositories.find((item) => item.status === "active") ?? repositories[0];
+      if (!repository) {
+        throw new Error("No repository registered for project");
+      }
+
+      const runResponse = await fetch(apiUrl(options.baseUrl, `/tasks/${taskId}/local-runs`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo_id: repository.id })
+      });
+      const localRun = await readJsonResponse<ApiLocalTaskRun>(
+        runResponse,
+        `POST /tasks/${taskId}/local-runs`
+      );
+      let patchArtifact: PatchArtifactCard | undefined;
+      if (localRun.patch_artifact_id) {
+        const artifactResponse = await fetch(
+          apiUrl(options.baseUrl, `/patch-artifacts/${localRun.patch_artifact_id}`)
+        );
+        patchArtifact = await readJsonResponse<ApiPatchArtifact>(
+          artifactResponse,
+          `GET /patch-artifacts/${localRun.patch_artifact_id}`
+        );
+      }
+      return { local_run: localRun, patch_artifact: patchArtifact };
     }
   };
 }

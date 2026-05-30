@@ -63,6 +63,12 @@ The existing approval boundary remains intact: model output creates planner draf
 
 Phase 3 keeps the gateway in-process, does not add desktop model settings UI, does not use production KMS, and does not calculate real model pricing.
 
+## Phase 4 Boundary
+
+Phase 4 adds the Local Runner vertical slice. A developer can register an existing local git repository, run an approved task in a git worktree under `.worktrees`, capture a reviewable diff artifact, and move the task to `PATCH_READY`.
+
+The review boundary remains intact: Phase 4 does not auto-commit, push, merge, create PRs, or run reviewer/debugger loops. It is a local execution and patch-review foundation for later automation. Patches are constrained by task `allowed_paths`, and approved planner drafts now preserve `allowed_paths` and `required_tests` on created tasks.
+
 ## Roadmap
 
 Completed:
@@ -71,10 +77,10 @@ Completed:
 2. Phase 1 planner approval loop with fake planner drafts, human approval or rejection, task creation, and audit trail events.
 3. Backend-first model router and BYOK foundation with provider metadata, write-only credential records, role-based route resolution, fake fallback routes, and append-only usage logging.
 4. Real model-backed planner vertical slice that uses route resolution to create TaskSpec drafts for human approval, logs token usage, and falls back to fake drafts on provider failures.
+5. Local Runner vertical slice with repository registration, git worktree execution, patch artifact capture, task events, and desktop run controls.
 
 Future:
 
-1. Local Runner that reads repositories, creates worktrees, generates diffs, and lets users review patches.
-2. Automated tests, reviewer loop, and debug loop.
-3. Cloud sandbox workers, GitHub/GitLab integration, artifacts, and PR creation.
-4. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.
+1. Automated tests, reviewer loop, and debug loop.
+2. Cloud sandbox workers, GitHub/GitLab integration, artifacts, and PR creation.
+3. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.

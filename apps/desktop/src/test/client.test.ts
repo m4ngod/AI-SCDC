@@ -310,4 +310,72 @@ describe("desktop API clients", () => {
       created_tasks: []
     });
   });
+
+  it("HTTP client starts a local run with the first active repository", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "repo_api",
+            name: "API Repo",
+            local_path: "T:/repo",
+            default_branch: "main",
+            status: "active"
+          }
+        ])
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            id: "local_run_api",
+            task_id: "task_api",
+            repo_id: "repo_api",
+            status: "patch_ready",
+            base_branch: "main",
+            worktree_path: "T:/repo/.worktrees/task_api-local_run_api",
+            patch_artifact_id: "patch_api",
+            failure_reason: null
+          },
+          { status: 201 }
+        )
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: "patch_api",
+          task_id: "task_api",
+          local_run_id: "local_run_api",
+          summary: "Prepared local runner patch.",
+          files_changed: ["README.md"],
+          tests_run: ["pytest apps/worker/tests/test_local_runner.py -v"],
+          test_result: "not_run",
+          diff_text: "diff --git a/README.md b/README.md"
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+    const result = await client.startLocalRun("task_api");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:8000/projects/project_demo/repositories"
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:8000/tasks/task_api/local-runs",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ repo_id: "repo_api" })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "http://127.0.0.1:8000/patch-artifacts/patch_api"
+    );
+    expect(result.patch_artifact?.files_changed).toEqual(["README.md"]);
+  });
 });

@@ -68,6 +68,27 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
       status: "REJECTED",
       created_tasks: []
     }),
+    startLocalRun: vi.fn().mockResolvedValue({
+      local_run: {
+        id: "local_run_test",
+        task_id: "task_created_from_planner",
+        repo_id: "repo_test",
+        status: "patch_ready",
+        base_branch: "main",
+        worktree_path: ".worktrees/task_created_from_planner",
+        patch_artifact_id: "patch_test",
+        failure_reason: null
+      },
+      patch_artifact: {
+        id: "patch_test",
+        task_id: "task_created_from_planner",
+        local_run_id: "local_run_test",
+        summary: "Prepared local runner patch.",
+        files_changed: ["README.md"],
+        tests_run: [],
+        test_result: "not_run"
+      }
+    }),
     ...overrides
   };
 }
@@ -310,5 +331,66 @@ describe("App", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(await screen.findAllByText("Planner draft")).not.toHaveLength(0);
     expect(screen.getByText("Design desktop flow")).toBeInTheDocument();
+  });
+
+  it("starts a local run from the task board and renders patch metadata", async () => {
+    const user = userEvent.setup();
+    const startLocalRun = vi.fn<ConsoleApiClient["startLocalRun"]>().mockResolvedValue({
+      local_run: {
+        id: "local_run_test",
+        task_id: "task_created_from_planner",
+        repo_id: "repo_test",
+        status: "patch_ready",
+        base_branch: "main",
+        worktree_path: ".worktrees/task_created_from_planner",
+        patch_artifact_id: "patch_test",
+        failure_reason: null
+      },
+      patch_artifact: {
+        id: "patch_test",
+        task_id: "task_created_from_planner",
+        local_run_id: "local_run_test",
+        summary: "Prepared local runner patch.",
+        files_changed: ["README.md"],
+        tests_run: ["pytest apps/worker/tests/test_local_runner.py -v"],
+        test_result: "not_run"
+      }
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([taskCardFixture("Design desktop flow")]),
+      startLocalRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run local" }));
+
+    expect(startLocalRun).toHaveBeenCalledWith("task_created_from_planner");
+    expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
+    expect(within(board).getByText("README.md")).toBeInTheDocument();
+    expect(within(board).getByText("not_run")).toBeInTheDocument();
+  });
+
+  it("shows local run errors inline on the task card", async () => {
+    const user = userEvent.setup();
+    const startLocalRun = vi
+      .fn<ConsoleApiClient["startLocalRun"]>()
+      .mockRejectedValue(new Error("No repository registered for project"));
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([taskCardFixture("Design desktop flow")]),
+      startLocalRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run local" }));
+
+    expect(await within(board).findByRole("alert")).toHaveTextContent(
+      "No repository registered for project"
+    );
   });
 });

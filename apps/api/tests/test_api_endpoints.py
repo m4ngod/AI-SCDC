@@ -96,6 +96,8 @@ def test_project_conversation_message_task_flow_records_created_event() -> None:
                 "priority": 7,
                 "risk_level": "high",
                 "acceptance_criteria": ["Endpoint flow works"],
+                "allowed_paths": ["apps/api/**"],
+                "required_tests": ["pytest apps/api/tests/test_api_endpoints.py -v"],
                 "assigned_agent_profile_id": "agent_profile_backend",
                 "repo_id": "repo_api",
                 "branch_name": "codex/task-4",
@@ -112,6 +114,8 @@ def test_project_conversation_message_task_flow_records_created_event() -> None:
         assert task["priority"] == 7
         assert task["risk_level"] == "high"
         assert task["acceptance_criteria"] == ["Endpoint flow works"]
+        assert task["allowed_paths"] == ["apps/api/**"]
+        assert task["required_tests"] == ["pytest apps/api/tests/test_api_endpoints.py -v"]
         assert task["assigned_agent_profile_id"] == "agent_profile_backend"
         assert task["repo_id"] == "repo_api"
         assert task["branch_name"] == "codex/task-4"

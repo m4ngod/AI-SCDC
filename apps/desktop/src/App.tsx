@@ -24,6 +24,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const [plannerDecisionStatus, setPlannerDecisionStatus] = useState<string | null>(null);
   const [plannerDecisionError, setPlannerDecisionError] = useState<string | null>(null);
   const [isDecidingPlannerRun, setIsDecidingPlannerRun] = useState(false);
+  const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
+  const [localRunErrors, setLocalRunErrors] = useState<Record<string, string>>({});
   const plannerRunRef = useRef<PlannerRunDraft | null>(null);
 
   useEffect(() => {
@@ -108,6 +110,44 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     }
   }
 
+  async function handleStartLocalRun(taskId: string) {
+    if (runningTaskId) {
+      return;
+    }
+
+    setRunningTaskId(taskId);
+    setLocalRunErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[taskId];
+      return nextErrors;
+    });
+    try {
+      const result = await apiClient.startLocalRun(taskId);
+      setTasks((currentTasks) =>
+        currentTasks.map((task) =>
+          task.id === taskId
+            ? {
+                ...task,
+                status:
+                  result.local_run.status === "patch_ready" ? "PATCH_READY" : task.status,
+                repo_id: result.local_run.repo_id,
+                branch_name: result.local_run.base_branch,
+                worktree_ref: result.local_run.worktree_path,
+                patch_artifact: result.patch_artifact
+              }
+            : task
+        )
+      );
+    } catch (error) {
+      setLocalRunErrors((currentErrors) => ({
+        ...currentErrors,
+        [taskId]: errorMessage(error, "Failed to start local run")
+      }));
+    } finally {
+      setRunningTaskId(null);
+    }
+  }
+
   const contextPanel = (
     <>
       <section className="context-section">
@@ -123,7 +163,12 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
           </div>
         </dl>
       </section>
-      <TaskBoard tasks={tasks} />
+      <TaskBoard
+        tasks={tasks}
+        runningTaskId={runningTaskId}
+        localRunErrors={localRunErrors}
+        onStartLocalRun={handleStartLocalRun}
+      />
       {taskLoadError ? (
         <section className="context-section context-error" role="alert">
           <h2>Task loading</h2>

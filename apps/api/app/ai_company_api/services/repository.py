@@ -1,3 +1,5 @@
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -13,6 +15,7 @@ from ai_company_api.models.entities import (
     PlannerRunStatus,
     PlannerTaskDraft,
     Project,
+    Repository as ProjectRepository,
     Task,
     TaskEvent,
     utc_now,
@@ -25,6 +28,8 @@ from ai_company_api.schemas.api import (
     PlannerRunRead,
     PlannerTaskDraftRead,
     ProjectCreate,
+    RepositoryCreate,
+    RepositoryRead,
     TaskCreate,
     TaskRead,
 )
@@ -62,6 +67,89 @@ def get_project(session: Session, project_id: str) -> Project:
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
+
+
+def _repository_read(repository: ProjectRepository) -> RepositoryRead:
+    return RepositoryRead(
+        id=repository.id,
+        workspace_id=repository.workspace_id,
+        project_id=repository.project_id,
+        name=repository.name,
+        local_path=repository.local_path,
+        default_branch=repository.default_branch,
+        status=repository.status,
+        created_at=repository.created_at,
+        updated_at=repository.updated_at,
+    )
+
+
+def _validate_local_git_repository(local_path: str) -> Path:
+    repo_path = Path(local_path).resolve()
+    if not repo_path.exists():
+        raise HTTPException(status_code=400, detail="Local path is not a git repository")
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "--show-toplevel"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Local path is not a git repository",
+        ) from exc
+
+    if result.returncode != 0:
+        raise HTTPException(status_code=400, detail="Local path is not a git repository")
+
+    git_root = Path(result.stdout.strip()).resolve()
+    if git_root != repo_path:
+        raise HTTPException(status_code=400, detail="Local path is not a git repository")
+
+    return repo_path
+
+
+def create_repository(
+    session: Session,
+    project_id: str,
+    data: RepositoryCreate,
+) -> RepositoryRead:
+    get_project(session, project_id)
+    repo_path = _validate_local_git_repository(data.local_path)
+    repository = ProjectRepository(
+        project_id=project_id,
+        name=data.name,
+        local_path=str(repo_path),
+        default_branch=data.default_branch,
+    )
+    session.add(repository)
+    session.commit()
+    session.refresh(repository)
+    return _repository_read(repository)
+
+
+def list_repositories(session: Session, project_id: str) -> list[RepositoryRead]:
+    get_project(session, project_id)
+    statement = (
+        select(ProjectRepository)
+        .where(ProjectRepository.project_id == project_id)
+        .order_by(ProjectRepository.created_at, ProjectRepository.id)
+    )
+    return [_repository_read(repository) for repository in session.exec(statement).all()]
+
+
+def get_repository(session: Session, repo_id: str) -> ProjectRepository:
+    repository = session.get(ProjectRepository, repo_id)
+    if repository is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    return repository
+
+
+def get_repository_read(session: Session, repo_id: str) -> RepositoryRead:
+    return _repository_read(get_repository(session, repo_id))
 
 
 def create_conversation(
@@ -330,6 +418,8 @@ def _task_read(task: Task) -> TaskRead:
         priority=task.priority,
         risk_level=task.risk_level,
         acceptance_criteria=task.acceptance_criteria,
+        allowed_paths=task.allowed_paths,
+        required_tests=task.required_tests,
         assigned_agent_profile_id=task.assigned_agent_profile_id,
         repo_id=task.repo_id,
         branch_name=task.branch_name,
@@ -370,6 +460,8 @@ def approve_planner_run(
                 role_required=draft.role_required,
                 risk_level=draft.risk_level,
                 acceptance_criteria=draft.acceptance_criteria,
+                allowed_paths=draft.allowed_paths,
+                required_tests=draft.required_tests,
             )
             session.add(task)
             session.flush()
@@ -483,6 +575,8 @@ def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
         priority=data.priority,
         risk_level=data.risk_level.value,
         acceptance_criteria=data.acceptance_criteria,
+        allowed_paths=data.allowed_paths,
+        required_tests=data.required_tests,
         assigned_agent_profile_id=data.assigned_agent_profile_id,
         repo_id=data.repo_id,
         branch_name=data.branch_name,

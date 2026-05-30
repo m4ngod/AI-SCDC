@@ -87,6 +87,20 @@ class UsageType(str, Enum):
     MODEL_TOKENS = "model_tokens"
 
 
+class Repository(SQLModel, table=True):
+    __tablename__ = "repository"
+
+    id: str = Field(default_factory=lambda: prefixed_id("repo"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    name: str
+    local_path: str
+    default_branch: str = "main"
+    status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class PlannerRun(SQLModel, table=True):
     __tablename__ = "planner_run"
 
@@ -352,6 +366,8 @@ class Task(SQLModel, table=True):
         default_factory=list,
         sa_column=Column(JSON),
     )
+    allowed_paths: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    required_tests: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     assigned_agent_profile_id: str | None = None
     repo_id: str | None = None
     branch_name: str | None = None
@@ -359,6 +375,43 @@ class Task(SQLModel, table=True):
     budget_limit: int | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class LocalTaskRun(SQLModel, table=True):
+    __tablename__ = "local_task_run"
+
+    id: str = Field(default_factory=lambda: prefixed_id("local_run"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    task_id: str = Field(index=True, foreign_key="task.id")
+    repo_id: str = Field(index=True, foreign_key="repository.id")
+    status: str = Field(default="queued", index=True)
+    runner_kind: str = "local_worktree"
+    base_branch: str = ""
+    base_sha: str | None = None
+    head_sha: str | None = None
+    worktree_path: str | None = None
+    patch_artifact_id: str | None = Field(default=None, index=True)
+    failure_reason: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class PatchArtifact(SQLModel, table=True):
+    __tablename__ = "patch_artifact"
+
+    id: str = Field(default_factory=lambda: prefixed_id("patch"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    task_id: str = Field(index=True, foreign_key="task.id")
+    local_run_id: str = Field(index=True, foreign_key="local_task_run.id")
+    summary: str
+    files_changed: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    tests_run: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    test_result: str = "not_run"
+    risks: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    diff_text: str
+    created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
 class TaskEvent(SQLModel, table=True):

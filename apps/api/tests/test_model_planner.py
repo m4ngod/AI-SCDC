@@ -521,6 +521,8 @@ def test_build_planner_messages_instructs_json_only() -> None:
     assert [message.role for message in messages] == ["system", "user"]
     assert "JSON" in messages[0].content
     assert "role_required" in messages[0].content
+    assert "JSON arrays of strings" in messages[0].content
+    assert "never a single string" in messages[0].content
     assert "frontend" in messages[0].content
     assert "Build real planner" in messages[1].content
     assert "Demo Project" in messages[1].content

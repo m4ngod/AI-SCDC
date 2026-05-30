@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, and Phase 3 real planner vertical slice for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, and Phase 4 local runner vertical slice for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -24,7 +24,7 @@ Phase 2 was backend-only. It added model providers, write-only BYOK credential m
 
 Phase 3 can call an OpenAI-compatible provider for planner drafts when the API has a configured planner route. DeepSeek can be configured as an OpenAI-compatible provider through the existing backend API. Do not paste API keys into chat, docs, or commits.
 
-These Bash/curl examples are local smoke-test convenience commands. Local shell history may retain commands, so avoid shared shells and clear history if needed.
+These Bash/curl and PowerShell examples are local smoke-test convenience commands. Local shell history may retain commands, so avoid shared shells and clear history if needed.
 
 Example local setup:
 
@@ -50,6 +50,122 @@ curl -X POST http://127.0.0.1:8000/model-routes \
   -d '{"agent_role":"planner","provider_id":"<PROVIDER_ID>","credential_id":"<CREDENTIAL_ID>","model_name":"deepseek-chat"}'
 ```
 
+PowerShell equivalent:
+
+```powershell
+$base = "http://127.0.0.1:8000"
+$secureKey = Read-Host "DeepSeek API key" -AsSecureString
+$deepseekApiKey = [System.Net.NetworkCredential]::new("", $secureKey).Password
+$oldRoute = $null
+$route = $null
+$credential = $null
+
+function JsonBody($value) {
+  $value | ConvertTo-Json -Depth 8 -Compress
+}
+
+try {
+  $routes = @(Invoke-RestMethod -Uri "$base/model-routes" -Method Get)
+  $oldRoute = $routes |
+    Where-Object { $_.agent_role -eq "planner" -and $_.status -eq "active" } |
+    Select-Object -First 1
+
+  if ($oldRoute) {
+    Invoke-RestMethod `
+      -Uri "$base/model-routes/$($oldRoute.id)" `
+      -Method Patch `
+      -ContentType "application/json" `
+      -Body (JsonBody @{ status = "disabled" }) | Out-Null
+  }
+
+  $provider = Invoke-RestMethod `
+    -Uri "$base/model-providers" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      name = "Local DeepSeek"
+      provider_type = "deepseek"
+      base_url = "https://api.deepseek.com"
+    })
+
+  $credential = Invoke-RestMethod `
+    -Uri "$base/model-credentials" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      provider_id = $provider.id
+      display_name = "Local key"
+      secret_value = $deepseekApiKey
+    })
+
+  $route = Invoke-RestMethod `
+    -Uri "$base/model-routes" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      agent_role = "planner"
+      provider_id = $provider.id
+      credential_id = $credential.id
+      model_name = "deepseek-chat"
+      fallback_models = @()
+    })
+
+  $project = Invoke-RestMethod `
+    -Uri "$base/projects" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      name = "Phase 3 smoke"
+      description = "Local real planner smoke test"
+    })
+
+  $plannerRun = Invoke-RestMethod `
+    -Uri "$base/projects/$($project.id)/planner-runs" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      goal = "Draft a small implementation plan for a README-only change."
+    })
+
+  $usage = @(Invoke-RestMethod `
+    -Uri "$base/usage-ledger?planner_run_id=$($plannerRun.id)" `
+    -Method Get)
+  $modelUsage = @($usage | Where-Object { $_.usage_type -eq "model_tokens" })
+  $totalTokens = ($modelUsage | ForEach-Object { $_.total_tokens } | Measure-Object -Sum).Sum
+
+  [ordered]@{
+    planner_run_id = $plannerRun.id
+    planner_kind = $plannerRun.planner_kind
+    fallback_reason = $plannerRun.fallback_reason
+    draft_count = $plannerRun.draft_count
+    usage_entries = $modelUsage.Count
+    total_tokens = $totalTokens
+  }
+}
+finally {
+  if ($route) {
+    Invoke-RestMethod `
+      -Uri "$base/model-routes/$($route.id)" `
+      -Method Patch `
+      -ContentType "application/json" `
+      -Body (JsonBody @{ status = "disabled" }) | Out-Null
+  }
+  if ($credential) {
+    Invoke-RestMethod `
+      -Uri "$base/model-credentials/$($credential.id)" `
+      -Method Delete | Out-Null
+  }
+  if ($oldRoute) {
+    Invoke-RestMethod `
+      -Uri "$base/model-routes/$($oldRoute.id)" `
+      -Method Patch `
+      -ContentType "application/json" `
+      -Body (JsonBody @{ status = "active" }) | Out-Null
+  }
+  Remove-Variable deepseekApiKey, secureKey -ErrorAction SilentlyContinue
+}
+```
+
 `<PROVIDER_ID>` and `<CREDENTIAL_ID>` come from the JSON responses of the previous requests. You can run the normal desktop planner flow with `VITE_API_BASE_URL=http://127.0.0.1:8000`, or perform the smoke test directly through the API:
 
 ```bash
@@ -69,5 +185,78 @@ curl "http://127.0.0.1:8000/usage-ledger?planner_run_id=<PLANNER_RUN_ID>"
 `<PROJECT_ID>` comes from the project response, and `<PLANNER_RUN_ID>` comes from the planner run response. Verify the created planner run used the real model path, because fallback also creates drafts: the planner run JSON must have `planner_kind == "model"` and `fallback_reason == null`, and the usage ledger response must contain a `usage_type == "model_tokens"` entry for `<PLANNER_RUN_ID>`.
 
 Do not commit or share the `DEEPSEEK_API_KEY` value (`<YOUR_LOCAL_API_KEY>` in the example). Credential responses remain metadata-only; the API does not return raw or encrypted secrets.
+
+## Phase 4 Local Runner Smoke Test
+
+Phase 4 can run an approved task against a local git repository by creating a worktree under `.worktrees`, applying a bounded local patch, and storing a patch artifact for review. It does not commit, push, merge, or open a PR.
+
+Start the API:
+
+```powershell
+pnpm dev:api
+```
+
+In another PowerShell session, create a temporary git repository, register it, create a task, and start a local run:
+
+```powershell
+$base = "http://127.0.0.1:8000"
+$smokeRoot = Join-Path $env:TEMP ("ai-scdc-local-runner-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $smokeRoot | Out-Null
+git -C $smokeRoot init | Out-Null
+git -C $smokeRoot branch -M main | Out-Null
+Set-Content -Path (Join-Path $smokeRoot "README.md") -Value "# Local Runner Smoke"
+git -C $smokeRoot add README.md | Out-Null
+git -C $smokeRoot -c user.email=dev@example.com -c user.name="Dev User" commit -m "initial commit" | Out-Null
+
+function JsonBody($value) {
+  $value | ConvertTo-Json -Depth 8 -Compress
+}
+
+$project = Invoke-RestMethod `
+  -Uri "$base/projects" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (JsonBody @{ name = "Phase 4 smoke"; description = "Local runner smoke test" })
+
+$repository = Invoke-RestMethod `
+  -Uri "$base/projects/$($project.id)/repositories" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (JsonBody @{
+    name = "Smoke repo"
+    local_path = $smokeRoot
+    default_branch = "main"
+  })
+
+$task = Invoke-RestMethod `
+  -Uri "$base/projects/$($project.id)/tasks" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (JsonBody @{
+    title = "Update README"
+    role_required = "documentation"
+    allowed_paths = @("README.md")
+    required_tests = @("Manual patch artifact review")
+  })
+
+$run = Invoke-RestMethod `
+  -Uri "$base/tasks/$($task.id)/local-runs" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (JsonBody @{ repo_id = $repository.id })
+
+$artifact = Invoke-RestMethod -Uri "$base/patch-artifacts/$($run.patch_artifact_id)" -Method Get
+
+[ordered]@{
+  task_id = $task.id
+  local_run_status = $run.status
+  worktree_path = $run.worktree_path
+  files_changed = $artifact.files_changed -join ", "
+  test_result = $artifact.test_result
+  source_checkout_tracked_status = git -C $smokeRoot status --porcelain --untracked-files=no
+}
+```
+
+The smoke output should show `local_run_status` as `patch_ready`, `files_changed` as `README.md`, and an empty `source_checkout_tracked_status`. Review the generated worktree path before deleting the temporary smoke repository.
 
 See `docs/architecture.md` for architecture and phase boundaries.

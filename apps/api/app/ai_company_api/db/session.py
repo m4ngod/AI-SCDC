@@ -21,6 +21,7 @@ def build_engine(database_url: str):
 def init_db(engine) -> None:
     SQLModel.metadata.create_all(engine)
     _upgrade_sqlite_planner_run_metadata(engine)
+    _upgrade_sqlite_task_execution_constraints(engine)
 
 
 def _upgrade_sqlite_planner_run_metadata(engine) -> None:
@@ -51,6 +52,36 @@ def _upgrade_sqlite_planner_run_metadata(engine) -> None:
                 "ON planner_run (model_route_id)"
             )
         )
+
+
+def _upgrade_sqlite_task_execution_constraints(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    constraint_columns = {
+        "allowed_paths": "JSON",
+        "required_tests": "JSON",
+    }
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "task" not in existing_tables:
+            return
+
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(text("PRAGMA table_info(task)")).mappings()
+        }
+        for column_name, column_type in constraint_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    text(f"ALTER TABLE task ADD COLUMN {column_name} {column_type}")
+                )
 
 
 def session_generator(engine) -> Generator[Session, None, None]:
