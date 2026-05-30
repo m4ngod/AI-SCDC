@@ -414,6 +414,72 @@ class PatchArtifact(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class LocalTestRun(SQLModel, table=True):
+    __tablename__ = "local_test_run"
+
+    id: str = Field(default_factory=lambda: prefixed_id("test_run"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    task_id: str = Field(index=True, foreign_key="task.id")
+    local_run_id: str = Field(index=True, foreign_key="local_task_run.id")
+    patch_artifact_id: str = Field(index=True, foreign_key="patch_artifact.id")
+    status: str = Field(default="running", index=True)
+    commands: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    command_results: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
+    failure_reason: str | None = None
+    started_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class PatchReview(SQLModel, table=True):
+    __tablename__ = "patch_review"
+
+    id: str = Field(default_factory=lambda: prefixed_id("review"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    task_id: str = Field(index=True, foreign_key="task.id")
+    local_run_id: str = Field(index=True, foreign_key="local_task_run.id")
+    patch_artifact_id: str = Field(index=True, foreign_key="patch_artifact.id")
+    test_run_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="local_test_run.id",
+    )
+    reviewer_kind: str = "deterministic"
+    verdict: str = Field(index=True)
+    issues: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    required_changes: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class DebugAttempt(SQLModel, table=True):
+    __tablename__ = "debug_attempt"
+
+    id: str = Field(default_factory=lambda: prefixed_id("debug"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    task_id: str = Field(index=True, foreign_key="task.id")
+    patch_artifact_id: str = Field(index=True, foreign_key="patch_artifact.id")
+    review_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="patch_review.id",
+    )
+    test_run_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="local_test_run.id",
+    )
+    status: str = Field(default="requested", index=True)
+    root_cause: str
+    fix_summary: str
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class TaskEvent(SQLModel, table=True):
     id: str = Field(default_factory=lambda: prefixed_id("event"), primary_key=True)
     task_id: str = Field(index=True, foreign_key="task.id")

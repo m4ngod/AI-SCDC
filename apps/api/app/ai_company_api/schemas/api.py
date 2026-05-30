@@ -206,6 +206,73 @@ class PatchArtifactRead(BaseModel):
     created_at: datetime
 
 
+class CommandResultRead(BaseModel):
+    command: str
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    duration_ms: int
+
+
+class LocalTestRunRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    local_run_id: str
+    patch_artifact_id: str
+    status: str
+    commands: list[str]
+    command_results: list[CommandResultRead]
+    failure_reason: str | None
+    started_at: datetime
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class PatchReviewRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    local_run_id: str
+    patch_artifact_id: str
+    test_run_id: str | None
+    reviewer_kind: str
+    verdict: str
+    issues: list[dict[str, Any]]
+    required_changes: list[str]
+    created_at: datetime
+
+
+class DebugAttemptRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    patch_artifact_id: str
+    review_id: str | None
+    test_run_id: str | None
+    status: str
+    root_cause: str
+    fix_summary: str
+    created_at: datetime
+
+
+class PatchTestRunResultRead(BaseModel):
+    task: TaskRead
+    patch_artifact: PatchArtifactRead
+    test_run: LocalTestRunRead
+    debug_attempt: DebugAttemptRead | None = None
+
+
+class PatchReviewResultRead(BaseModel):
+    task: TaskRead
+    patch_artifact: PatchArtifactRead
+    review: PatchReviewRead
+    debug_attempt: DebugAttemptRead | None = None
+
+
 class PlannerRunDecisionRead(BaseModel):
     planner_run_id: str
     approval_id: str
