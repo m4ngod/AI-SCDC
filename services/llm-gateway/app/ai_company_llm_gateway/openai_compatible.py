@@ -37,8 +37,8 @@ class OpenAICompatibleChatAdapter:
                     "temperature": request.temperature,
                 },
             )
-        except httpx.HTTPError as exc:
-            raise ProviderRequestError("Provider request failed") from exc
+        except httpx.HTTPError:
+            raise ProviderRequestError("Provider request failed") from None
 
         if not 200 <= response.status_code < 300:
             raise ProviderRequestError(

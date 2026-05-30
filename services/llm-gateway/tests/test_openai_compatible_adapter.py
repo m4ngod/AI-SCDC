@@ -161,3 +161,27 @@ def test_openai_compatible_adapter_maps_transport_errors() -> None:
         )
 
     assert "sk-secret1234" not in str(exc_info.value)
+
+
+def test_openai_compatible_adapter_suppresses_secret_bearing_transport_cause() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("failed for sk-secret1234")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = OpenAICompatibleChatAdapter(
+        provider_name="deepseek-dev",
+        base_url="https://api.deepseek.com",
+        api_key="sk-secret1234",
+        client=client,
+    )
+
+    with pytest.raises(ProviderRequestError) as exc_info:
+        adapter.complete_chat(
+            ChatProviderRequest(
+                model_name="deepseek-chat",
+                messages=[ChatMessage(role="user", content="Plan")],
+            )
+        )
+
+    assert "sk-secret1234" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
