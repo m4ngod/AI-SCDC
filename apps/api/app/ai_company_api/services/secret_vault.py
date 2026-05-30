@@ -32,6 +32,8 @@ class DevSecretVault:
         if not encrypted_secret.startswith(self._prefix):
             raise ValueError("Unsupported dev vault payload")
         encoded = encrypted_secret.removeprefix(self._prefix)
+        if encoded == "":
+            raise ValueError("Invalid dev vault payload")
         try:
             encoded_bytes = encoded.encode("ascii")
             return b64decode(encoded_bytes, altchars=b"-_", validate=True).decode("utf-8")
