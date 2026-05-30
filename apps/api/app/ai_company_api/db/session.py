@@ -103,6 +103,8 @@ def _upgrade_sqlite_patch_review_uniqueness(engine) -> None:
         if _sqlite_has_unique_index(connection, "patch_review", columns):
             return
 
+        _reclassify_sqlite_patch_review_duplicates(connection)
+
         connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
@@ -110,6 +112,66 @@ def _upgrade_sqlite_patch_review_uniqueness(engine) -> None:
                 "ON patch_review (patch_artifact_id, reviewer_kind)"
             )
         )
+
+
+def _reclassify_sqlite_patch_review_duplicates(connection) -> None:
+    duplicate_candidates = list(
+        connection.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    patch_artifact_id,
+                    reviewer_kind,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY patch_artifact_id, reviewer_kind
+                        ORDER BY created_at, id
+                    ) AS duplicate_position
+                FROM patch_review
+                ORDER BY patch_artifact_id, reviewer_kind, created_at, id
+                """
+            )
+        ).mappings()
+    )
+    if not duplicate_candidates:
+        return
+
+    reviewer_kinds_by_artifact: dict[str, set[str]] = {}
+    for row in duplicate_candidates:
+        artifact_id = str(row["patch_artifact_id"])
+        reviewer_kinds_by_artifact.setdefault(artifact_id, set()).add(
+            str(row["reviewer_kind"])
+        )
+
+    for row in duplicate_candidates:
+        if row["duplicate_position"] == 1:
+            continue
+
+        artifact_id = str(row["patch_artifact_id"])
+        reviewer_kinds = reviewer_kinds_by_artifact[artifact_id]
+        base_reviewer_kind = (
+            f"legacy_duplicate:{row['reviewer_kind']}:{row['id']}"
+        )
+        reviewer_kind = base_reviewer_kind
+        suffix = 2
+        while reviewer_kind in reviewer_kinds:
+            reviewer_kind = f"{base_reviewer_kind}:{suffix}"
+            suffix += 1
+
+        connection.execute(
+            text(
+                """
+                UPDATE patch_review
+                SET reviewer_kind = :reviewer_kind
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": row["id"],
+                "reviewer_kind": reviewer_kind,
+            },
+        )
+        reviewer_kinds.add(reviewer_kind)
 
 
 def _sqlite_has_unique_index(connection, table_name: str, columns: tuple[str, ...]) -> bool:

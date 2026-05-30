@@ -375,6 +375,140 @@ def test_init_db_adds_patch_review_unique_index_to_existing_sqlite_db(
     assert index["unique"] == 1
 
 
+def test_init_db_reclassifies_duplicate_legacy_patch_reviews_before_unique_index(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "duplicate-patch-review.db"
+    engine = build_engine(database_url(database_path))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                create table patch_review (
+                    id varchar not null primary key,
+                    workspace_id varchar not null,
+                    project_id varchar not null,
+                    task_id varchar not null,
+                    local_run_id varchar not null,
+                    patch_artifact_id varchar not null,
+                    test_run_id varchar,
+                    reviewer_kind varchar not null,
+                    verdict varchar not null,
+                    issues json not null,
+                    required_changes json not null,
+                    created_at datetime not null
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                insert into patch_review (
+                    id,
+                    workspace_id,
+                    project_id,
+                    task_id,
+                    local_run_id,
+                    patch_artifact_id,
+                    reviewer_kind,
+                    verdict,
+                    issues,
+                    required_changes,
+                    created_at
+                )
+                values (
+                    :id,
+                    'dev_workspace',
+                    'project_one',
+                    'task_one',
+                    'local_run_one',
+                    'patch_one',
+                    'deterministic',
+                    'approved',
+                    '[]',
+                    '[]',
+                    :created_at
+                )
+                """
+            ),
+            [
+                {
+                    "id": "review_earliest",
+                    "created_at": "2026-05-31 00:00:00",
+                },
+                {
+                    "id": "review_duplicate",
+                    "created_at": "2026-05-31 00:00:01",
+                },
+            ],
+        )
+
+    init_db(engine)
+    init_db(engine)
+
+    with engine.begin() as connection:
+        rows = list(
+            connection.execute(
+                text(
+                    """
+                    select id, reviewer_kind
+                    from patch_review
+                    order by created_at, id
+                    """
+                )
+            ).mappings()
+        )
+        indexes = {
+            row["name"]: row
+            for row in connection.execute(
+                text("PRAGMA index_list(patch_review)")
+            ).mappings()
+        }
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text(
+                    """
+                    insert into patch_review (
+                        id,
+                        workspace_id,
+                        project_id,
+                        task_id,
+                        local_run_id,
+                        patch_artifact_id,
+                        reviewer_kind,
+                        verdict,
+                        issues,
+                        required_changes,
+                        created_at
+                    )
+                    values (
+                        'review_new_duplicate',
+                        'dev_workspace',
+                        'project_one',
+                        'task_one',
+                        'local_run_one',
+                        'patch_one',
+                        'deterministic',
+                        'approved',
+                        '[]',
+                        '[]',
+                        '2026-05-31 00:00:02'
+                    )
+                    """
+                )
+            )
+
+    assert rows == [
+        {"id": "review_earliest", "reviewer_kind": "deterministic"},
+        {
+            "id": "review_duplicate",
+            "reviewer_kind": "legacy_duplicate:deterministic:review_duplicate",
+        },
+    ]
+    assert indexes["uq_patch_review_artifact_reviewer_kind"]["unique"] == 1
+
+
 def test_passing_test_run_moves_patch_ready_task_to_reviewing(tmp_path: Path) -> None:
     repo_path = create_git_repo(tmp_path)
     with build_client(tmp_path / "api.db") as client:
