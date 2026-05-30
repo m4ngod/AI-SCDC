@@ -25,7 +25,10 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const [plannerDecisionError, setPlannerDecisionError] = useState<string | null>(null);
   const [isDecidingPlannerRun, setIsDecidingPlannerRun] = useState(false);
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
+  const [runningTestTaskId, setRunningTestTaskId] = useState<string | null>(null);
+  const [reviewingTaskId, setReviewingTaskId] = useState<string | null>(null);
   const [localRunErrors, setLocalRunErrors] = useState<Record<string, string>>({});
+  const [workflowErrors, setWorkflowErrors] = useState<Record<string, string>>({});
   const plannerRunRef = useRef<PlannerRunDraft | null>(null);
 
   useEffect(() => {
@@ -148,6 +151,79 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     }
   }
 
+  async function handleRunPatchTests(task: TaskCard) {
+    if (runningTestTaskId || !task.patch_artifact) {
+      return;
+    }
+
+    setRunningTestTaskId(task.id);
+    setWorkflowErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[task.id];
+      return nextErrors;
+    });
+    try {
+      const result = await apiClient.runPatchTests(task.patch_artifact.id);
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === task.id
+            ? {
+                ...currentTask,
+                ...result.task,
+                patch_artifact: result.patch_artifact,
+                test_run: result.test_run,
+                debug_attempt: result.debug_attempt
+              }
+            : currentTask
+        )
+      );
+    } catch (error) {
+      setWorkflowErrors((currentErrors) => ({
+        ...currentErrors,
+        [task.id]: errorMessage(error, "Failed to run patch tests")
+      }));
+    } finally {
+      setRunningTestTaskId(null);
+    }
+  }
+
+  async function handleReviewPatch(task: TaskCard) {
+    if (reviewingTaskId || !task.patch_artifact) {
+      return;
+    }
+
+    setReviewingTaskId(task.id);
+    setWorkflowErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[task.id];
+      return nextErrors;
+    });
+    try {
+      const result = await apiClient.reviewPatch(task.patch_artifact.id);
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === task.id
+            ? {
+                ...currentTask,
+                ...result.task,
+                patch_artifact: result.patch_artifact,
+                test_run: currentTask.test_run,
+                patch_review: result.review,
+                debug_attempt: result.debug_attempt
+              }
+            : currentTask
+        )
+      );
+    } catch (error) {
+      setWorkflowErrors((currentErrors) => ({
+        ...currentErrors,
+        [task.id]: errorMessage(error, "Failed to review patch")
+      }));
+    } finally {
+      setReviewingTaskId(null);
+    }
+  }
+
   const contextPanel = (
     <>
       <section className="context-section">
@@ -166,8 +242,13 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       <TaskBoard
         tasks={tasks}
         runningTaskId={runningTaskId}
+        runningTestTaskId={runningTestTaskId}
+        reviewingTaskId={reviewingTaskId}
         localRunErrors={localRunErrors}
+        workflowErrors={workflowErrors}
         onStartLocalRun={handleStartLocalRun}
+        onRunPatchTests={handleRunPatchTests}
+        onReviewPatch={handleReviewPatch}
       />
       {taskLoadError ? (
         <section className="context-section context-error" role="alert">

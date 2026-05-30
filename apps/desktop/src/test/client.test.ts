@@ -36,6 +36,38 @@ describe("desktop API clients", () => {
     );
   });
 
+  it("fake client runs tests for a demo patch", async () => {
+    await expect(fakeApiClient.runPatchTests("patch_demo")).resolves.toMatchObject({
+      task: {
+        id: "task_board_ui",
+        status: "REVIEWING"
+      },
+      patch_artifact: {
+        id: "patch_demo",
+        test_result: "passed"
+      },
+      test_run: {
+        patch_artifact_id: "patch_demo",
+        status: "passed"
+      },
+      debug_attempt: null
+    });
+  });
+
+  it("fake client reviews a demo patch", async () => {
+    await expect(fakeApiClient.reviewPatch("patch_demo")).resolves.toMatchObject({
+      task: {
+        id: "task_board_ui",
+        status: "APPROVED"
+      },
+      review: {
+        patch_artifact_id: "patch_demo",
+        verdict: "approved"
+      },
+      debug_attempt: null
+    });
+  });
+
   it("fake client creates deterministic planner drafts", async () => {
     const plannerRun = await fakeApiClient.createPlannerRun("Build model route settings");
 
@@ -377,5 +409,181 @@ describe("desktop API clients", () => {
       "http://127.0.0.1:8000/patch-artifacts/patch_api"
     );
     expect(result.patch_artifact?.files_changed).toEqual(["README.md"]);
+  });
+
+  it("HTTP client posts patch test runs and maps result cards", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse(
+        {
+          task: {
+            id: "task_api",
+            title: "Review persisted patch",
+            status: "REVIEWING",
+            role_required: "backend",
+            updated_at: "2026-05-29T02:00:00Z"
+          },
+          patch_artifact: {
+            id: "patch_api",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            summary: "Prepared local runner patch.",
+            files_changed: ["apps/api/routes.py"],
+            tests_run: ["pytest apps/api/tests/test_test_review_debug_api.py -v"],
+            test_result: "passed",
+            risks: [],
+            diff_text: "diff --git a/apps/api/routes.py b/apps/api/routes.py",
+            created_at: "2026-05-29T01:55:00Z"
+          },
+          test_run: {
+            id: "test_run_api",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            patch_artifact_id: "patch_api",
+            status: "passed",
+            commands: ["pytest apps/api/tests/test_test_review_debug_api.py -v"],
+            command_results: [
+              {
+                command: "pytest apps/api/tests/test_test_review_debug_api.py -v",
+                exit_code: 0,
+                stdout: "1 passed",
+                stderr: "",
+                duration_ms: 1200
+              }
+            ],
+            failure_reason: null,
+            started_at: "2026-05-29T02:00:00Z",
+            completed_at: "2026-05-29T02:00:02Z",
+            created_at: "2026-05-29T02:00:00Z"
+          },
+          debug_attempt: null
+        },
+        { status: 201 }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+    const result = await client.runPatchTests("patch_api");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/patch-artifacts/patch_api/test-runs",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(result).toMatchObject({
+      task: {
+        id: "task_api",
+        status: "REVIEWING",
+        assigned_agent: "Backend Engineer"
+      },
+      patch_artifact: {
+        id: "patch_api",
+        test_result: "passed"
+      },
+      test_run: {
+        id: "test_run_api",
+        status: "passed",
+        command_results: [
+          {
+            command: "pytest apps/api/tests/test_test_review_debug_api.py -v",
+            exit_code: 0
+          }
+        ]
+      },
+      debug_attempt: null
+    });
+  });
+
+  it("HTTP client posts patch reviews and maps debug attempts", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse(
+        {
+          task: {
+            id: "task_api",
+            title: "Review persisted patch",
+            status: "FIX_REQUESTED",
+            role_required: "backend",
+            updated_at: "2026-05-29T02:05:00Z"
+          },
+          patch_artifact: {
+            id: "patch_api",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            summary: "Prepared local runner patch.",
+            files_changed: ["apps/api/routes.py"],
+            tests_run: ["pytest apps/api/tests/test_test_review_debug_api.py -v"],
+            test_result: "passed",
+            risks: [],
+            diff_text: "",
+            created_at: "2026-05-29T01:55:00Z"
+          },
+          review: {
+            id: "review_api",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            patch_artifact_id: "patch_api",
+            test_run_id: "test_run_api",
+            reviewer_kind: "deterministic",
+            verdict: "changes_requested",
+            issues: [{ code: "missing_diff", message: "Diff is missing" }],
+            required_changes: ["Include a patch diff before approval."],
+            created_at: "2026-05-29T02:05:00Z"
+          },
+          debug_attempt: {
+            id: "debug_api",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
+            task_id: "task_api",
+            patch_artifact_id: "patch_api",
+            review_id: "review_api",
+            test_run_id: "test_run_api",
+            status: "requested",
+            root_cause: "deterministic review found missing diff",
+            fix_summary: "Attach the generated diff to the patch artifact.",
+            created_at: "2026-05-29T02:05:01Z"
+          }
+        },
+        { status: 201 }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+    const result = await client.reviewPatch("patch_api");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/patch-artifacts/patch_api/reviews",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(result).toMatchObject({
+      task: {
+        id: "task_api",
+        status: "FIX_REQUESTED",
+        assigned_agent: "Backend Engineer"
+      },
+      review: {
+        id: "review_api",
+        verdict: "changes_requested",
+        required_changes: ["Include a patch diff before approval."]
+      },
+      debug_attempt: {
+        id: "debug_api",
+        root_cause: "deterministic review found missing diff",
+        fix_summary: "Attach the generated diff to the patch artifact."
+      }
+    });
   });
 });

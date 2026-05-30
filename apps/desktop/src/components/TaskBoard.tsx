@@ -3,15 +3,25 @@ import type { TaskCard } from "../api/client";
 type TaskBoardProps = {
   tasks: TaskCard[];
   runningTaskId?: string | null;
+  runningTestTaskId?: string | null;
+  reviewingTaskId?: string | null;
   localRunErrors?: Record<string, string>;
+  workflowErrors?: Record<string, string>;
   onStartLocalRun?: (taskId: string) => void;
+  onRunPatchTests?: (task: TaskCard) => void;
+  onReviewPatch?: (task: TaskCard) => void;
 };
 
 export function TaskBoard({
   tasks,
   runningTaskId = null,
+  runningTestTaskId = null,
+  reviewingTaskId = null,
   localRunErrors = {},
-  onStartLocalRun
+  workflowErrors = {},
+  onStartLocalRun,
+  onRunPatchTests,
+  onReviewPatch
 }: TaskBoardProps) {
   return (
     <section className="task-board" aria-label="Task board">
@@ -38,22 +48,75 @@ export function TaskBoard({
                   {runningTaskId === task.id ? "Running" : "Run local"}
                 </button>
               ) : null}
+              {onRunPatchTests && task.status === "PATCH_READY" && task.patch_artifact ? (
+                <button
+                  type="button"
+                  className="task-run-button"
+                  disabled={runningTestTaskId === task.id}
+                  onClick={() => onRunPatchTests(task)}
+                >
+                  {runningTestTaskId === task.id ? "Testing" : "Run tests"}
+                </button>
+              ) : null}
+              {onReviewPatch && task.status === "REVIEWING" && task.patch_artifact ? (
+                <button
+                  type="button"
+                  className="task-run-button"
+                  disabled={reviewingTaskId === task.id}
+                  onClick={() => onReviewPatch(task)}
+                >
+                  {reviewingTaskId === task.id ? "Reviewing" : "Review patch"}
+                </button>
+              ) : null}
             </div>
-            {task.patch_artifact ? (
+            {task.patch_artifact || task.test_run || task.patch_review || task.debug_attempt ? (
               <dl className="task-patch-meta">
-                <div>
-                  <dt>Files</dt>
-                  <dd>{task.patch_artifact.files_changed.join(", ")}</dd>
-                </div>
-                <div>
-                  <dt>Tests</dt>
-                  <dd>{task.patch_artifact.test_result}</dd>
-                </div>
+                {task.patch_artifact ? (
+                  <>
+                    <div>
+                      <dt>Files</dt>
+                      <dd>{task.patch_artifact.files_changed.join(", ")}</dd>
+                    </div>
+                    <div>
+                      <dt>Tests</dt>
+                      <dd>{task.patch_artifact.test_result}</dd>
+                    </div>
+                  </>
+                ) : null}
+                {task.test_run ? (
+                  <div>
+                    <dt>Test run</dt>
+                    <dd>{task.test_run.status}</dd>
+                  </div>
+                ) : null}
+                {task.patch_review ? (
+                  <div>
+                    <dt>Review</dt>
+                    <dd>{task.patch_review.verdict}</dd>
+                  </div>
+                ) : null}
+                {task.debug_attempt?.root_cause ? (
+                  <div>
+                    <dt>Root cause</dt>
+                    <dd>{task.debug_attempt.root_cause}</dd>
+                  </div>
+                ) : null}
+                {task.debug_attempt?.fix_summary ? (
+                  <div>
+                    <dt>Fix summary</dt>
+                    <dd>{task.debug_attempt.fix_summary}</dd>
+                  </div>
+                ) : null}
               </dl>
             ) : null}
             {localRunErrors[task.id] ? (
               <p className="task-run-error" role="alert">
                 {localRunErrors[task.id]}
+              </p>
+            ) : null}
+            {workflowErrors[task.id] ? (
+              <p className="task-run-error" role="alert">
+                {workflowErrors[task.id]}
               </p>
             ) : null}
           </article>

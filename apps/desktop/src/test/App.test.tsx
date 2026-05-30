@@ -51,6 +51,57 @@ function taskCardFixture(title = "Design desktop flow"): TaskCard {
   };
 }
 
+function patchReadyTaskFixture(): TaskCard {
+  return {
+    ...taskCardFixture("Review desktop patch"),
+    id: "task_patch_ready",
+    status: "PATCH_READY",
+    patch_artifact: {
+      id: "patch_test",
+      task_id: "task_patch_ready",
+      local_run_id: "local_run_test",
+      summary: "Prepared local runner patch.",
+      files_changed: ["apps/desktop/src/components/TaskBoard.tsx"],
+      tests_run: ["pnpm --filter @ai-scdc/desktop test"],
+      test_result: "not_run"
+    }
+  };
+}
+
+function reviewingTaskFixture(): TaskCard {
+  return {
+    ...patchReadyTaskFixture(),
+    status: "REVIEWING",
+    patch_artifact: {
+      ...patchReadyTaskFixture().patch_artifact!,
+      test_result: "passed"
+    },
+    test_run: {
+      id: "test_run_test",
+      workspace_id: "workspace_test",
+      project_id: "project_demo",
+      task_id: "task_patch_ready",
+      local_run_id: "local_run_test",
+      patch_artifact_id: "patch_test",
+      status: "passed",
+      commands: ["pnpm --filter @ai-scdc/desktop test"],
+      command_results: [
+        {
+          command: "pnpm --filter @ai-scdc/desktop test",
+          exit_code: 0,
+          stdout: "passed",
+          stderr: "",
+          duration_ms: 1000
+        }
+      ],
+      failure_reason: null,
+      started_at: "2026-05-29T00:01:00Z",
+      completed_at: "2026-05-29T00:02:00Z",
+      created_at: "2026-05-29T00:01:00Z"
+    }
+  };
+}
+
 function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): ConsoleApiClient {
   return {
     listTasks: vi.fn().mockResolvedValue([]),
@@ -88,6 +139,38 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
         tests_run: [],
         test_result: "not_run"
       }
+    }),
+    runPatchTests: vi.fn().mockResolvedValue({
+      task: {
+        ...reviewingTaskFixture(),
+        test_run: undefined
+      },
+      patch_artifact: reviewingTaskFixture().patch_artifact!,
+      test_run: reviewingTaskFixture().test_run!,
+      debug_attempt: null
+    }),
+    reviewPatch: vi.fn().mockResolvedValue({
+      task: {
+        ...reviewingTaskFixture(),
+        status: "APPROVED",
+        test_run: undefined
+      },
+      patch_artifact: reviewingTaskFixture().patch_artifact!,
+      review: {
+        id: "review_test",
+        workspace_id: "workspace_test",
+        project_id: "project_demo",
+        task_id: "task_patch_ready",
+        local_run_id: "local_run_test",
+        patch_artifact_id: "patch_test",
+        test_run_id: "test_run_test",
+        reviewer_kind: "deterministic",
+        verdict: "approved",
+        issues: [],
+        required_changes: [],
+        created_at: "2026-05-29T00:03:00Z"
+      },
+      debug_attempt: null
     }),
     ...overrides
   };
@@ -392,5 +475,133 @@ describe("App", () => {
     expect(await within(board).findByRole("alert")).toHaveTextContent(
       "No repository registered for project"
     );
+  });
+
+  it("runs patch tests from the task board and renders the passed test run", async () => {
+    const user = userEvent.setup();
+    const testedTask = reviewingTaskFixture();
+    const runPatchTests = vi.fn<ConsoleApiClient["runPatchTests"]>().mockResolvedValue({
+      task: {
+        ...testedTask,
+        test_run: undefined
+      },
+      patch_artifact: testedTask.patch_artifact!,
+      test_run: testedTask.test_run!,
+      debug_attempt: null
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([patchReadyTaskFixture()]),
+      runPatchTests
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run tests" }));
+
+    expect(runPatchTests).toHaveBeenCalledWith("patch_test");
+    expect(await within(board).findByText("REVIEWING")).toBeInTheDocument();
+    expect(within(board).getByText("Test run")).toBeInTheDocument();
+    expect(within(board).getAllByText("passed")).not.toHaveLength(0);
+  });
+
+  it("reviews a patch from the task board and renders the approved verdict", async () => {
+    const user = userEvent.setup();
+    const reviewedTask = reviewingTaskFixture();
+    const reviewPatch = vi.fn<ConsoleApiClient["reviewPatch"]>().mockResolvedValue({
+      task: {
+        ...reviewedTask,
+        status: "APPROVED",
+        test_run: undefined
+      },
+      patch_artifact: reviewedTask.patch_artifact!,
+      review: {
+        id: "review_test",
+        workspace_id: "workspace_test",
+        project_id: "project_demo",
+        task_id: "task_patch_ready",
+        local_run_id: "local_run_test",
+        patch_artifact_id: "patch_test",
+        test_run_id: "test_run_test",
+        reviewer_kind: "deterministic",
+        verdict: "approved",
+        issues: [],
+        required_changes: [],
+        created_at: "2026-05-29T00:03:00Z"
+      },
+      debug_attempt: null
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([reviewingTaskFixture()]),
+      reviewPatch
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Review patch" }));
+
+    expect(reviewPatch).toHaveBeenCalledWith("patch_test");
+    expect(await within(board).findByText("APPROVED")).toBeInTheDocument();
+    expect(within(board).getByText("Test run")).toBeInTheDocument();
+    expect(within(board).getByText("Review")).toBeInTheDocument();
+    expect(within(board).getByText("approved")).toBeInTheDocument();
+  });
+
+  it("renders debug root cause when review requests changes", async () => {
+    const user = userEvent.setup();
+    const reviewedTask = reviewingTaskFixture();
+    const reviewPatch = vi.fn<ConsoleApiClient["reviewPatch"]>().mockResolvedValue({
+      task: {
+        ...reviewedTask,
+        status: "FIX_REQUESTED",
+        test_run: undefined
+      },
+      patch_artifact: reviewedTask.patch_artifact!,
+      review: {
+        id: "review_test",
+        workspace_id: "workspace_test",
+        project_id: "project_demo",
+        task_id: "task_patch_ready",
+        local_run_id: "local_run_test",
+        patch_artifact_id: "patch_test",
+        test_run_id: "test_run_test",
+        reviewer_kind: "deterministic",
+        verdict: "changes_requested",
+        issues: [{ code: "missing_diff", message: "Diff is missing" }],
+        required_changes: ["Include a patch diff before approval."],
+        created_at: "2026-05-29T00:03:00Z"
+      },
+      debug_attempt: {
+        id: "debug_test",
+        workspace_id: "workspace_test",
+        project_id: "project_demo",
+        task_id: "task_patch_ready",
+        patch_artifact_id: "patch_test",
+        review_id: "review_test",
+        test_run_id: "test_run_test",
+        status: "requested",
+        root_cause: "deterministic review found missing diff",
+        fix_summary: "Attach the generated diff to the patch artifact.",
+        created_at: "2026-05-29T00:03:01Z"
+      }
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([reviewingTaskFixture()]),
+      reviewPatch
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Review patch" }));
+
+    expect(await within(board).findByText("FIX_REQUESTED")).toBeInTheDocument();
+    expect(within(board).getByText("changes_requested")).toBeInTheDocument();
+    expect(within(board).getByText("deterministic review found missing diff")).toBeInTheDocument();
+    expect(within(board).getByText("Attach the generated diff to the patch artifact.")).toBeInTheDocument();
   });
 });

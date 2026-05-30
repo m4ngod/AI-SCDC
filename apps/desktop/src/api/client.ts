@@ -11,6 +11,9 @@ export type TaskCard = {
   branch_name?: string | null;
   worktree_ref?: string | null;
   patch_artifact?: PatchArtifactCard;
+  test_run?: LocalTestRunCard;
+  patch_review?: PatchReviewCard;
+  debug_attempt?: DebugAttemptCard | null;
 };
 
 export type RepositoryCard = {
@@ -42,9 +45,76 @@ export type PatchArtifactCard = {
   test_result: string;
 };
 
+export type CommandResultCard = {
+  command: string;
+  exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  duration_ms: number;
+};
+
+export type LocalTestRunCard = {
+  id: string;
+  workspace_id?: string;
+  project_id?: string;
+  task_id: string;
+  local_run_id: string;
+  patch_artifact_id: string;
+  status: string;
+  commands: string[];
+  command_results: CommandResultCard[];
+  failure_reason?: string | null;
+  started_at: string;
+  completed_at?: string | null;
+  created_at: string;
+};
+
+export type PatchReviewCard = {
+  id: string;
+  workspace_id?: string;
+  project_id?: string;
+  task_id: string;
+  local_run_id: string;
+  patch_artifact_id: string;
+  test_run_id?: string | null;
+  reviewer_kind: string;
+  verdict: string;
+  issues: Record<string, unknown>[];
+  required_changes: string[];
+  created_at: string;
+};
+
+export type DebugAttemptCard = {
+  id: string;
+  workspace_id?: string;
+  project_id?: string;
+  task_id: string;
+  patch_artifact_id: string;
+  review_id?: string | null;
+  test_run_id?: string | null;
+  status: string;
+  root_cause: string;
+  fix_summary: string;
+  created_at: string;
+};
+
 export type LocalRunResult = {
   local_run: LocalTaskRunCard;
   patch_artifact?: PatchArtifactCard;
+};
+
+export type PatchTestRunResult = {
+  task: TaskCard;
+  patch_artifact: PatchArtifactCard;
+  test_run: LocalTestRunCard;
+  debug_attempt: DebugAttemptCard | null;
+};
+
+export type PatchReviewResult = {
+  task: TaskCard;
+  patch_artifact: PatchArtifactCard;
+  review: PatchReviewCard;
+  debug_attempt: DebugAttemptCard | null;
 };
 
 export type PlannerTaskDraftCard = {
@@ -84,6 +154,8 @@ export type ConsoleApiClient = {
   approvePlannerRun: (plannerRunId: string) => Promise<PlannerRunDecision>;
   rejectPlannerRun: (plannerRunId: string, reason?: string) => Promise<PlannerRunDecision>;
   startLocalRun: (taskId: string) => Promise<LocalRunResult>;
+  runPatchTests: (patchArtifactId: string) => Promise<PatchTestRunResult>;
+  reviewPatch: (patchArtifactId: string) => Promise<PatchReviewResult>;
 };
 
 type ApiProject = {
@@ -107,7 +179,31 @@ type ApiRepository = RepositoryCard;
 type ApiLocalTaskRun = LocalTaskRunCard;
 
 type ApiPatchArtifact = PatchArtifactCard & {
+  workspace_id?: string;
+  project_id?: string;
+  risks?: string[];
   diff_text: string;
+  created_at?: string;
+};
+
+type ApiLocalTestRun = LocalTestRunCard;
+
+type ApiPatchReview = PatchReviewCard;
+
+type ApiDebugAttempt = DebugAttemptCard;
+
+type ApiPatchTestRunResult = {
+  task: ApiTask;
+  patch_artifact: ApiPatchArtifact;
+  test_run: ApiLocalTestRun;
+  debug_attempt: ApiDebugAttempt | null;
+};
+
+type ApiPatchReviewResult = {
+  task: ApiTask;
+  patch_artifact: ApiPatchArtifact;
+  review: ApiPatchReview;
+  debug_attempt: ApiDebugAttempt | null;
 };
 
 type ApiPlannerRunDecision = {
@@ -231,6 +327,101 @@ export const fakeApiClient: ConsoleApiClient = {
         test_result: "not_run"
       }
     };
+  },
+  async runPatchTests(patchArtifactId: string) {
+    const task =
+      demoTasks.find((item) => item.patch_artifact?.id === patchArtifactId) ?? demoTasks[0];
+    const patchArtifact = {
+      ...(task.patch_artifact ?? {
+        id: patchArtifactId,
+        task_id: task.id,
+        local_run_id: "local_run_demo",
+        summary: "Prepared local runner patch.",
+        files_changed: ["README.md"],
+        tests_run: ["pnpm --filter @ai-scdc/desktop test"],
+        test_result: "not_run"
+      }),
+      test_result: "passed"
+    };
+    const firstCommand =
+      patchArtifact.tests_run[0] ?? "pnpm --filter @ai-scdc/desktop test";
+    const testRun: LocalTestRunCard = {
+      id: "test_run_demo",
+      workspace_id: "workspace_demo",
+      project_id: "project_demo",
+      task_id: task.id,
+      local_run_id: patchArtifact.local_run_id,
+      patch_artifact_id: patchArtifact.id,
+      status: "passed",
+      commands: patchArtifact.tests_run.length > 0 ? patchArtifact.tests_run : [firstCommand],
+      command_results: [
+        {
+          command: firstCommand,
+          exit_code: 0,
+          stdout: "1 passed",
+          stderr: "",
+          duration_ms: 1000
+        }
+      ],
+      failure_reason: null,
+      started_at: "2026-05-29T00:01:00Z",
+      completed_at: "2026-05-29T00:02:00Z",
+      created_at: "2026-05-29T00:01:00Z"
+    };
+    return {
+      task: {
+        ...task,
+        status: "REVIEWING",
+        patch_artifact: patchArtifact,
+        test_run: testRun,
+        debug_attempt: null
+      },
+      patch_artifact: patchArtifact,
+      test_run: testRun,
+      debug_attempt: null
+    };
+  },
+  async reviewPatch(patchArtifactId: string) {
+    const task =
+      demoTasks.find((item) => item.patch_artifact?.id === patchArtifactId) ?? demoTasks[0];
+    const patchArtifact = {
+      ...(task.patch_artifact ?? {
+        id: patchArtifactId,
+        task_id: task.id,
+        local_run_id: "local_run_demo",
+        summary: "Prepared local runner patch.",
+        files_changed: ["README.md"],
+        tests_run: ["pnpm --filter @ai-scdc/desktop test"],
+        test_result: "passed"
+      }),
+      test_result: "passed"
+    };
+    const review: PatchReviewCard = {
+      id: "review_demo",
+      workspace_id: "workspace_demo",
+      project_id: "project_demo",
+      task_id: task.id,
+      local_run_id: patchArtifact.local_run_id,
+      patch_artifact_id: patchArtifact.id,
+      test_run_id: task.test_run?.id ?? "test_run_demo",
+      reviewer_kind: "deterministic",
+      verdict: "approved",
+      issues: [],
+      required_changes: [],
+      created_at: "2026-05-29T00:03:00Z"
+    };
+    return {
+      task: {
+        ...task,
+        status: "APPROVED",
+        patch_artifact: patchArtifact,
+        patch_review: review,
+        debug_attempt: null
+      },
+      patch_artifact: patchArtifact,
+      review,
+      debug_attempt: null
+    };
   }
 };
 
@@ -318,6 +509,87 @@ function mapPlannerRunDecision(decision: ApiPlannerRunDecision): PlannerRunDecis
     approval_id: decision.approval_id,
     status: decision.status,
     created_tasks: decision.created_tasks.map(mapTaskCard)
+  };
+}
+
+function mapPatchArtifactCard(artifact: ApiPatchArtifact): PatchArtifactCard {
+  return {
+    id: artifact.id,
+    task_id: artifact.task_id,
+    local_run_id: artifact.local_run_id,
+    summary: artifact.summary,
+    files_changed: artifact.files_changed,
+    tests_run: artifact.tests_run,
+    test_result: artifact.test_result
+  };
+}
+
+function mapLocalTestRunCard(testRun: ApiLocalTestRun): LocalTestRunCard {
+  return {
+    id: testRun.id,
+    workspace_id: testRun.workspace_id,
+    project_id: testRun.project_id,
+    task_id: testRun.task_id,
+    local_run_id: testRun.local_run_id,
+    patch_artifact_id: testRun.patch_artifact_id,
+    status: testRun.status,
+    commands: testRun.commands,
+    command_results: testRun.command_results,
+    failure_reason: testRun.failure_reason,
+    started_at: testRun.started_at,
+    completed_at: testRun.completed_at,
+    created_at: testRun.created_at
+  };
+}
+
+function mapPatchReviewCard(review: ApiPatchReview): PatchReviewCard {
+  return {
+    id: review.id,
+    workspace_id: review.workspace_id,
+    project_id: review.project_id,
+    task_id: review.task_id,
+    local_run_id: review.local_run_id,
+    patch_artifact_id: review.patch_artifact_id,
+    test_run_id: review.test_run_id,
+    reviewer_kind: review.reviewer_kind,
+    verdict: review.verdict,
+    issues: review.issues,
+    required_changes: review.required_changes,
+    created_at: review.created_at
+  };
+}
+
+function mapDebugAttemptCard(debugAttempt: ApiDebugAttempt): DebugAttemptCard {
+  return {
+    id: debugAttempt.id,
+    workspace_id: debugAttempt.workspace_id,
+    project_id: debugAttempt.project_id,
+    task_id: debugAttempt.task_id,
+    patch_artifact_id: debugAttempt.patch_artifact_id,
+    review_id: debugAttempt.review_id,
+    test_run_id: debugAttempt.test_run_id,
+    status: debugAttempt.status,
+    root_cause: debugAttempt.root_cause,
+    fix_summary: debugAttempt.fix_summary,
+    created_at: debugAttempt.created_at
+  };
+}
+
+function mapPatchTestRunResult(result: ApiPatchTestRunResult): PatchTestRunResult {
+  return {
+    task: mapTaskCard(result.task),
+    patch_artifact: mapPatchArtifactCard(result.patch_artifact),
+    test_run: mapLocalTestRunCard(result.test_run),
+    debug_attempt: result.debug_attempt ? mapDebugAttemptCard(result.debug_attempt) : null
+  };
+}
+
+function mapPatchReviewResult(result: ApiPatchReviewResult): PatchReviewResult {
+  return {
+    task: mapTaskCard(result.task),
+    patch_artifact: mapPatchArtifactCard(result.patch_artifact),
+    review: mapPatchReviewCard(result.review),
+    debug_attempt: result.debug_attempt ? mapDebugAttemptCard(result.debug_attempt) : null
   };
 }
 
@@ -441,12 +713,41 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         const artifactResponse = await fetch(
           apiUrl(options.baseUrl, `/patch-artifacts/${localRun.patch_artifact_id}`)
         );
-        patchArtifact = await readJsonResponse<ApiPatchArtifact>(
+        const artifact = await readJsonResponse<ApiPatchArtifact>(
           artifactResponse,
           `GET /patch-artifacts/${localRun.patch_artifact_id}`
         );
+        patchArtifact = mapPatchArtifactCard(artifact);
       }
       return { local_run: localRun, patch_artifact: patchArtifact };
+    },
+    async runPatchTests(patchArtifactId: string) {
+      const response = await fetch(
+        apiUrl(options.baseUrl, `/patch-artifacts/${patchArtifactId}/test-runs`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+      const result = await readJsonResponse<ApiPatchTestRunResult>(
+        response,
+        `POST /patch-artifacts/${patchArtifactId}/test-runs`
+      );
+      return mapPatchTestRunResult(result);
+    },
+    async reviewPatch(patchArtifactId: string) {
+      const response = await fetch(
+        apiUrl(options.baseUrl, `/patch-artifacts/${patchArtifactId}/reviews`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+      const result = await readJsonResponse<ApiPatchReviewResult>(
+        response,
+        `POST /patch-artifacts/${patchArtifactId}/reviews`
+      );
+      return mapPatchReviewResult(result);
     }
   };
 }
