@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, and Phase 4 local runner vertical slice for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, and Phase 5 deterministic test/review/debug workflow for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -258,5 +258,31 @@ $artifact = Invoke-RestMethod -Uri "$base/patch-artifacts/$($run.patch_artifact_
 ```
 
 The smoke output should show `local_run_status` as `patch_ready`, `files_changed` as `README.md`, and an empty `source_checkout_tracked_status`. Review the generated worktree path before deleting the temporary smoke repository.
+
+## Phase 5 Local Test, Review, and Debug Workflow
+
+Phase 5 extends the Phase 4 patch artifact with deterministic local verification. After the desktop `Run local` action or `POST /tasks/{task_id}/local-runs` creates a patch artifact, the flow is:
+
+```text
+CREATED -> PATCH_READY -> SELF_TESTING -> REVIEWING -> APPROVED
+                                             \-> FIX_REQUESTED
+                              \-> FIX_REQUESTED
+```
+
+Use the desktop `Run tests` action, or call `POST /patch-artifacts/{patch_artifact_id}/test-runs`, to execute the task `required_tests` commands inside the local runner worktree. Passing tests store a `LocalTestRun`, update the patch artifact test result, and move the task from `PATCH_READY` through `SELF_TESTING` to `REVIEWING`. Failed or invalid test runs move the task to `FIX_REQUESTED` and create a `DebugAttempt`.
+
+Use the desktop `Review patch` action, or call `POST /patch-artifacts/{patch_artifact_id}/reviews`, once the task is `REVIEWING`. The deterministic review stores one `PatchReview` per patch artifact and reviewer kind, checks that the diff exists, changed files stay inside `allowed_paths`, and the latest local test run passed. An approved review moves the task to `APPROVED`; review findings move it to `FIX_REQUESTED` and create a `DebugAttempt`.
+
+Related read endpoints are `GET /patch-artifacts/{patch_artifact_id}/test-runs`, `GET /test-runs/{test_run_id}`, `GET /patch-artifacts/{patch_artifact_id}/reviews`, `GET /patch-reviews/{review_id}`, and `GET /tasks/{task_id}/debug-attempts`.
+
+Focused verification commands used for this phase:
+
+```bash
+pytest apps/worker/tests/test_test_runner.py -v
+pytest apps/api/tests/test_test_review_debug_api.py -v
+pnpm --filter @ai-scdc/desktop test -- src/test/client.test.ts src/test/App.test.tsx
+pnpm --filter @ai-scdc/desktop typecheck
+git diff --check
+```
 
 See `docs/architecture.md` for architecture and phase boundaries.

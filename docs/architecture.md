@@ -69,6 +69,16 @@ Phase 4 adds the Local Runner vertical slice. A developer can register an existi
 
 The review boundary remains intact: Phase 4 does not auto-commit, push, merge, create PRs, or run reviewer/debugger loops. It is a local execution and patch-review foundation for later automation. Patches are constrained by task `allowed_paths`, and approved planner drafts now preserve `allowed_paths` and `required_tests` on created tasks.
 
+## Phase 5 Boundary
+
+Phase 5 adds the deterministic local test, review, and debug-attempt workflow on top of Phase 4 patch artifacts. A patch-ready task now moves through `PATCH_READY -> SELF_TESTING -> REVIEWING -> APPROVED` when tests and deterministic review pass, or to `FIX_REQUESTED` when tests fail or review requests changes. The desktop exposes this as `Run local`, `Run tests`, and `Review patch` controls.
+
+The Local test runner executes each task's `required_tests` commands inside the local runner worktree and records stdout, stderr, exit code, command timing, and failure reasons in `LocalTestRun`. It updates the patch artifact's test metadata and keeps command execution local.
+
+Phase 5 adds durable `LocalTestRun`, `PatchReview`, and `DebugAttempt` records. `LocalTestRun` belongs to a project, task, local run, and patch artifact. `PatchReview` belongs to the same patch boundary, links to the latest test run when available, stores deterministic verdicts and required changes, and has an idempotency uniqueness constraint on `(patch_artifact_id, reviewer_kind)`. Re-running the deterministic review for the same artifact returns the existing review result rather than creating duplicate reviewer output. `DebugAttempt` records root cause and fix summary for failed tests or deterministic review findings; it does not edit files.
+
+The deterministic review rules are intentionally small and auditable: require non-empty diff text, require at least one changed file, verify changed files stay inside task `allowed_paths`, and require the latest local test run to have passed. The workflow remains local and deterministic; Phase 5 does not auto-commit, push, merge, create PRs, call reviewer/debugger models, or automatically modify the worktree during debug.
+
 ## Roadmap
 
 Completed:
@@ -78,9 +88,10 @@ Completed:
 3. Backend-first model router and BYOK foundation with provider metadata, write-only credential records, role-based route resolution, fake fallback routes, and append-only usage logging.
 4. Real model-backed planner vertical slice that uses route resolution to create TaskSpec drafts for human approval, logs token usage, and falls back to fake drafts on provider failures.
 5. Local Runner vertical slice with repository registration, git worktree execution, patch artifact capture, task events, and desktop run controls.
+6. Deterministic local test, patch review, and debug-attempt workflow with desktop controls, durable verification records, and idempotent review results.
 
 Future:
 
-1. Automated tests, reviewer loop, and debug loop.
-2. Cloud sandbox workers, GitHub/GitLab integration, artifacts, and PR creation.
+1. Cloud sandbox workers, GitHub/GitLab integration, artifacts, and PR creation.
+2. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
 3. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.
