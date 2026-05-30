@@ -1,5 +1,6 @@
 import pytest
 
+from ai_company_api.schemas.api import AgentRole, RiskLevel
 from ai_company_api.services.model_planner import (
     ModelPlannerError,
     build_planner_messages,
@@ -19,6 +20,19 @@ def test_build_planner_messages_instructs_json_only() -> None:
     assert "frontend" in messages[0].content
     assert "Build real planner" in messages[1].content
     assert "Demo Project" in messages[1].content
+
+
+def test_build_planner_messages_includes_current_schema_values() -> None:
+    messages = build_planner_messages(
+        goal="Build real planner",
+        project_name="Demo Project",
+    )
+    system_content = messages[0].content
+
+    for role in AgentRole:
+        assert role.value in system_content
+    for risk_level in RiskLevel:
+        assert risk_level.value in system_content
 
 
 def test_parse_task_spec_drafts_accepts_valid_json_array() -> None:
@@ -59,6 +73,28 @@ def test_parse_task_spec_drafts_unwraps_markdown_json_fence() -> None:
           }
         ]
         ```"""
+    )
+
+    assert drafts[0].role_required.value == "reviewer"
+
+
+def test_parse_task_spec_drafts_unwraps_variant_markdown_json_fence() -> None:
+    drafts = parse_task_spec_drafts(
+        """``` JSON
+        [
+          {
+            "title": "Review planner output",
+            "role_required": "reviewer",
+            "objective": "Check generated drafts.",
+            "acceptance_criteria": ["Review is complete."],
+            "allowed_paths": ["apps/api/**"],
+            "required_tests": [],
+            "risk_level": "low"
+          }
+        ]
+
+        ```
+        """
     )
 
     assert drafts[0].role_required.value == "reviewer"

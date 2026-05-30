@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pydantic import ValidationError
 
 from ai_company_api.models.entities import Project
+from ai_company_api.schemas.api import AgentRole, RiskLevel
 from ai_company_api.services.planner import TaskSpecDraft
 from ai_company_llm_gateway.models import ChatMessage
 
@@ -23,6 +24,8 @@ class PlannerExecutionResult:
 
 
 def build_planner_messages(goal: str, project_name: str) -> list[ChatMessage]:
+    role_values = ", ".join(role.value for role in AgentRole)
+    risk_level_values = ", ".join(risk_level.value for risk_level in RiskLevel)
     return [
         ChatMessage(
             role="system",
@@ -31,8 +34,8 @@ def build_planner_messages(goal: str, project_name: str) -> list[ChatMessage]:
                 "Return JSON only: an array of task draft objects. Each object "
                 "must include title, role_required, objective, acceptance_criteria, "
                 "allowed_paths, required_tests, and risk_level. role_required must "
-                "be one of planner, frontend, backend, reviewer, debugger, security, "
-                "product, documentation. risk_level must be low, medium, or high. "
+                f"be one of {role_values}. risk_level must be one of "
+                f"{risk_level_values}. "
                 "Do not include Markdown or explanatory text."
             ),
         ),
@@ -62,11 +65,20 @@ def parse_task_spec_drafts(content: str) -> list[TaskSpecDraft]:
 
 
 def _strip_json_fence(content: str) -> str:
-    if content.startswith("```json") and content.endswith("```"):
-        return content.removeprefix("```json").removesuffix("```").strip()
-    if content.startswith("```") and content.endswith("```"):
-        return content.removeprefix("```").removesuffix("```").strip()
-    return content
+    lines = content.splitlines()
+    if len(lines) < 2:
+        return content
+
+    opening_fence = lines[0].strip()
+    closing_fence = lines[-1].strip()
+    if not opening_fence.startswith("```") or closing_fence != "```":
+        return content
+
+    fence_info = opening_fence.removeprefix("```").strip().lower()
+    if fence_info not in {"", "json"}:
+        return content
+
+    return "\n".join(lines[1:-1]).strip()
 
 
 def project_name(project: Project) -> str:
