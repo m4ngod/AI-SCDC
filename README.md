@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, and Phase 2 backend-first model routing and BYOK foundation for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, and Phase 3 real planner vertical slice for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -18,7 +18,7 @@ The desktop runs in deterministic mock mode by default. Set
 the minimal FastAPI planner approval path; `VITE_DEMO_PROJECT_ID` can pin the
 demo project, otherwise the client creates or reuses one.
 
-Phase 2 is backend-only. The API can create model providers, write-only BYOK credential metadata, role-based model routes, resolved fake fallback routes, and append-only usage ledger entries. It does not call real model providers yet, and credential responses never include raw or encrypted secrets.
+Phase 2 was backend-only. It added model providers, write-only BYOK credential metadata, role-based model routes, resolved fake fallback routes, and append-only usage ledger entries without making real provider calls. Credential responses remain metadata-only and never include raw or encrypted secrets.
 
 ## Phase 3 Local Real Planner Smoke Test
 
@@ -30,8 +30,24 @@ Example local setup:
 pnpm dev:api
 ```
 
-In another shell, create a provider, create a credential with your local API key in the request body, create an active `planner` route, then run the normal desktop planner flow with `VITE_API_BASE_URL=http://127.0.0.1:8000`.
+In another shell, create a provider, create a credential with your local API key in the request body, and create an active `planner` route:
 
-Credential responses remain metadata-only. The API does not return raw or encrypted secrets.
+```bash
+curl -X POST http://127.0.0.1:8000/model-providers \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Local DeepSeek","provider_type":"deepseek","base_url":"https://api.deepseek.com"}'
+
+curl -X POST http://127.0.0.1:8000/model-credentials \
+  -H "Content-Type: application/json" \
+  -d '{"provider_id":"<PROVIDER_ID>","display_name":"Local key","secret_value":"<YOUR_LOCAL_API_KEY>"}'
+
+curl -X POST http://127.0.0.1:8000/model-routes \
+  -H "Content-Type: application/json" \
+  -d '{"agent_role":"planner","provider_id":"<PROVIDER_ID>","credential_id":"<CREDENTIAL_ID>","model_name":"deepseek-chat"}'
+```
+
+Then run the normal desktop planner flow with `VITE_API_BASE_URL=http://127.0.0.1:8000`.
+
+Use your local key only in the credential request body. Do not commit or share `<YOUR_LOCAL_API_KEY>`. Credential responses remain metadata-only; the API does not return raw or encrypted secrets.
 
 See `docs/architecture.md` for architecture and phase boundaries.

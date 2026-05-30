@@ -56,7 +56,7 @@ Credentials are write-only through the API. The server stores a development encr
 
 ## Phase 3 Boundary
 
-Phase 3 adds the first real model-backed planner path. The API resolves the configured planner model route, opens the development BYOK credential internally, calls an OpenAI-compatible chat completions provider through the gateway package, validates JSON TaskSpec drafts, and persists those drafts for human approval.
+Phase 3 adds the first real model-backed planner path. The API resolves the configured planner model route, opens the reversible development-only BYOK credential internally, calls an OpenAI-compatible chat completions provider through the gateway package, validates JSON TaskSpec drafts, and persists those drafts for human approval.
 
 The existing approval boundary remains intact: model output creates planner drafts only, and tasks are created only after a human approves the planner run. If the route, credential, provider request, or model output is unavailable, the API falls back to `FakePlanner` and records a fallback reason on the planner run.
 
@@ -69,7 +69,7 @@ Completed:
 1. Phase 0 monorepo foundation with desktop shell, API, agent protocol, deterministic gateway interface, mock worker simulator, and local test infrastructure.
 2. Phase 1 planner approval loop with fake planner drafts, human approval or rejection, task creation, and audit trail events.
 3. Backend-first model router and BYOK foundation with provider metadata, write-only credential records, role-based route resolution, fake fallback routes, and append-only usage logging.
-4. Real model-backed planner vertical slice that uses route resolution to create TaskSpec drafts for human approval, logs usage, and falls back to fake drafts on provider failures.
+4. Real model-backed planner vertical slice that uses route resolution to create TaskSpec drafts for human approval, logs token usage, and falls back to fake drafts on provider failures.
 
 Future:
 
