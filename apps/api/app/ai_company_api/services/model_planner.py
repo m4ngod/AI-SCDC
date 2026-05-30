@@ -93,9 +93,7 @@ def create_model_planner_result(
                     )
                 )
             finally:
-                close_adapter = getattr(adapter, "close", None)
-                if callable(close_adapter):
-                    close_adapter()
+                _close_adapter(adapter)
         except ProviderGatewayError:
             return _fake_result("provider_request_failed")
 
@@ -178,6 +176,16 @@ def _fake_result(fallback_reason: str | None) -> PlannerExecutionResult:
         planner_kind="fake" if fallback_reason is None else "model_fallback_fake",
         fallback_reason=fallback_reason,
     )
+
+
+def _close_adapter(adapter: object) -> None:
+    close_adapter = getattr(adapter, "close", None)
+    if not callable(close_adapter):
+        return
+    try:
+        close_adapter()
+    except Exception:
+        pass
 
 
 def _active_credential(

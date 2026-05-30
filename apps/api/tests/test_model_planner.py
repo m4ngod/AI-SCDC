@@ -56,6 +56,28 @@ class FailingClosingChatAdapter:
         self.closed = True
 
 
+class RaisingCloseChatAdapter(RecordingChatAdapter):
+    def __init__(self, response: ChatProviderResponse) -> None:
+        super().__init__(response)
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+        raise RuntimeError("close failed")
+
+
+class FailingRaisingCloseChatAdapter:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def complete_chat(self, _request):
+        raise ProviderRequestError("provider down")
+
+    def close(self) -> None:
+        self.closed = True
+        raise RuntimeError("close failed")
+
+
 def build_session() -> Session:
     engine = build_engine("sqlite://")
     init_db(engine)
@@ -261,6 +283,81 @@ def test_create_model_planner_result_closes_adapter_after_provider_failure() -> 
         session.add(planner_run)
         session.flush()
         adapter = FailingClosingChatAdapter()
+
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build real planner",
+            planner_run_id=planner_run.id,
+            adapter_factory=lambda **_kwargs: adapter,
+        )
+
+    assert result.planner_kind == "model_fallback_fake"
+    assert result.fallback_reason == "provider_request_failed"
+    assert adapter.closed is True
+
+
+def test_create_model_planner_result_suppresses_close_failure_after_success() -> None:
+    with build_session() as session:
+        project, route = create_planner_route(session)
+        planner_run = PlannerRun(
+            id="planner_run_close_failure_success",
+            project_id=project.id,
+            goal="Build real planner",
+        )
+        session.add(planner_run)
+        session.flush()
+        adapter = RaisingCloseChatAdapter(
+            ChatProviderResponse(
+                provider_name="deepseek-dev",
+                model_name="deepseek-chat",
+                content="""
+                [
+                  {
+                    "title": "Implement API planner integration",
+                    "role_required": "backend",
+                    "objective": "Use configured route for planner drafts.",
+                    "acceptance_criteria": ["Model drafts are persisted."],
+                    "allowed_paths": ["apps/api/**"],
+                    "required_tests": ["pytest apps/api/tests/test_model_planner.py -v"],
+                    "risk_level": "medium"
+                  }
+                ]
+                """,
+                usage=UsageRecord(prompt_tokens=31, completion_tokens=17),
+            )
+        )
+
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build real planner",
+            planner_run_id=planner_run.id,
+            adapter_factory=lambda **_kwargs: adapter,
+        )
+        usage_entries = list_usage_ledger_entries(
+            session,
+            planner_run_id=planner_run.id,
+        )
+
+    assert result.planner_kind == "model"
+    assert result.model_route_id == route.id
+    assert result.fallback_reason is None
+    assert adapter.closed is True
+    assert usage_entries[0].total_tokens == 48
+
+
+def test_create_model_planner_result_suppresses_close_failure_after_provider_error() -> None:
+    with build_session() as session:
+        project, _route = create_planner_route(session)
+        planner_run = PlannerRun(
+            id="planner_run_close_failure_provider_error",
+            project_id=project.id,
+            goal="Build real planner",
+        )
+        session.add(planner_run)
+        session.flush()
+        adapter = FailingRaisingCloseChatAdapter()
 
         result = create_model_planner_result(
             session,
