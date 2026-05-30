@@ -91,6 +91,50 @@ def test_planner_run_status_rejects_invalid_raw_string() -> None:
             session.commit()
 
 
+def test_init_db_adds_planner_run_metadata_columns_to_existing_sqlite_db(tmp_path) -> None:
+    database_path = tmp_path / "old-planner-run.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                create table planner_run (
+                    id varchar not null primary key,
+                    project_id varchar not null,
+                    conversation_id varchar,
+                    goal varchar not null,
+                    status varchar not null,
+                    planner_kind varchar not null,
+                    draft_count integer not null,
+                    created_by varchar not null,
+                    created_at datetime not null,
+                    updated_at datetime not null
+                )
+                """
+            )
+        )
+
+    init_db(engine)
+
+    with engine.connect() as connection:
+        columns = {
+            row["name"]
+            for row in connection.execute(text("PRAGMA table_info(planner_run)")).mappings()
+        }
+        indexes = {
+            row["name"]
+            for row in connection.execute(text("PRAGMA index_list(planner_run)")).mappings()
+        }
+
+    assert {
+        "model_route_id",
+        "model_provider_name",
+        "model_name",
+        "fallback_reason",
+    } <= columns
+    assert "ix_planner_run_model_route_id" in indexes
+
+
 def test_approval_status_rejects_invalid_raw_string() -> None:
     with build_session() as session:
         project = Project(name="Demo Project")

@@ -1,4 +1,4 @@
-from base64 import urlsafe_b64decode, urlsafe_b64encode
+from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as BinasciiError
 from typing import Protocol
 
@@ -33,6 +33,7 @@ class DevSecretVault:
             raise ValueError("Unsupported dev vault payload")
         encoded = encrypted_secret.removeprefix(self._prefix)
         try:
-            return urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
-        except (BinasciiError, ValueError, UnicodeDecodeError) as exc:
+            encoded_bytes = encoded.encode("ascii")
+            return b64decode(encoded_bytes, altchars=b"-_", validate=True).decode("utf-8")
+        except (BinasciiError, UnicodeEncodeError, UnicodeDecodeError) as exc:
             raise ValueError("Invalid dev vault payload") from exc

@@ -45,11 +45,19 @@ def test_dev_secret_vault_opens_sealed_secret_without_plaintext_storage() -> Non
     assert vault.open(sealed.encrypted_secret) == "sk-example1234"
 
 
-def test_dev_secret_vault_rejects_invalid_payload() -> None:
+@pytest.mark.parametrize(
+    "encrypted_secret",
+    [
+        "dev-vault:v2:not-valid",
+        "dev-vault:v2:!!!!",
+        "dev-vault:v2:\u2603",
+    ],
+)
+def test_dev_secret_vault_rejects_invalid_payload(encrypted_secret: str) -> None:
     vault = DevSecretVault()
 
     with pytest.raises(ValueError):
-        vault.open("dev-vault:v2:not-valid")
+        vault.open(encrypted_secret)
 
 
 def test_model_credential_persists_without_raw_plaintext() -> None:
