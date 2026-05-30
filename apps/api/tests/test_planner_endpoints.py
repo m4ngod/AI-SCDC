@@ -448,10 +448,10 @@ def test_create_planner_run_falls_back_to_fake_and_can_still_be_approved() -> No
             f"/projects/{project['id']}/planner-runs",
             json={"goal": "Build fallback planner"},
         )
+        assert planner_response.status_code == 201
         planner_run = planner_response.json()
         approval_response = client.post(f"/planner-runs/{planner_run['id']}/approve")
 
-    assert planner_response.status_code == 201
     assert planner_run["planner_kind"] == "model_fallback_fake"
     assert planner_run["fallback_reason"] == "no_configured_route"
     assert planner_run["draft_count"] == 2
