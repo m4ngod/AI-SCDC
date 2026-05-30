@@ -1,11 +1,132 @@
 import pytest
+from sqlmodel import Session
 
+from ai_company_api.db.session import build_engine, init_db
+from ai_company_api.models.entities import (
+    ModelCredential,
+    ModelProvider,
+    ModelProviderType,
+    ModelRoute,
+    PlannerRun,
+    Project,
+)
 from ai_company_api.schemas.api import AgentRole, RiskLevel
 from ai_company_api.services.model_planner import (
     ModelPlannerError,
     build_planner_messages,
+    create_model_planner_result,
     parse_task_spec_drafts,
 )
+from ai_company_api.services.secret_vault import DevSecretVault
+from ai_company_api.services.usage_ledger import list_usage_ledger_entries
+from ai_company_llm_gateway.models import (
+    ChatProviderResponse,
+    UsageRecord,
+)
+
+
+class RecordingChatAdapter:
+    def __init__(self, response: ChatProviderResponse) -> None:
+        self.response = response
+        self.requests = []
+
+    def complete_chat(self, request):
+        self.requests.append(request)
+        return self.response
+
+
+def build_session() -> Session:
+    engine = build_engine("sqlite://")
+    init_db(engine)
+    return Session(engine)
+
+
+def create_planner_route(session: Session) -> tuple[Project, ModelRoute]:
+    vault = DevSecretVault()
+    sealed = vault.seal("sk-example1234")
+    project = Project(name="Demo Project")
+    provider = ModelProvider(
+        name="deepseek-dev",
+        provider_type=ModelProviderType.DEEPSEEK,
+        base_url="https://api.deepseek.com",
+    )
+    credential = ModelCredential(
+        provider_id=provider.id,
+        display_name="DeepSeek key",
+        secret_last4=sealed.secret_last4,
+        encrypted_secret=sealed.encrypted_secret,
+    )
+    route = ModelRoute(
+        agent_role="planner",
+        provider_id=provider.id,
+        credential_id=credential.id,
+        model_name="deepseek-chat",
+    )
+    session.add(project)
+    session.add(provider)
+    session.add(credential)
+    session.add(route)
+    session.commit()
+    session.refresh(project)
+    session.refresh(route)
+    return project, route
+
+
+def test_create_model_planner_result_uses_configured_route_and_logs_usage() -> None:
+    with build_session() as session:
+        project, route = create_planner_route(session)
+        planner_run = PlannerRun(
+            id="planner_run_manual",
+            project_id=project.id,
+            goal="Build real planner",
+        )
+        session.add(planner_run)
+        session.flush()
+        adapter = RecordingChatAdapter(
+            ChatProviderResponse(
+                provider_name="deepseek-dev",
+                model_name="deepseek-chat",
+                content="""
+                [
+                  {
+                    "title": "Implement API planner integration",
+                    "role_required": "backend",
+                    "objective": "Use configured route for planner drafts.",
+                    "acceptance_criteria": ["Model drafts are persisted."],
+                    "allowed_paths": ["apps/api/**"],
+                    "required_tests": ["pytest apps/api/tests/test_model_planner.py -v"],
+                    "risk_level": "medium"
+                  }
+                ]
+                """,
+                usage=UsageRecord(prompt_tokens=31, completion_tokens=17),
+            )
+        )
+
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build real planner",
+            planner_run_id=planner_run.id,
+            adapter_factory=lambda **_kwargs: adapter,
+        )
+        usage_entries = list_usage_ledger_entries(
+            session,
+            planner_run_id="planner_run_manual",
+        )
+
+    assert result.planner_kind == "model"
+    assert result.model_route_id == route.id
+    assert result.model_provider_name == "deepseek-dev"
+    assert result.model_name == "deepseek-chat"
+    assert result.fallback_reason is None
+    assert result.task_specs[0].title == "Implement API planner integration"
+    assert adapter.requests[0].model_name == "deepseek-chat"
+    assert usage_entries[0].provider_name == "deepseek-dev"
+    assert usage_entries[0].model_name == "deepseek-chat"
+    assert usage_entries[0].prompt_tokens == 31
+    assert usage_entries[0].completion_tokens == 17
+    assert usage_entries[0].total_tokens == 48
 
 
 def test_build_planner_messages_instructs_json_only() -> None:

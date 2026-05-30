@@ -10,6 +10,10 @@ from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
     Approval,
     ApprovalStatus,
+    ModelCredential,
+    ModelProvider,
+    ModelProviderType,
+    ModelRoute,
     PlannerRun,
     Project,
 )
@@ -19,6 +23,16 @@ from ai_company_api.services.repository import (
     create_planner_run,
     reject_planner_run,
 )
+from ai_company_api.services.secret_vault import DevSecretVault
+from ai_company_llm_gateway.models import ChatProviderResponse, UsageRecord
+
+
+class PlannerEndpointAdapter:
+    def __init__(self, response: ChatProviderResponse) -> None:
+        self.response = response
+
+    def complete_chat(self, _request):
+        return self.response
 
 
 def build_client() -> TestClient:
@@ -166,11 +180,11 @@ def test_create_planner_run_creates_ordered_drafts_and_no_tasks() -> None:
         assert planner_run["project_id"] == project["id"]
         assert planner_run["goal"] == "Build model route settings"
         assert planner_run["status"] == "DRAFTED"
-        assert planner_run["planner_kind"] == "fake"
+        assert planner_run["planner_kind"] == "model_fallback_fake"
         assert planner_run["model_route_id"] is None
         assert planner_run["model_provider_name"] is None
         assert planner_run["model_name"] is None
-        assert planner_run["fallback_reason"] is None
+        assert planner_run["fallback_reason"] == "no_configured_route"
         assert planner_run["draft_count"] == 2
         assert [draft["sequence"] for draft in planner_run["drafts"]] == [1, 2]
         assert [draft["role_required"] for draft in planner_run["drafts"]] == [
@@ -181,6 +195,89 @@ def test_create_planner_run_creates_ordered_drafts_and_no_tasks() -> None:
         tasks_response = client.get(f"/projects/{project['id']}/tasks")
         assert tasks_response.status_code == 200
         assert tasks_response.json() == []
+
+
+def test_create_planner_run_uses_model_route_and_logs_usage(monkeypatch, tmp_path) -> None:
+    database_path = tmp_path / "model-planner.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+
+    with Session(engine) as session:
+        project = Project(name="Demo Project")
+        provider = ModelProvider(
+            name="deepseek-dev",
+            provider_type=ModelProviderType.DEEPSEEK,
+            base_url="https://api.deepseek.com",
+        )
+        sealed = DevSecretVault().seal("sk-example1234")
+        credential = ModelCredential(
+            provider_id=provider.id,
+            display_name="DeepSeek key",
+            secret_last4=sealed.secret_last4,
+            encrypted_secret=sealed.encrypted_secret,
+        )
+        route = ModelRoute(
+            agent_role="planner",
+            provider_id=provider.id,
+            credential_id=credential.id,
+            model_name="deepseek-chat",
+        )
+        session.add(project)
+        session.add(provider)
+        session.add(credential)
+        session.add(route)
+        session.commit()
+        project_id = project.id
+        route_id = route.id
+
+    def adapter_factory(**_kwargs):
+        return PlannerEndpointAdapter(
+            ChatProviderResponse(
+                provider_name="deepseek-dev",
+                model_name="deepseek-chat",
+                content="""
+                [
+                  {
+                    "title": "Implement model planner endpoint",
+                    "role_required": "backend",
+                    "objective": "Wire planner endpoint to the model route.",
+                    "acceptance_criteria": ["Planner run uses model metadata."],
+                    "allowed_paths": ["apps/api/**"],
+                    "required_tests": ["pytest apps/api/tests/test_planner_endpoints.py -v"],
+                    "risk_level": "medium"
+                  }
+                ]
+                """,
+                usage=UsageRecord(prompt_tokens=11, completion_tokens=7),
+            )
+        )
+
+    monkeypatch.setattr(
+        "ai_company_api.services.repository.MODEL_PLANNER_ADAPTER_FACTORY",
+        adapter_factory,
+    )
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.post(
+            f"/projects/{project_id}/planner-runs",
+            json={"goal": "Build model planner"},
+        )
+        usage_response = client.get("/usage-ledger")
+
+    assert response.status_code == 201
+    planner_run = response.json()
+    assert planner_run["planner_kind"] == "model"
+    assert planner_run["model_route_id"] == route_id
+    assert planner_run["model_provider_name"] == "deepseek-dev"
+    assert planner_run["model_name"] == "deepseek-chat"
+    assert planner_run["fallback_reason"] is None
+    assert planner_run["draft_count"] == 1
+    assert planner_run["drafts"][0]["title"] == "Implement model planner endpoint"
+    usage = usage_response.json()
+    assert len(usage) == 1
+    assert usage[0]["planner_run_id"] == planner_run["id"]
+    assert usage[0]["total_tokens"] == 18
 
 
 def test_create_planner_run_rejects_cross_project_conversation() -> None:

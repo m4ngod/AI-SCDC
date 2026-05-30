@@ -82,6 +82,7 @@ def _validate_planner_run(
 def append_usage_ledger_entry(
     session: Session,
     data: UsageLedgerCreate,
+    commit: bool = True,
 ) -> UsageLedgerRead:
     _validate_project(session, data.project_id)
     task = _validate_task(session, data.task_id, data.project_id)
@@ -108,8 +109,11 @@ def append_usage_ledger_entry(
         raw_usage_json=data.raw_usage_json,
     )
     session.add(entry)
-    session.commit()
-    session.refresh(entry)
+    if commit:
+        session.commit()
+        session.refresh(entry)
+    else:
+        session.flush()
     return _usage_read(entry)
 
 

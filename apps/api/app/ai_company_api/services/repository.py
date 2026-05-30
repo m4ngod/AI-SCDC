@@ -28,6 +28,10 @@ from ai_company_api.schemas.api import (
     TaskCreate,
     TaskRead,
 )
+from ai_company_api.services.model_planner import (
+    PlannerExecutionResult,
+    create_model_planner_result,
+)
 from ai_company_api.services.planner import FakePlanner, PlannerService
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
@@ -35,6 +39,10 @@ from ai_company_api.services.task_state import (
     allowed_next_statuses,
     validate_transition,
 )
+from ai_company_llm_gateway.openai_compatible import OpenAICompatibleChatAdapter
+
+
+MODEL_PLANNER_ADAPTER_FACTORY = OpenAICompatibleChatAdapter
 
 
 def create_project(session: Session, data: ProjectCreate) -> Project:
@@ -205,13 +213,39 @@ def get_planner_run_read(session: Session, planner_run_id: str) -> PlannerRunRea
     return _planner_run_read(session, get_planner_run(session, planner_run_id))
 
 
+def _create_default_planner_result(
+    session: Session,
+    project: Project,
+    goal: str,
+    planner_run_id: str,
+) -> PlannerExecutionResult:
+    result = create_model_planner_result(
+        session,
+        project=project,
+        goal=goal,
+        planner_run_id=planner_run_id,
+        adapter_factory=MODEL_PLANNER_ADAPTER_FACTORY,
+    )
+    if result.task_specs:
+        return result
+    fake_specs = FakePlanner().plan(project_id=project.id, goal=goal)
+    return PlannerExecutionResult(
+        task_specs=fake_specs,
+        planner_kind=result.planner_kind,
+        model_route_id=result.model_route_id,
+        model_provider_name=result.model_provider_name,
+        model_name=result.model_name,
+        fallback_reason=result.fallback_reason,
+    )
+
+
 def create_planner_run(
     session: Session,
     project_id: str,
     data: PlannerRunCreate,
     planner: PlannerService | None = None,
 ) -> PlannerRunRead:
-    get_project(session, project_id)
+    project = get_project(session, project_id)
 
     if data.conversation_id is not None:
         conversation = get_conversation(session, data.conversation_id)
@@ -221,18 +255,35 @@ def create_planner_run(
                 detail="Conversation does not belong to project",
             )
 
-    planner_service = planner or FakePlanner()
-    task_specs = planner_service.plan(project_id=project_id, goal=data.goal)
     planner_run = PlannerRun(
         project_id=project_id,
         conversation_id=data.conversation_id,
         goal=data.goal,
         status=PlannerRunStatus.DRAFTED,
-        planner_kind="fake",
-        draft_count=len(task_specs),
+        draft_count=0,
     )
     session.add(planner_run)
     session.flush()
+
+    if planner is not None:
+        task_specs = planner.plan(project_id=project_id, goal=data.goal)
+        planner_run.planner_kind = "fake"
+    else:
+        planner_result = _create_default_planner_result(
+            session,
+            project=project,
+            goal=data.goal,
+            planner_run_id=planner_run.id,
+        )
+        task_specs = planner_result.task_specs
+        planner_run.planner_kind = planner_result.planner_kind
+        planner_run.model_route_id = planner_result.model_route_id
+        planner_run.model_provider_name = planner_result.model_provider_name
+        planner_run.model_name = planner_result.model_name
+        planner_run.fallback_reason = planner_result.fallback_reason
+
+    planner_run.draft_count = len(task_specs)
+    session.add(planner_run)
 
     for sequence, task_spec in enumerate(task_specs, start=1):
         session.add(
