@@ -263,7 +263,7 @@ The smoke output should show `local_run_status` as `patch_ready`, `files_changed
 
 Phase 5 extends the Phase 4 patch artifact with deterministic local verification. It starts after the desktop `Run local` action or `POST /tasks/{task_id}/local-runs` has already moved the task through the Phase 4 local-run path from `CREATED -> ASSIGNED -> IN_PROGRESS -> PATCH_READY` and created a patch artifact. Local-run failures can still move a task to `FIX_REQUESTED` before Phase 5 starts.
 
-Once a patch artifact is `PATCH_READY`, the Phase 5 flow is:
+Once the task is `PATCH_READY` and a patch artifact exists, the Phase 5 flow is:
 
 ```text
 PATCH_READY -> SELF_TESTING -> REVIEWING -> APPROVED
