@@ -263,9 +263,9 @@ def create_planner_run(
         draft_count=0,
     )
     session.add(planner_run)
-    session.flush()
 
     if planner is not None:
+        session.flush()
         task_specs = planner.plan(project_id=project_id, goal=data.goal)
         planner_run.planner_kind = "fake"
     else:

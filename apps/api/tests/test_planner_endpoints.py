@@ -280,6 +280,83 @@ def test_create_planner_run_uses_model_route_and_logs_usage(monkeypatch, tmp_pat
     assert usage[0]["total_tokens"] == 18
 
 
+def test_create_planner_run_does_not_flush_before_model_adapter(monkeypatch) -> None:
+    events = []
+    with build_session() as session:
+        project = Project(name="Demo Project")
+        provider = ModelProvider(
+            name="deepseek-dev",
+            provider_type=ModelProviderType.DEEPSEEK,
+            base_url="https://api.deepseek.com",
+        )
+        sealed = DevSecretVault().seal("sk-example1234")
+        credential = ModelCredential(
+            provider_id=provider.id,
+            display_name="DeepSeek key",
+            secret_last4=sealed.secret_last4,
+            encrypted_secret=sealed.encrypted_secret,
+        )
+        route = ModelRoute(
+            agent_role="planner",
+            provider_id=provider.id,
+            credential_id=credential.id,
+            model_name="deepseek-chat",
+        )
+        session.add(project)
+        session.add(provider)
+        session.add(credential)
+        session.add(route)
+        session.commit()
+        project_id = project.id
+
+        class FlushOrderAdapter:
+            def complete_chat(self, _request):
+                events.append("adapter")
+                return ChatProviderResponse(
+                    provider_name="deepseek-dev",
+                    model_name="deepseek-chat",
+                    content="""
+                    [
+                      {
+                        "title": "Implement model planner endpoint",
+                        "role_required": "backend",
+                        "objective": "Wire planner endpoint to the model route.",
+                        "acceptance_criteria": ["Planner run uses model metadata."],
+                        "allowed_paths": ["apps/api/**"],
+                        "required_tests": ["pytest apps/api/tests/test_planner_endpoints.py -v"],
+                        "risk_level": "medium"
+                      }
+                    ]
+                    """,
+                    usage=UsageRecord(prompt_tokens=11, completion_tokens=7),
+                )
+
+        def adapter_factory(**_kwargs):
+            return FlushOrderAdapter()
+
+        original_flush = session.flush
+
+        def recording_flush(*args, **kwargs):
+            events.append("flush")
+            return original_flush(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "ai_company_api.services.repository.MODEL_PLANNER_ADAPTER_FACTORY",
+            adapter_factory,
+        )
+        monkeypatch.setattr(session, "flush", recording_flush)
+
+        create_planner_run(
+            session,
+            project_id,
+            PlannerRunCreate(goal="Build model planner"),
+        )
+
+    assert "adapter" in events
+    assert "flush" in events
+    assert events.index("adapter") < events.index("flush")
+
+
 def test_create_planner_run_rejects_cross_project_conversation() -> None:
     with build_client() as client:
         project = client.post("/projects", json={"name": "Demo Project"}).json()

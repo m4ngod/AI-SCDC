@@ -21,6 +21,7 @@ from ai_company_api.services.secret_vault import DevSecretVault
 from ai_company_api.services.usage_ledger import list_usage_ledger_entries
 from ai_company_llm_gateway.models import (
     ChatProviderResponse,
+    ProviderRequestError,
     UsageRecord,
 )
 
@@ -33,6 +34,26 @@ class RecordingChatAdapter:
     def complete_chat(self, request):
         self.requests.append(request)
         return self.response
+
+
+class ClosingChatAdapter(RecordingChatAdapter):
+    def __init__(self, response: ChatProviderResponse) -> None:
+        super().__init__(response)
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FailingClosingChatAdapter:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def complete_chat(self, _request):
+        raise ProviderRequestError("provider down")
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def build_session() -> Session:
@@ -184,6 +205,74 @@ def test_create_model_planner_result_propagates_usage_ledger_failures(
                 planner_run_id=planner_run.id,
                 adapter_factory=lambda **_kwargs: adapter,
             )
+
+
+def test_create_model_planner_result_closes_adapter_after_success() -> None:
+    with build_session() as session:
+        project, _route = create_planner_route(session)
+        planner_run = PlannerRun(
+            id="planner_run_closes_adapter",
+            project_id=project.id,
+            goal="Build real planner",
+        )
+        session.add(planner_run)
+        session.flush()
+        adapter = ClosingChatAdapter(
+            ChatProviderResponse(
+                provider_name="deepseek-dev",
+                model_name="deepseek-chat",
+                content="""
+                [
+                  {
+                    "title": "Implement API planner integration",
+                    "role_required": "backend",
+                    "objective": "Use configured route for planner drafts.",
+                    "acceptance_criteria": ["Model drafts are persisted."],
+                    "allowed_paths": ["apps/api/**"],
+                    "required_tests": ["pytest apps/api/tests/test_model_planner.py -v"],
+                    "risk_level": "medium"
+                  }
+                ]
+                """,
+                usage=UsageRecord(prompt_tokens=31, completion_tokens=17),
+            )
+        )
+
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build real planner",
+            planner_run_id=planner_run.id,
+            adapter_factory=lambda **_kwargs: adapter,
+        )
+
+    assert result.planner_kind == "model"
+    assert adapter.closed is True
+
+
+def test_create_model_planner_result_closes_adapter_after_provider_failure() -> None:
+    with build_session() as session:
+        project, _route = create_planner_route(session)
+        planner_run = PlannerRun(
+            id="planner_run_provider_failure_closes_adapter",
+            project_id=project.id,
+            goal="Build real planner",
+        )
+        session.add(planner_run)
+        session.flush()
+        adapter = FailingClosingChatAdapter()
+
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build real planner",
+            planner_run_id=planner_run.id,
+            adapter_factory=lambda **_kwargs: adapter,
+        )
+
+    assert result.planner_kind == "model_fallback_fake"
+    assert result.fallback_reason == "provider_request_failed"
+    assert adapter.closed is True
 
 
 def test_build_planner_messages_instructs_json_only() -> None:

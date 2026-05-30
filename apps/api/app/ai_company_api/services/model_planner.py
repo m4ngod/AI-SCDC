@@ -52,51 +52,57 @@ def create_model_planner_result(
     adapter_factory: AdapterFactory = OpenAICompatibleChatAdapter,
     vault: SecretVault | None = None,
 ) -> PlannerExecutionResult:
-    resolved = resolve_model_route(session, AgentRole.PLANNER)
-    if resolved.resolution_source == "fallback_fake":
-        return _fake_result("no_configured_route")
-    if resolved.provider_type == ModelProviderType.FAKE.value:
-        return _fake_result(None)
-    if not resolved.is_available or resolved.route_id is None:
-        return _fake_result(_unavailable_reason(resolved))
+    with session.no_autoflush:
+        resolved = resolve_model_route(session, AgentRole.PLANNER)
+        if resolved.resolution_source == "fallback_fake":
+            return _fake_result("no_configured_route")
+        if resolved.provider_type == ModelProviderType.FAKE.value:
+            return _fake_result(None)
+        if not resolved.is_available or resolved.route_id is None:
+            return _fake_result(_unavailable_reason(resolved))
 
-    route = session.get(ModelRoute, resolved.route_id)
-    if route is None:
-        return _fake_result("no_configured_route")
-    provider = session.get(ModelProvider, route.provider_id)
-    if provider is None or _enum_value(provider.status) != ModelProviderStatus.ACTIVE.value:
-        return _fake_result("provider_unavailable")
-    credential = _active_credential(session, route.credential_id)
-    if credential is None:
-        return _fake_result("credential_unavailable")
+        route = session.get(ModelRoute, resolved.route_id)
+        if route is None:
+            return _fake_result("no_configured_route")
+        provider = session.get(ModelProvider, route.provider_id)
+        if provider is None or _enum_value(provider.status) != ModelProviderStatus.ACTIVE.value:
+            return _fake_result("provider_unavailable")
+        credential = _active_credential(session, route.credential_id)
+        if credential is None:
+            return _fake_result("credential_unavailable")
 
-    try:
-        secret = (vault or DevSecretVault()).open(credential.encrypted_secret)
-    except ValueError:
-        return _fake_result("credential_unavailable")
+        try:
+            secret = (vault or DevSecretVault()).open(credential.encrypted_secret)
+        except ValueError:
+            return _fake_result("credential_unavailable")
 
-    try:
-        adapter = adapter_factory(
-            provider_name=provider.name,
-            base_url=provider.base_url or "",
-            api_key=secret,
-        )
-        response = adapter.complete_chat(
-            ChatProviderRequest(
-                model_name=route.model_name,
-                messages=build_planner_messages(
-                    goal=goal,
-                    project_name=project_name(project),
-                ),
+        try:
+            adapter = adapter_factory(
+                provider_name=provider.name,
+                base_url=provider.base_url or "",
+                api_key=secret,
             )
-        )
-    except ProviderGatewayError:
-        return _fake_result("provider_request_failed")
+            try:
+                response = adapter.complete_chat(
+                    ChatProviderRequest(
+                        model_name=route.model_name,
+                        messages=build_planner_messages(
+                            goal=goal,
+                            project_name=project_name(project),
+                        ),
+                    )
+                )
+            finally:
+                close_adapter = getattr(adapter, "close", None)
+                if callable(close_adapter):
+                    close_adapter()
+        except ProviderGatewayError:
+            return _fake_result("provider_request_failed")
 
-    try:
-        task_specs = parse_task_spec_drafts(response.content)
-    except ModelPlannerError:
-        return _fake_result("invalid_model_output")
+        try:
+            task_specs = parse_task_spec_drafts(response.content)
+        except ModelPlannerError:
+            return _fake_result("invalid_model_output")
 
     append_usage_ledger_entry(
         session,
