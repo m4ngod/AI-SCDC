@@ -66,6 +66,7 @@ def start_patch_test_run(
 
     event_clock = _EventClock()
     commands = list(task.required_tests or [])
+    worktree_path = local_run.worktree_path
     test_run = LocalTestRun(
         project_id=task.project_id,
         task_id=task.id,
@@ -89,16 +90,24 @@ def start_patch_test_run(
         task,
         TaskStatus.SELF_TESTING,
     )
+    task_id = task.id
+    test_run_id = test_run.id
+    session.add(test_run)
+    session.add(task)
+    session.commit()
 
     debug_attempt: DebugAttempt | None = None
     try:
         result = RUN_TESTS(
             TestRunnerRequest(
-                worktree_path=Path(local_run.worktree_path),
+                worktree_path=Path(worktree_path),
                 commands=commands,
             )
         )
     except TestRunnerError as exc:
+        task = get_task(session, task_id)
+        artifact = _get_patch_artifact_entity(session, patch_artifact_id)
+        test_run = _get_test_run_entity(session, test_run_id)
         _complete_test_run(
             test_run,
             artifact,
@@ -133,6 +142,9 @@ def start_patch_test_run(
             TaskStatus.FIX_REQUESTED,
         )
     else:
+        task = get_task(session, task_id)
+        artifact = _get_patch_artifact_entity(session, patch_artifact_id)
+        test_run = _get_test_run_entity(session, test_run_id)
         command_results = [
             command_result.model_dump() for command_result in result.command_results
         ]
@@ -241,6 +253,13 @@ def _get_local_run_entity(session: Session, local_run_id: str) -> LocalTaskRun:
     if local_run is None:
         raise HTTPException(status_code=404, detail="Local task run not found")
     return local_run
+
+
+def _get_test_run_entity(session: Session, test_run_id: str) -> LocalTestRun:
+    test_run = session.get(LocalTestRun, test_run_id)
+    if test_run is None:
+        raise HTTPException(status_code=404, detail="Local test run not found")
+    return test_run
 
 
 def _complete_test_run(

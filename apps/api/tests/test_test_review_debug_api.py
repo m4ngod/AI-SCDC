@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
@@ -16,6 +16,7 @@ from ai_company_api.models.entities import (
     Repository,
     Task,
 )
+from ai_company_worker.test_runner import CommandResult, TestRunnerResult
 
 
 def build_session() -> Session:
@@ -214,6 +215,73 @@ def test_passing_test_run_moves_patch_ready_task_to_reviewing(tmp_path: Path) ->
     event_types = [event["event_type"] for event in events_response.json()]
     assert "test_run_started" in event_types
     assert "test_run_completed" in event_types
+
+
+def test_test_run_start_is_committed_before_commands_execute(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_path = create_git_repo(tmp_path)
+    database_path = tmp_path / "api.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    runner_calls = 0
+
+    def fake_run_tests(_request):
+        nonlocal runner_calls
+        runner_calls += 1
+        if runner_calls > 1:
+            raise AssertionError("Duplicate start should not invoke RUN_TESTS")
+
+        engine = build_engine(database_url)
+        with Session(engine) as second_session:
+            persisted_task = second_session.get(Task, task["id"])
+            persisted_test_run = second_session.exec(
+                select(LocalTestRun).where(
+                    LocalTestRun.patch_artifact_id == artifact["id"]
+                )
+            ).one()
+
+        assert persisted_task is not None
+        assert persisted_task.status == "SELF_TESTING"
+        assert persisted_test_run.status == "running"
+
+        with build_client(database_path) as second_client:
+            duplicate_response = second_client.post(
+                f"/patch-artifacts/{artifact['id']}/test-runs"
+            )
+
+        assert duplicate_response.status_code == 400
+        assert duplicate_response.json()["detail"]["current_status"] == "SELF_TESTING"
+        return TestRunnerResult(
+            status="passed",
+            command_results=[
+                CommandResult(
+                    command="python -V",
+                    exit_code=0,
+                    stdout="Python",
+                    stderr="",
+                    duration_ms=1,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "ai_company_api.services.test_review_debug.RUN_TESTS",
+        fake_run_tests,
+    )
+
+    with build_client(database_path) as client:
+        _project, task, _local_run, artifact = create_patch_ready_task(
+            client,
+            repo_path,
+            ["python -V"],
+        )
+
+        response = client.post(f"/patch-artifacts/{artifact['id']}/test-runs")
+
+    assert response.status_code == 201
+    assert response.json()["task"]["status"] == "REVIEWING"
+    assert runner_calls == 1
 
 
 def test_failing_test_run_moves_task_to_fix_requested_and_creates_debug_attempt(
