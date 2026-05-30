@@ -437,6 +437,13 @@ class LocalTestRun(SQLModel, table=True):
 
 class PatchReview(SQLModel, table=True):
     __tablename__ = "patch_review"
+    __table_args__ = (
+        UniqueConstraint(
+            "patch_artifact_id",
+            "reviewer_kind",
+            name="uq_patch_review_artifact_reviewer_kind",
+        ),
+    )
 
     id: str = Field(default_factory=lambda: prefixed_id("review"), primary_key=True)
     workspace_id: str = Field(default="dev_workspace", index=True)

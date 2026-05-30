@@ -1,7 +1,9 @@
 import subprocess
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from ai_company_api.db.session import build_engine, init_db
@@ -16,6 +18,7 @@ from ai_company_api.models.entities import (
     Repository,
     Task,
 )
+from ai_company_api.services.task_state import TaskStatus
 from ai_company_worker.test_runner import CommandResult, TestRunnerResult
 
 
@@ -27,6 +30,10 @@ def build_session() -> Session:
 
 def build_client(database_path: Path) -> TestClient:
     return TestClient(create_app(database_url=f"sqlite:///{database_path.as_posix()}"))
+
+
+def database_url(database_path: Path) -> str:
+    return f"sqlite:///{database_path.as_posix()}"
 
 
 def run_git(repo_path: Path, *args: str) -> str:
@@ -88,6 +95,10 @@ def create_patch_ready_task(
     ).json()
     artifact = client.get(f"/patch-artifacts/{local_run['patch_artifact_id']}").json()
     return project, task, local_run, artifact
+
+
+def count_events(events: list[dict], event_type: str) -> int:
+    return sum(1 for event in events if event["event_type"] == event_type)
 
 
 def test_test_review_and_debug_records_persist_json_payloads() -> None:
@@ -186,6 +197,76 @@ def test_test_review_and_debug_records_persist_json_payloads() -> None:
     assert persisted_debug.status == "requested"
 
 
+def test_patch_review_is_unique_per_artifact_and_reviewer_kind() -> None:
+    with build_session() as session:
+        project = Project(name="Demo")
+        session.add(project)
+        session.flush()
+        task = Task(
+            project_id=project.id,
+            title="Patch task",
+            role_required="backend",
+            allowed_paths=["README.md"],
+            required_tests=["python -V"],
+        )
+        session.add(task)
+        session.flush()
+        repository = Repository(
+            project_id=project.id,
+            name="Demo repo",
+            local_path=".",
+            default_branch="main",
+        )
+        session.add(repository)
+        session.flush()
+        local_run = LocalTaskRun(
+            project_id=project.id,
+            task_id=task.id,
+            repo_id=repository.id,
+            status="completed",
+        )
+        session.add(local_run)
+        session.flush()
+        patch_artifact = PatchArtifact(
+            project_id=project.id,
+            task_id=task.id,
+            local_run_id=local_run.id,
+            summary="Prepared patch.",
+            files_changed=["README.md"],
+            tests_run=["python -V"],
+            test_result="passed",
+            risks=[],
+            diff_text="diff --git a/README.md b/README.md",
+        )
+        session.add(patch_artifact)
+        session.flush()
+
+        first_review = PatchReview(
+            project_id=project.id,
+            task_id=task.id,
+            local_run_id=local_run.id,
+            patch_artifact_id=patch_artifact.id,
+            verdict="approved",
+            issues=[],
+            required_changes=[],
+        )
+        session.add(first_review)
+        session.commit()
+
+        duplicate_review = PatchReview(
+            project_id=project.id,
+            task_id=task.id,
+            local_run_id=local_run.id,
+            patch_artifact_id=patch_artifact.id,
+            verdict="approved",
+            issues=[],
+            required_changes=[],
+        )
+        session.add(duplicate_review)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
 def test_passing_test_run_moves_patch_ready_task_to_reviewing(tmp_path: Path) -> None:
     repo_path = create_git_repo(tmp_path)
     with build_client(tmp_path / "api.db") as client:
@@ -257,7 +338,7 @@ def test_review_approves_patch_after_passing_tests(tmp_path: Path) -> None:
 def test_review_requests_changes_when_diff_is_missing(tmp_path: Path) -> None:
     repo_path = create_git_repo(tmp_path)
     database_path = tmp_path / "api.db"
-    database_url = f"sqlite:///{database_path.as_posix()}"
+    url = database_url(database_path)
 
     with build_client(database_path) as client:
         _project, task, _local_run, artifact = create_patch_ready_task(
@@ -270,7 +351,7 @@ def test_review_requests_changes_when_diff_is_missing(tmp_path: Path) -> None:
         )
         test_response = client.post(f"/patch-artifacts/{artifact['id']}/test-runs")
 
-        engine = build_engine(database_url)
+        engine = build_engine(url)
         with Session(engine) as session:
             persisted_artifact = session.get(PatchArtifact, artifact["id"])
             assert persisted_artifact is not None
@@ -294,6 +375,175 @@ def test_review_requests_changes_when_diff_is_missing(tmp_path: Path) -> None:
     event_types = [event["event_type"] for event in events_response.json()]
     assert "patch_review_created" in event_types
     assert "debug_attempt_created" in event_types
+
+
+def test_duplicate_review_post_returns_existing_review_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    repo_path = create_git_repo(tmp_path)
+    database_path = tmp_path / "api.db"
+    url = database_url(database_path)
+
+    with build_client(database_path) as client:
+        _project, task, _local_run, artifact = create_patch_ready_task(
+            client,
+            repo_path,
+            [
+                "python -c \"from pathlib import Path; "
+                "assert Path('README.md').exists()\""
+            ],
+        )
+        test_response = client.post(f"/patch-artifacts/{artifact['id']}/test-runs")
+
+        engine = build_engine(url)
+        with Session(engine) as session:
+            persisted_artifact = session.get(PatchArtifact, artifact["id"])
+            assert persisted_artifact is not None
+            persisted_artifact.diff_text = ""
+            session.add(persisted_artifact)
+            session.commit()
+
+        first_response = client.post(f"/patch-artifacts/{artifact['id']}/reviews")
+        duplicate_response = client.post(f"/patch-artifacts/{artifact['id']}/reviews")
+        list_response = client.get(f"/patch-artifacts/{artifact['id']}/reviews")
+        debug_response = client.get(f"/tasks/{task['id']}/debug-attempts")
+        events_response = client.get(f"/tasks/{task['id']}/events")
+
+    assert test_response.status_code == 201
+    assert first_response.status_code == 201
+    assert duplicate_response.status_code == 201
+    first_result = first_response.json()
+    duplicate_result = duplicate_response.json()
+    assert duplicate_result["review"]["id"] == first_result["review"]["id"]
+    assert (
+        duplicate_result["debug_attempt"]["id"]
+        == first_result["debug_attempt"]["id"]
+    )
+    assert duplicate_result["task"]["status"] == "FIX_REQUESTED"
+
+    assert list_response.status_code == 200
+    assert [review["id"] for review in list_response.json()] == [
+        first_result["review"]["id"]
+    ]
+    assert debug_response.status_code == 200
+    assert [attempt["id"] for attempt in debug_response.json()] == [
+        first_result["debug_attempt"]["id"]
+    ]
+
+    events = events_response.json()
+    assert count_events(events, "patch_review_created") == 1
+    assert count_events(events, "debug_attempt_created") == 1
+
+
+def test_review_without_existing_review_requires_reviewing_task(
+    tmp_path: Path,
+) -> None:
+    repo_path = create_git_repo(tmp_path)
+    with build_client(tmp_path / "api.db") as client:
+        _project, task, _local_run, artifact = create_patch_ready_task(
+            client,
+            repo_path,
+            ["python -V"],
+        )
+
+        response = client.post(f"/patch-artifacts/{artifact['id']}/reviews")
+        list_response = client.get(f"/patch-artifacts/{artifact['id']}/reviews")
+        events_response = client.get(f"/tasks/{task['id']}/events")
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["current_status"] == "PATCH_READY"
+    assert list_response.status_code == 200
+    assert list_response.json() == []
+
+    events = events_response.json()
+    assert count_events(events, "patch_review_created") == 0
+    assert count_events(events, "debug_attempt_created") == 0
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_issue_code"),
+    [
+        ("no_changed_files", "no_changed_files"),
+        ("out_of_scope_changed_files", "changed_file_outside_allowed_paths"),
+        ("missing_test_run", "missing_passing_test_run"),
+        ("latest_non_passed_test_run", "latest_test_run_not_passed"),
+    ],
+)
+def test_review_requests_changes_for_deterministic_issue(
+    scenario: str,
+    expected_issue_code: str,
+    tmp_path: Path,
+) -> None:
+    repo_path = create_git_repo(tmp_path)
+    database_path = tmp_path / "api.db"
+    url = database_url(database_path)
+
+    with build_client(database_path) as client:
+        _project, task, _local_run, artifact = create_patch_ready_task(
+            client,
+            repo_path,
+            [
+                "python -c \"from pathlib import Path; "
+                "assert Path('README.md').exists()\""
+            ],
+        )
+
+        if scenario in {"no_changed_files", "out_of_scope_changed_files"}:
+            test_response = client.post(f"/patch-artifacts/{artifact['id']}/test-runs")
+            assert test_response.status_code == 201
+
+        engine = build_engine(url)
+        with Session(engine) as session:
+            persisted_task = session.get(Task, task["id"])
+            persisted_artifact = session.get(PatchArtifact, artifact["id"])
+            assert persisted_task is not None
+            assert persisted_artifact is not None
+
+            if scenario == "no_changed_files":
+                persisted_artifact.files_changed = []
+                session.add(persisted_artifact)
+            elif scenario == "out_of_scope_changed_files":
+                persisted_artifact.files_changed = ["docs/outside.md"]
+                session.add(persisted_artifact)
+            elif scenario == "missing_test_run":
+                persisted_task.status = TaskStatus.REVIEWING
+                session.add(persisted_task)
+            elif scenario == "latest_non_passed_test_run":
+                persisted_task.status = TaskStatus.REVIEWING
+                test_run = LocalTestRun(
+                    project_id=persisted_task.project_id,
+                    task_id=persisted_task.id,
+                    local_run_id=persisted_artifact.local_run_id,
+                    patch_artifact_id=persisted_artifact.id,
+                    status="failed",
+                    commands=["python -V"],
+                    command_results=[
+                        {
+                            "command": "python -V",
+                            "exit_code": 1,
+                            "stdout": "",
+                            "stderr": "failed",
+                            "duration_ms": 1,
+                        }
+                    ],
+                    failure_reason="failed",
+                    completed_at=persisted_task.updated_at,
+                )
+                session.add(persisted_task)
+                session.add(test_run)
+            session.commit()
+
+        review_response = client.post(f"/patch-artifacts/{artifact['id']}/reviews")
+
+    assert review_response.status_code == 201
+    result = review_response.json()
+    assert result["review"]["verdict"] == "changes_requested"
+    assert result["task"]["status"] == "FIX_REQUESTED"
+    assert result["debug_attempt"]["status"] == "requested"
+    assert result["debug_attempt"]["review_id"] == result["review"]["id"]
+    assert expected_issue_code in [
+        issue["code"] for issue in result["review"]["issues"]
+    ]
 
 
 def test_test_run_start_is_committed_before_commands_execute(

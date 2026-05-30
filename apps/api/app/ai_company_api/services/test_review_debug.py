@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from ai_company_api.models.entities import (
@@ -41,6 +42,7 @@ from ai_company_worker.local_runner import (
 
 
 RUN_TESTS = run_tests
+DETERMINISTIC_REVIEWER_KIND = "deterministic"
 
 
 def start_patch_test_run(
@@ -250,6 +252,10 @@ def start_patch_review(
     patch_artifact_id: str,
 ) -> PatchReviewResultRead:
     artifact = _get_patch_artifact_entity(session, patch_artifact_id)
+    existing_review = _existing_deterministic_review(session, artifact.id)
+    if existing_review is not None:
+        return _review_result_read(session, existing_review)
+
     task = get_task(session, artifact.task_id)
     if TaskStatus(task.status) != TaskStatus.REVIEWING:
         current_status = TaskStatus(task.status)
@@ -267,72 +273,75 @@ def start_patch_review(
     latest_test_run = _latest_test_run(session, artifact.id)
     issues = _deterministic_review_issues(task, artifact, latest_test_run)
     verdict = "changes_requested" if issues else "approved"
-    review = PatchReview(
-        project_id=task.project_id,
-        task_id=task.id,
-        local_run_id=artifact.local_run_id,
-        patch_artifact_id=artifact.id,
-        test_run_id=latest_test_run.id if latest_test_run else None,
-        verdict=verdict,
-        issues=issues,
-        required_changes=[issue["message"] for issue in issues],
-    )
-    session.add(review)
-    session.flush()
-    _create_workflow_event(
-        session,
-        event_clock,
-        task.id,
-        "patch_review_created",
-        {
-            "patch_artifact_id": artifact.id,
-            "review_id": review.id,
-            "test_run_id": review.test_run_id,
-            "verdict": review.verdict,
-        },
-    )
-
-    debug_attempt: DebugAttempt | None = None
-    if verdict == "approved":
-        _transition_task_for_workflow(
-            session,
-            event_clock,
-            task,
-            TaskStatus.APPROVED,
+    try:
+        review = PatchReview(
+            project_id=task.project_id,
+            task_id=task.id,
+            local_run_id=artifact.local_run_id,
+            patch_artifact_id=artifact.id,
+            test_run_id=latest_test_run.id if latest_test_run else None,
+            reviewer_kind=DETERMINISTIC_REVIEWER_KIND,
+            verdict=verdict,
+            issues=issues,
+            required_changes=[issue["message"] for issue in issues],
         )
-    else:
-        debug_attempt = _create_debug_attempt(
+        session.add(review)
+        session.flush()
+        _create_workflow_event(
             session,
             event_clock,
-            task,
-            artifact,
-            latest_test_run,
-            review=review,
-            root_cause=_review_root_cause(issues),
-            fix_summary="Address deterministic review findings, then rerun local tests.",
-        )
-        _transition_task_for_workflow(
-            session,
-            event_clock,
-            task,
-            TaskStatus.FIX_REQUESTED,
+            task.id,
+            "patch_review_created",
+            {
+                "patch_artifact_id": artifact.id,
+                "review_id": review.id,
+                "test_run_id": review.test_run_id,
+                "verdict": review.verdict,
+            },
         )
 
-    session.add(task)
-    session.add(review)
-    session.commit()
-    session.refresh(task)
-    session.refresh(artifact)
+        if verdict == "approved":
+            _transition_task_for_workflow(
+                session,
+                event_clock,
+                task,
+                TaskStatus.APPROVED,
+            )
+        else:
+            _create_debug_attempt(
+                session,
+                event_clock,
+                task,
+                artifact,
+                latest_test_run,
+                review=review,
+                root_cause=_review_root_cause(issues),
+                fix_summary=(
+                    "Address deterministic review findings, then rerun local tests."
+                ),
+            )
+            _transition_task_for_workflow(
+                session,
+                event_clock,
+                task,
+                TaskStatus.FIX_REQUESTED,
+            )
+
+        session.add(task)
+        session.add(review)
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        existing_review = _existing_deterministic_review(session, patch_artifact_id)
+        if existing_review is not None:
+            return _review_result_read(session, existing_review)
+        raise HTTPException(
+            status_code=409,
+            detail="Patch review could not be created because of a uniqueness conflict",
+        ) from exc
+
     session.refresh(review)
-    if debug_attempt is not None:
-        session.refresh(debug_attempt)
-
-    return PatchReviewResultRead(
-        task=_task_read(task),
-        patch_artifact=_patch_artifact_read(artifact),
-        review=_review_read(review),
-        debug_attempt=_debug_attempt_read(debug_attempt) if debug_attempt else None,
-    )
+    return _review_result_read(session, review)
 
 
 def list_patch_reviews(
@@ -353,6 +362,48 @@ def get_patch_review(session: Session, review_id: str) -> PatchReviewRead:
     if review is None:
         raise HTTPException(status_code=404, detail="Patch review not found")
     return _review_read(review)
+
+
+def _existing_deterministic_review(
+    session: Session,
+    patch_artifact_id: str,
+) -> PatchReview | None:
+    statement = (
+        select(PatchReview)
+        .where(PatchReview.patch_artifact_id == patch_artifact_id)
+        .where(PatchReview.reviewer_kind == DETERMINISTIC_REVIEWER_KIND)
+        .order_by(PatchReview.created_at, PatchReview.id)
+        .limit(1)
+    )
+    return session.exec(statement).first()
+
+
+def _review_result_read(
+    session: Session,
+    review: PatchReview,
+) -> PatchReviewResultRead:
+    task = get_task(session, review.task_id)
+    artifact = _get_patch_artifact_entity(session, review.patch_artifact_id)
+    debug_attempt = _debug_attempt_for_review(session, review.id)
+    return PatchReviewResultRead(
+        task=_task_read(task),
+        patch_artifact=_patch_artifact_read(artifact),
+        review=_review_read(review),
+        debug_attempt=_debug_attempt_read(debug_attempt) if debug_attempt else None,
+    )
+
+
+def _debug_attempt_for_review(
+    session: Session,
+    review_id: str,
+) -> DebugAttempt | None:
+    statement = (
+        select(DebugAttempt)
+        .where(DebugAttempt.review_id == review_id)
+        .order_by(DebugAttempt.created_at, DebugAttempt.id)
+        .limit(1)
+    )
+    return session.exec(statement).first()
 
 
 def _get_patch_artifact_entity(
