@@ -123,6 +123,10 @@ def test_create_planner_run_creates_ordered_drafts_and_no_tasks() -> None:
         assert planner_run["goal"] == "Build model route settings"
         assert planner_run["status"] == "DRAFTED"
         assert planner_run["planner_kind"] == "fake"
+        assert planner_run["model_route_id"] is None
+        assert planner_run["model_provider_name"] is None
+        assert planner_run["model_name"] is None
+        assert planner_run["fallback_reason"] is None
         assert planner_run["draft_count"] == 2
         assert [draft["sequence"] for draft in planner_run["drafts"]] == [1, 2]
         assert [draft["role_required"] for draft in planner_run["drafts"]] == [
@@ -347,3 +351,8 @@ def test_planner_run_routes_have_stable_openapi_response_schema() -> None:
 
     assert create_schema == {"$ref": "#/components/schemas/PlannerRunRead"}
     assert read_schema == {"$ref": "#/components/schemas/PlannerRunRead"}
+    run_schema = schema["components"]["schemas"]["PlannerRunRead"]
+    assert "model_route_id" in run_schema["properties"]
+    assert "model_provider_name" in run_schema["properties"]
+    assert "model_name" in run_schema["properties"]
+    assert "fallback_reason" in run_schema["properties"]

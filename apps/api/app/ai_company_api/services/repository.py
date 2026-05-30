@@ -182,6 +182,10 @@ def _planner_run_read(session: Session, planner_run: PlannerRun) -> PlannerRunRe
         goal=planner_run.goal,
         status=status,
         planner_kind=planner_run.planner_kind,
+        model_route_id=planner_run.model_route_id,
+        model_provider_name=planner_run.model_provider_name,
+        model_name=planner_run.model_name,
+        fallback_reason=planner_run.fallback_reason,
         draft_count=planner_run.draft_count,
         drafts=[
             _planner_draft_read(draft)

@@ -113,6 +113,10 @@ class PlannerRun(SQLModel, table=True):
         ),
     )
     planner_kind: str = "fake"
+    model_route_id: str | None = Field(default=None, index=True)
+    model_provider_name: str | None = None
+    model_name: str | None = None
+    fallback_reason: str | None = None
     draft_count: int = 0
     created_by: str = "dev_user"
     created_at: datetime = Field(default_factory=utc_now)

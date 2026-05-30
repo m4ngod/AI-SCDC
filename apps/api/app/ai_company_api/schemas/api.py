@@ -94,6 +94,10 @@ class PlannerRunRead(BaseModel):
     goal: str
     status: str
     planner_kind: str
+    model_route_id: str | None
+    model_provider_name: str | None
+    model_name: str | None
+    fallback_reason: str | None
     draft_count: int
     drafts: list[PlannerTaskDraftRead]
 

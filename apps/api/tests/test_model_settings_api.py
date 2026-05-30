@@ -31,8 +31,25 @@ def test_dev_secret_vault_seals_without_plaintext() -> None:
     sealed = DevSecretVault().seal("sk-example1234")
 
     assert sealed.secret_last4 == "1234"
-    assert sealed.encrypted_secret.startswith("dev-vault:v1:")
+    assert sealed.encrypted_secret.startswith("dev-vault:v2:")
     assert "sk-example1234" not in sealed.encrypted_secret
+
+
+def test_dev_secret_vault_opens_sealed_secret_without_plaintext_storage() -> None:
+    vault = DevSecretVault()
+
+    sealed = vault.seal("sk-example1234")
+
+    assert sealed.encrypted_secret.startswith("dev-vault:v2:")
+    assert "sk-example1234" not in sealed.encrypted_secret
+    assert vault.open(sealed.encrypted_secret) == "sk-example1234"
+
+
+def test_dev_secret_vault_rejects_invalid_payload() -> None:
+    vault = DevSecretVault()
+
+    with pytest.raises(ValueError):
+        vault.open("dev-vault:v2:not-valid")
 
 
 def test_model_credential_persists_without_raw_plaintext() -> None:
@@ -61,7 +78,7 @@ def test_model_credential_persists_without_raw_plaintext() -> None:
             {"id": credential.id},
         ).mappings().one()
 
-    assert raw["encrypted_secret"].startswith("dev-vault:v1:")
+    assert raw["encrypted_secret"].startswith("dev-vault:v2:")
     assert "sk-example1234" not in raw["encrypted_secret"]
     assert raw["secret_last4"] == "1234"
     assert raw["status"] == ModelCredentialStatus.ACTIVE.value
