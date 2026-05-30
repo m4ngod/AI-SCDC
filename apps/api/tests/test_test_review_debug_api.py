@@ -217,6 +217,85 @@ def test_passing_test_run_moves_patch_ready_task_to_reviewing(tmp_path: Path) ->
     assert "test_run_completed" in event_types
 
 
+def test_review_approves_patch_after_passing_tests(tmp_path: Path) -> None:
+    repo_path = create_git_repo(tmp_path)
+    with build_client(tmp_path / "api.db") as client:
+        _project, task, _local_run, artifact = create_patch_ready_task(
+            client,
+            repo_path,
+            [
+                "python -c \"from pathlib import Path; "
+                "assert Path('README.md').exists()\""
+            ],
+        )
+
+        test_response = client.post(f"/patch-artifacts/{artifact['id']}/test-runs")
+        review_response = client.post(f"/patch-artifacts/{artifact['id']}/reviews")
+        assert test_response.status_code == 201
+        assert test_response.json()["task"]["status"] == "REVIEWING"
+        assert review_response.status_code == 201
+        result = review_response.json()
+        review = result["review"]
+        assert result["review"]["verdict"] == "approved"
+        assert result["review"]["test_run_id"] == test_response.json()["test_run"]["id"]
+        assert result["task"]["status"] == "APPROVED"
+        assert result["debug_attempt"] is None
+
+        list_response = client.get(f"/patch-artifacts/{artifact['id']}/reviews")
+        get_response = client.get(f"/patch-reviews/{review['id']}")
+        events_response = client.get(f"/tasks/{task['id']}/events")
+
+    assert list_response.status_code == 200
+    assert [item["id"] for item in list_response.json()] == [review["id"]]
+    assert get_response.status_code == 200
+    assert get_response.json()["id"] == review["id"]
+
+    event_types = [event["event_type"] for event in events_response.json()]
+    assert "patch_review_created" in event_types
+
+
+def test_review_requests_changes_when_diff_is_missing(tmp_path: Path) -> None:
+    repo_path = create_git_repo(tmp_path)
+    database_path = tmp_path / "api.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+
+    with build_client(database_path) as client:
+        _project, task, _local_run, artifact = create_patch_ready_task(
+            client,
+            repo_path,
+            [
+                "python -c \"from pathlib import Path; "
+                "assert Path('README.md').exists()\""
+            ],
+        )
+        test_response = client.post(f"/patch-artifacts/{artifact['id']}/test-runs")
+
+        engine = build_engine(database_url)
+        with Session(engine) as session:
+            persisted_artifact = session.get(PatchArtifact, artifact["id"])
+            assert persisted_artifact is not None
+            persisted_artifact.diff_text = ""
+            session.add(persisted_artifact)
+            session.commit()
+
+        review_response = client.post(f"/patch-artifacts/{artifact['id']}/reviews")
+        events_response = client.get(f"/tasks/{task['id']}/events")
+
+    assert test_response.status_code == 201
+    assert test_response.json()["task"]["status"] == "REVIEWING"
+    assert review_response.status_code == 201
+    result = review_response.json()
+    assert result["review"]["verdict"] == "changes_requested"
+    assert result["task"]["status"] == "FIX_REQUESTED"
+    assert result["debug_attempt"]["status"] == "requested"
+    assert result["debug_attempt"]["review_id"] == result["review"]["id"]
+    assert "deterministic review" in result["debug_attempt"]["root_cause"]
+
+    event_types = [event["event_type"] for event in events_response.json()]
+    assert "patch_review_created" in event_types
+    assert "debug_attempt_created" in event_types
+
+
 def test_test_run_start_is_committed_before_commands_execute(
     monkeypatch,
     tmp_path: Path,

@@ -9,6 +9,7 @@ from ai_company_api.models.entities import (
     LocalTaskRun,
     LocalTestRun,
     PatchArtifact,
+    PatchReview,
     Task,
     utc_now,
 )
@@ -16,6 +17,8 @@ from ai_company_api.schemas.api import (
     DebugAttemptRead,
     LocalTestRunRead,
     PatchArtifactRead,
+    PatchReviewRead,
+    PatchReviewResultRead,
     PatchTestRunResultRead,
     TaskRead,
 )
@@ -30,6 +33,10 @@ from ai_company_worker.test_runner import (
     TestRunnerError,
     TestRunnerRequest,
     run_tests,
+)
+from ai_company_worker.local_runner import (
+    LocalRunnerError,
+    ensure_changed_files_allowed,
 )
 
 
@@ -238,6 +245,116 @@ def list_debug_attempts(session: Session, task_id: str) -> list[DebugAttemptRead
     return [_debug_attempt_read(debug_attempt) for debug_attempt in session.exec(statement).all()]
 
 
+def start_patch_review(
+    session: Session,
+    patch_artifact_id: str,
+) -> PatchReviewResultRead:
+    artifact = _get_patch_artifact_entity(session, patch_artifact_id)
+    task = get_task(session, artifact.task_id)
+    if TaskStatus(task.status) != TaskStatus.REVIEWING:
+        current_status = TaskStatus(task.status)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Task must be REVIEWING before review can run",
+                "current_status": current_status.value,
+                "expected_status": TaskStatus.REVIEWING.value,
+                "allowed_next_statuses": allowed_next_statuses(current_status),
+            },
+        )
+
+    event_clock = _EventClock()
+    latest_test_run = _latest_test_run(session, artifact.id)
+    issues = _deterministic_review_issues(task, artifact, latest_test_run)
+    verdict = "changes_requested" if issues else "approved"
+    review = PatchReview(
+        project_id=task.project_id,
+        task_id=task.id,
+        local_run_id=artifact.local_run_id,
+        patch_artifact_id=artifact.id,
+        test_run_id=latest_test_run.id if latest_test_run else None,
+        verdict=verdict,
+        issues=issues,
+        required_changes=[issue["message"] for issue in issues],
+    )
+    session.add(review)
+    session.flush()
+    _create_workflow_event(
+        session,
+        event_clock,
+        task.id,
+        "patch_review_created",
+        {
+            "patch_artifact_id": artifact.id,
+            "review_id": review.id,
+            "test_run_id": review.test_run_id,
+            "verdict": review.verdict,
+        },
+    )
+
+    debug_attempt: DebugAttempt | None = None
+    if verdict == "approved":
+        _transition_task_for_workflow(
+            session,
+            event_clock,
+            task,
+            TaskStatus.APPROVED,
+        )
+    else:
+        debug_attempt = _create_debug_attempt(
+            session,
+            event_clock,
+            task,
+            artifact,
+            latest_test_run,
+            review=review,
+            root_cause=_review_root_cause(issues),
+            fix_summary="Address deterministic review findings, then rerun local tests.",
+        )
+        _transition_task_for_workflow(
+            session,
+            event_clock,
+            task,
+            TaskStatus.FIX_REQUESTED,
+        )
+
+    session.add(task)
+    session.add(review)
+    session.commit()
+    session.refresh(task)
+    session.refresh(artifact)
+    session.refresh(review)
+    if debug_attempt is not None:
+        session.refresh(debug_attempt)
+
+    return PatchReviewResultRead(
+        task=_task_read(task),
+        patch_artifact=_patch_artifact_read(artifact),
+        review=_review_read(review),
+        debug_attempt=_debug_attempt_read(debug_attempt) if debug_attempt else None,
+    )
+
+
+def list_patch_reviews(
+    session: Session,
+    patch_artifact_id: str,
+) -> list[PatchReviewRead]:
+    _get_patch_artifact_entity(session, patch_artifact_id)
+    statement = (
+        select(PatchReview)
+        .where(PatchReview.patch_artifact_id == patch_artifact_id)
+        .order_by(PatchReview.created_at, PatchReview.id)
+    )
+    return [_review_read(review) for review in session.exec(statement).all()]
+
+
+def get_patch_review(session: Session, review_id: str) -> PatchReviewRead:
+    review = session.get(PatchReview, review_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="Patch review not found")
+    return _review_read(review)
+
+
 def _get_patch_artifact_entity(
     session: Session,
     patch_artifact_id: str,
@@ -260,6 +377,73 @@ def _get_test_run_entity(session: Session, test_run_id: str) -> LocalTestRun:
     if test_run is None:
         raise HTTPException(status_code=404, detail="Local test run not found")
     return test_run
+
+
+def _latest_test_run(
+    session: Session,
+    patch_artifact_id: str,
+) -> LocalTestRun | None:
+    statement = (
+        select(LocalTestRun)
+        .where(LocalTestRun.patch_artifact_id == patch_artifact_id)
+        .order_by(LocalTestRun.created_at.desc(), LocalTestRun.id.desc())
+        .limit(1)
+    )
+    return session.exec(statement).first()
+
+
+def _deterministic_review_issues(
+    task: Task,
+    artifact: PatchArtifact,
+    latest_test_run: LocalTestRun | None,
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    if artifact.diff_text.strip() == "":
+        issues.append(
+            {
+                "code": "missing_diff_text",
+                "message": "Patch artifact diff_text is missing.",
+            }
+        )
+
+    files_changed = list(artifact.files_changed or [])
+    if not files_changed:
+        issues.append(
+            {
+                "code": "no_changed_files",
+                "message": "Patch artifact has no changed files.",
+            }
+        )
+    else:
+        try:
+            ensure_changed_files_allowed(files_changed, list(task.allowed_paths or []))
+        except LocalRunnerError as exc:
+            issues.append(
+                {
+                    "code": "changed_file_outside_allowed_paths",
+                    "message": str(exc),
+                }
+            )
+
+    if latest_test_run is None:
+        issues.append(
+            {
+                "code": "missing_passing_test_run",
+                "message": "No latest local test run is linked to this patch artifact.",
+            }
+        )
+    elif latest_test_run.status != "passed":
+        issues.append(
+            {
+                "code": "latest_test_run_not_passed",
+                "message": (
+                    "Latest local test run did not pass: "
+                    f"{latest_test_run.status}."
+                ),
+            }
+        )
+
+    return issues
 
 
 def _complete_test_run(
@@ -297,17 +481,20 @@ def _create_debug_attempt(
     event_clock: "_EventClock",
     task: Task,
     artifact: PatchArtifact,
-    test_run: LocalTestRun,
+    test_run: LocalTestRun | None,
     *,
+    review: PatchReview | None = None,
     root_cause: str,
+    fix_summary: str = "Fix the failing test command output, then rerun local tests.",
 ) -> DebugAttempt:
     debug_attempt = DebugAttempt(
         project_id=task.project_id,
         task_id=task.id,
         patch_artifact_id=artifact.id,
-        test_run_id=test_run.id,
+        review_id=review.id if review else None,
+        test_run_id=test_run.id if test_run else None,
         root_cause=root_cause,
-        fix_summary="Fix the failing test command output, then rerun local tests.",
+        fix_summary=fix_summary,
     )
     session.add(debug_attempt)
     session.flush()
@@ -318,11 +505,17 @@ def _create_debug_attempt(
         "debug_attempt_created",
         {
             "patch_artifact_id": artifact.id,
-            "test_run_id": test_run.id,
+            "review_id": review.id if review else None,
+            "test_run_id": test_run.id if test_run else None,
             "debug_attempt_id": debug_attempt.id,
         },
     )
     return debug_attempt
+
+
+def _review_root_cause(issues: list[dict[str, str]]) -> str:
+    issue_summary = "; ".join(issue["message"] for issue in issues)
+    return f"deterministic review requested changes: {issue_summary}"
 
 
 def _transition_task_for_workflow(
@@ -446,6 +639,23 @@ def _test_run_read(test_run: LocalTestRun) -> LocalTestRunRead:
         started_at=test_run.started_at,
         completed_at=test_run.completed_at,
         created_at=test_run.created_at,
+    )
+
+
+def _review_read(review: PatchReview) -> PatchReviewRead:
+    return PatchReviewRead(
+        id=review.id,
+        workspace_id=review.workspace_id,
+        project_id=review.project_id,
+        task_id=review.task_id,
+        local_run_id=review.local_run_id,
+        patch_artifact_id=review.patch_artifact_id,
+        test_run_id=review.test_run_id,
+        reviewer_kind=review.reviewer_kind,
+        verdict=review.verdict,
+        issues=review.issues,
+        required_changes=review.required_changes,
+        created_at=review.created_at,
     )
 
 

@@ -24,6 +24,8 @@ from ai_company_api.schemas.api import (
     PlannerRunRead,
     PlannerRunReject,
     PatchArtifactRead,
+    PatchReviewRead,
+    PatchReviewResultRead,
     PatchTestRunResultRead,
     ProjectCreate,
     RepositoryCreate,
@@ -41,9 +43,12 @@ from ai_company_api.services.local_runner import (
     start_local_task_run,
 )
 from ai_company_api.services.test_review_debug import (
+    get_patch_review,
     get_test_run,
     list_debug_attempts,
+    list_patch_reviews,
     list_patch_test_runs,
+    start_patch_review,
     start_patch_test_run,
 )
 from ai_company_api.services.model_settings import (
@@ -386,6 +391,37 @@ def get_patch_artifact_test_runs(
     session: SessionDep,
 ) -> list[LocalTestRunRead]:
     return list_patch_test_runs(session, patch_artifact_id)
+
+
+@router.post(
+    "/patch-artifacts/{patch_artifact_id}/reviews",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PatchReviewResultRead,
+)
+def post_patch_artifact_review(
+    patch_artifact_id: str,
+    session: SessionDep,
+) -> PatchReviewResultRead:
+    return start_patch_review(session, patch_artifact_id)
+
+
+@router.get(
+    "/patch-artifacts/{patch_artifact_id}/reviews",
+    response_model=list[PatchReviewRead],
+)
+def get_patch_artifact_reviews(
+    patch_artifact_id: str,
+    session: SessionDep,
+) -> list[PatchReviewRead]:
+    return list_patch_reviews(session, patch_artifact_id)
+
+
+@router.get("/patch-reviews/{review_id}", response_model=PatchReviewRead)
+def get_patch_review_by_id(
+    review_id: str,
+    session: SessionDep,
+) -> PatchReviewRead:
+    return get_patch_review(session, review_id)
 
 
 @router.get("/test-runs/{test_run_id}", response_model=LocalTestRunRead)
