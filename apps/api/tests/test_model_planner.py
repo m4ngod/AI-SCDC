@@ -180,11 +180,11 @@ def test_create_model_planner_result_uses_configured_route_and_logs_usage() -> N
     assert usage_entries[0].total_tokens == 48
 
 
-def test_create_model_planner_result_propagates_usage_ledger_failures(
+def test_create_model_planner_result_contains_usage_ledger_failures(
     monkeypatch,
 ) -> None:
     with build_session() as session:
-        project, _route = create_planner_route(session)
+        project, route = create_planner_route(session)
         planner_run = PlannerRun(
             id="planner_run_usage_failure",
             project_id=project.id,
@@ -221,14 +221,25 @@ def test_create_model_planner_result_propagates_usage_ledger_failures(
             fail_usage_append,
         )
 
-        with pytest.raises(RuntimeError, match="usage ledger unavailable"):
-            create_model_planner_result(
-                session,
-                project=project,
-                goal="Build real planner",
-                planner_run_id=planner_run.id,
-                adapter_factory=lambda **_kwargs: adapter,
-            )
+        result = create_model_planner_result(
+            session,
+            project=project,
+            goal="Build real planner",
+            planner_run_id=planner_run.id,
+            adapter_factory=lambda **_kwargs: adapter,
+        )
+        usage_entries = list_usage_ledger_entries(
+            session,
+            planner_run_id=planner_run.id,
+        )
+
+    assert result.planner_kind == "model"
+    assert result.model_route_id == route.id
+    assert result.model_provider_name == "deepseek-dev"
+    assert result.model_name == "deepseek-chat"
+    assert result.fallback_reason is None
+    assert result.task_specs[0].title == "Implement API planner integration"
+    assert usage_entries == []
 
 
 def test_create_model_planner_result_closes_adapter_after_success() -> None:

@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -28,6 +29,7 @@ from ai_company_llm_gateway.openai_compatible import OpenAICompatibleChatAdapter
 
 
 AdapterFactory = Callable[..., object]
+logger = logging.getLogger(__name__)
 
 
 class ModelPlannerError(RuntimeError):
@@ -102,22 +104,30 @@ def create_model_planner_result(
         except ModelPlannerError:
             return _fake_result("invalid_model_output")
 
-    append_usage_ledger_entry(
-        session,
-        UsageLedgerCreate(
-            project_id=project.id,
-            planner_run_id=planner_run_id,
-            provider_name=response.provider_name,
-            model_name=response.model_name,
-            prompt_tokens=response.usage.prompt_tokens,
-            completion_tokens=response.usage.completion_tokens,
-            raw_usage_json={
-                "source": "model_planner",
-                "route_id": route.id,
-            },
-        ),
-        commit=False,
-    )
+    try:
+        with session.begin_nested():
+            append_usage_ledger_entry(
+                session,
+                UsageLedgerCreate(
+                    project_id=project.id,
+                    planner_run_id=planner_run_id,
+                    provider_name=response.provider_name,
+                    model_name=response.model_name,
+                    prompt_tokens=response.usage.prompt_tokens,
+                    completion_tokens=response.usage.completion_tokens,
+                    raw_usage_json={
+                        "source": "model_planner",
+                        "route_id": route.id,
+                    },
+                ),
+                commit=False,
+            )
+    except Exception:
+        logger.warning(
+            "Failed to append model planner usage ledger entry",
+            extra={"planner_run_id": planner_run_id, "route_id": route.id},
+            exc_info=True,
+        )
 
     return PlannerExecutionResult(
         task_specs=task_specs,
