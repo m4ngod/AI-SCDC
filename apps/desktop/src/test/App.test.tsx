@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import type { ConsoleApiClient, PlannerRunDraft, TaskCard } from "../api/client";
+import { fakeApiClient } from "../api/client";
 
 function plannerRunFixture(goal = "Build model route settings"): PlannerRunDraft {
   return {
@@ -98,6 +99,19 @@ function reviewingTaskFixture(): TaskCard {
       started_at: "2026-05-29T00:01:00Z",
       completed_at: "2026-05-29T00:02:00Z",
       created_at: "2026-05-29T00:01:00Z"
+    }
+  };
+}
+
+function secondPatchReadyTaskFixture(): TaskCard {
+  return {
+    ...patchReadyTaskFixture(),
+    id: "task_second_patch_ready",
+    title: "Review second desktop patch",
+    patch_artifact: {
+      ...patchReadyTaskFixture().patch_artifact!,
+      id: "patch_second_test",
+      task_id: "task_second_patch_ready"
     }
   };
 }
@@ -506,6 +520,50 @@ describe("App", () => {
     expect(within(board).getAllByText("passed")).not.toHaveLength(0);
   });
 
+  it("keeps the current task identity when fake local-run tests return a demo task", async () => {
+    const user = userEvent.setup();
+    const originalTask: TaskCard = {
+      ...taskCardFixture("Planner-created local patch"),
+      id: "task_planner_local_patch"
+    };
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([originalTask]),
+      startLocalRun: fakeApiClient.startLocalRun,
+      runPatchTests: fakeApiClient.runPatchTests
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run local" }));
+    await user.click(await within(board).findByRole("button", { name: "Run tests" }));
+
+    expect(await within(board).findByText("Planner-created local patch")).toBeInTheDocument();
+    expect(within(board).queryByText("Implement task board UI")).not.toBeInTheDocument();
+    expect(within(board).getByText("REVIEWING")).toBeInTheDocument();
+  });
+
+  it("disables all test buttons while a patch test run is pending", async () => {
+    const user = userEvent.setup();
+    const testRun = createDeferred<Awaited<ReturnType<ConsoleApiClient["runPatchTests"]>>>();
+    const runPatchTests = vi.fn<ConsoleApiClient["runPatchTests"]>().mockReturnValue(testRun.promise);
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([patchReadyTaskFixture(), secondPatchReadyTaskFixture()]),
+      runPatchTests
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    const runButtons = await within(board).findAllByRole("button", { name: "Run tests" });
+    await user.click(runButtons[0]);
+
+    await waitFor(() => expect(within(board).getByRole("button", { name: "Testing" })).toBeDisabled());
+    expect(within(board).getByRole("button", { name: "Run tests" })).toBeDisabled();
+  });
+
   it("reviews a patch from the task board and renders the approved verdict", async () => {
     const user = userEvent.setup();
     const reviewedTask = reviewingTaskFixture();
@@ -601,7 +659,11 @@ describe("App", () => {
 
     expect(await within(board).findByText("FIX_REQUESTED")).toBeInTheDocument();
     expect(within(board).getByText("changes_requested")).toBeInTheDocument();
+    expect(within(board).getByText("Include a patch diff before approval.")).toBeInTheDocument();
+    expect(within(board).getByText("requested")).toBeInTheDocument();
     expect(within(board).getByText("deterministic review found missing diff")).toBeInTheDocument();
-    expect(within(board).getByText("Attach the generated diff to the patch artifact.")).toBeInTheDocument();
+    expect(
+      within(board).getByText("Attach the generated diff to the patch artifact.")
+    ).toBeInTheDocument();
   });
 });

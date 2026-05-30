@@ -17,6 +17,19 @@ function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
+function mergeWorkflowTask(currentTask: TaskCard, resultTask: TaskCard): TaskCard {
+  return {
+    ...currentTask,
+    status: resultTask.status,
+    updated_at: resultTask.updated_at || currentTask.updated_at,
+    repo_id: resultTask.repo_id !== undefined ? resultTask.repo_id : currentTask.repo_id,
+    branch_name:
+      resultTask.branch_name !== undefined ? resultTask.branch_name : currentTask.branch_name,
+    worktree_ref:
+      resultTask.worktree_ref !== undefined ? resultTask.worktree_ref : currentTask.worktree_ref
+  };
+}
+
 export function App({ apiClient = defaultApiClient }: AppProps) {
   const [tasks, setTasks] = useState<TaskCard[]>([]);
   const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
@@ -168,8 +181,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         currentTasks.map((currentTask) =>
           currentTask.id === task.id
             ? {
-                ...currentTask,
-                ...result.task,
+                ...mergeWorkflowTask(currentTask, result.task),
                 patch_artifact: result.patch_artifact,
                 test_run: result.test_run,
                 debug_attempt: result.debug_attempt
@@ -204,8 +216,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         currentTasks.map((currentTask) =>
           currentTask.id === task.id
             ? {
-                ...currentTask,
-                ...result.task,
+                ...mergeWorkflowTask(currentTask, result.task),
                 patch_artifact: result.patch_artifact,
                 test_run: currentTask.test_run,
                 patch_review: result.review,

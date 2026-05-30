@@ -245,6 +245,48 @@ function demoPlannerDrafts(goal: string): PlannerTaskDraftCard[] {
   ];
 }
 
+function fakePatchArtifactId(taskId: string) {
+  return `patch_${taskId}`;
+}
+
+function fakeLocalRunId(taskId: string) {
+  return `local_run_${taskId}`;
+}
+
+function fakeTaskFromPatchArtifact(patchArtifactId: string) {
+  const demoTask = demoTasks.find((item) => item.patch_artifact?.id === patchArtifactId);
+  if (demoTask?.patch_artifact) {
+    return {
+      task: demoTask,
+      patchArtifact: demoTask.patch_artifact
+    };
+  }
+
+  const taskId = patchArtifactId.startsWith("patch_")
+    ? patchArtifactId.slice("patch_".length)
+    : "task_demo_created";
+  const task: TaskCard = {
+    id: taskId,
+    title: "Prepared local runner patch",
+    status: "PATCH_READY",
+    role_required: "frontend",
+    assigned_agent: "Frontend Engineer",
+    updated_at: "2026-05-29T00:00:00Z"
+  };
+  return {
+    task,
+    patchArtifact: {
+      id: patchArtifactId,
+      task_id: taskId,
+      local_run_id: fakeLocalRunId(taskId),
+      summary: "Prepared local runner patch.",
+      files_changed: ["README.md"],
+      tests_run: ["pnpm --filter @ai-scdc/desktop test"],
+      test_result: "not_run"
+    }
+  };
+}
+
 export const fakeApiClient: ConsoleApiClient = {
   async listTasks() {
     return [...demoTasks];
@@ -306,21 +348,23 @@ export const fakeApiClient: ConsoleApiClient = {
     };
   },
   async startLocalRun(taskId: string) {
+    const patchArtifactId = fakePatchArtifactId(taskId);
+    const localRunId = fakeLocalRunId(taskId);
     return {
       local_run: {
-        id: "local_run_demo",
+        id: localRunId,
         task_id: taskId,
         repo_id: "repo_demo",
         status: "patch_ready",
         base_branch: "main",
-        worktree_path: ".worktrees/task_demo",
-        patch_artifact_id: "patch_demo",
+        worktree_path: `.worktrees/${taskId}`,
+        patch_artifact_id: patchArtifactId,
         failure_reason: null
       },
       patch_artifact: {
-        id: "patch_demo",
+        id: patchArtifactId,
         task_id: taskId,
-        local_run_id: "local_run_demo",
+        local_run_id: localRunId,
         summary: "Prepared local runner patch.",
         files_changed: ["README.md"],
         tests_run: [],
@@ -329,18 +373,9 @@ export const fakeApiClient: ConsoleApiClient = {
     };
   },
   async runPatchTests(patchArtifactId: string) {
-    const task =
-      demoTasks.find((item) => item.patch_artifact?.id === patchArtifactId) ?? demoTasks[0];
+    const { task, patchArtifact: basePatchArtifact } = fakeTaskFromPatchArtifact(patchArtifactId);
     const patchArtifact = {
-      ...(task.patch_artifact ?? {
-        id: patchArtifactId,
-        task_id: task.id,
-        local_run_id: "local_run_demo",
-        summary: "Prepared local runner patch.",
-        files_changed: ["README.md"],
-        tests_run: ["pnpm --filter @ai-scdc/desktop test"],
-        test_result: "not_run"
-      }),
+      ...basePatchArtifact,
       test_result: "passed"
     };
     const firstCommand =
@@ -382,18 +417,9 @@ export const fakeApiClient: ConsoleApiClient = {
     };
   },
   async reviewPatch(patchArtifactId: string) {
-    const task =
-      demoTasks.find((item) => item.patch_artifact?.id === patchArtifactId) ?? demoTasks[0];
+    const { task, patchArtifact: basePatchArtifact } = fakeTaskFromPatchArtifact(patchArtifactId);
     const patchArtifact = {
-      ...(task.patch_artifact ?? {
-        id: patchArtifactId,
-        task_id: task.id,
-        local_run_id: "local_run_demo",
-        summary: "Prepared local runner patch.",
-        files_changed: ["README.md"],
-        tests_run: ["pnpm --filter @ai-scdc/desktop test"],
-        test_result: "passed"
-      }),
+      ...basePatchArtifact,
       test_result: "passed"
     };
     const review: PatchReviewCard = {

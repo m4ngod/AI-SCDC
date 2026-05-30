@@ -42,7 +42,7 @@ export function TaskBoard({
                 <button
                   type="button"
                   className="task-run-button"
-                  disabled={runningTaskId === task.id}
+                  disabled={runningTaskId !== null}
                   onClick={() => onStartLocalRun(task.id)}
                 >
                   {runningTaskId === task.id ? "Running" : "Run local"}
@@ -52,7 +52,7 @@ export function TaskBoard({
                 <button
                   type="button"
                   className="task-run-button"
-                  disabled={runningTestTaskId === task.id}
+                  disabled={runningTestTaskId !== null}
                   onClick={() => onRunPatchTests(task)}
                 >
                   {runningTestTaskId === task.id ? "Testing" : "Run tests"}
@@ -62,7 +62,7 @@ export function TaskBoard({
                 <button
                   type="button"
                   className="task-run-button"
-                  disabled={reviewingTaskId === task.id}
+                  disabled={reviewingTaskId !== null}
                   onClick={() => onReviewPatch(task)}
                 >
                   {reviewingTaskId === task.id ? "Reviewing" : "Review patch"}
@@ -93,6 +93,18 @@ export function TaskBoard({
                   <div>
                     <dt>Review</dt>
                     <dd>{task.patch_review.verdict}</dd>
+                  </div>
+                ) : null}
+                {task.patch_review?.required_changes.length ? (
+                  <div>
+                    <dt>Required changes</dt>
+                    <dd>{task.patch_review.required_changes.join("; ")}</dd>
+                  </div>
+                ) : null}
+                {task.debug_attempt ? (
+                  <div>
+                    <dt>Debug</dt>
+                    <dd>{task.debug_attempt.status}</dd>
                   </div>
                 ) : null}
                 {task.debug_attempt?.root_cause ? (

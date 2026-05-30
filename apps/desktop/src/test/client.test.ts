@@ -54,6 +54,30 @@ describe("desktop API clients", () => {
     });
   });
 
+  it("fake client keeps local-run patch test results tied to the originating task", async () => {
+    const localRun = await fakeApiClient.startLocalRun("task_planner_local_patch");
+
+    expect(localRun.local_run.patch_artifact_id).toBe("patch_task_planner_local_patch");
+    expect(localRun.patch_artifact).toMatchObject({
+      id: "patch_task_planner_local_patch",
+      task_id: "task_planner_local_patch"
+    });
+    await expect(
+      fakeApiClient.runPatchTests("patch_task_planner_local_patch")
+    ).resolves.toMatchObject({
+      task: {
+        id: "task_planner_local_patch",
+        status: "REVIEWING"
+      },
+      patch_artifact: {
+        task_id: "task_planner_local_patch"
+      },
+      test_run: {
+        task_id: "task_planner_local_patch"
+      }
+    });
+  });
+
   it("fake client reviews a demo patch", async () => {
     await expect(fakeApiClient.reviewPatch("patch_demo")).resolves.toMatchObject({
       task: {
