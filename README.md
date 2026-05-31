@@ -278,6 +278,43 @@ Use the desktop `Review patch` action, or call `POST /patch-artifacts/{patch_art
 
 Related read endpoints are `GET /patch-artifacts/{patch_artifact_id}/test-runs`, `GET /test-runs/{test_run_id}`, `GET /patch-artifacts/{patch_artifact_id}/reviews`, `GET /patch-reviews/{review_id}`, and `GET /tasks/{task_id}/debug-attempts`.
 
+### Phase 6 Patch Approval Smoke
+
+After a patch reaches `APPROVED`, approve it without merging:
+
+```powershell
+$approval = Invoke-RestMethod `
+  -Method Post `
+  -Uri "$baseUrl/patch-artifacts/$($patch.id)/approvals"
+
+$approval.task.status
+$approval.approval.merge_instructions
+```
+
+Expected:
+
+```text
+MERGE_READY
+```
+
+Then request human approval:
+
+```powershell
+$humanApproval = Invoke-RestMethod `
+  -Method Post `
+  -Uri "$baseUrl/patch-approvals/$($approval.approval.id)/request-human-approval"
+
+$humanApproval.task.status
+```
+
+Expected:
+
+```text
+HUMAN_APPROVAL
+```
+
+This workflow records approval intent only. It does not run `git commit`, `git merge`, `git push`, `git apply`, or create a PR.
+
 Focused verification commands used for this phase:
 
 ```bash

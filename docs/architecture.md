@@ -79,6 +79,12 @@ Phase 5 adds durable `LocalTestRun`, `PatchReview`, and `DebugAttempt` records. 
 
 The deterministic review rules are intentionally small and auditable: require non-empty diff text, require at least one changed file, verify changed files stay inside task `allowed_paths`, and require the latest local test run to have passed. The workflow remains local and deterministic; Phase 5 does not auto-commit, push, merge, create PRs, call reviewer/debugger models, or automatically modify the worktree during debug.
 
+## Phase 6 Boundary
+
+Phase 6 adds the human patch approval boundary and a compact unified diff viewer. A task that has passed deterministic review can be patch-approved, which records a durable `PatchApproval`, moves the task to `MERGE_READY`, and exposes merge instructions without modifying git state.
+
+The desktop shows changed files, unified diff text, test result, review verdict, patch approval state, worktree path, and merge instructions. A separate human-approval request moves `MERGE_READY -> HUMAN_APPROVAL`; Phase 6 still does not commit, merge, push, apply patches, create branches, or open pull requests.
+
 ## Roadmap
 
 Completed:
@@ -89,6 +95,7 @@ Completed:
 4. Real model-backed planner vertical slice that uses route resolution to create TaskSpec drafts for human approval, logs token usage, and falls back to fake drafts on provider failures.
 5. Local Runner vertical slice with repository registration, git worktree execution, patch artifact capture, task events, and desktop run controls.
 6. Deterministic local test, patch review, and debug-attempt workflow with desktop controls, durable verification records, and idempotent review results.
+7. Human patch approval boundary with compact diff preview, durable approval records, `MERGE_READY` and `HUMAN_APPROVAL` transitions, and no automatic git merge.
 
 Future:
 
