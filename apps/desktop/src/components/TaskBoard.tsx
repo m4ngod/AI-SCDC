@@ -39,6 +39,8 @@ export function TaskBoard({
   onRequestHumanApproval,
   onCreatePullRequest
 }: TaskBoardProps) {
+  const isRunPending = runningTaskId !== null || runningCloudTaskId !== null;
+
   return (
     <section className="task-board" aria-label="Task board">
       <div className="section-heading">
@@ -58,7 +60,7 @@ export function TaskBoard({
                 <button
                   type="button"
                   className="task-run-button"
-                  disabled={runningTaskId !== null}
+                  disabled={isRunPending}
                   onClick={() => onStartLocalRun(task.id)}
                 >
                   {runningTaskId === task.id ? "Running" : "Run local"}
@@ -68,7 +70,7 @@ export function TaskBoard({
                 <button
                   type="button"
                   className="task-run-button"
-                  disabled={runningCloudTaskId !== null}
+                  disabled={isRunPending}
                   onClick={() => onStartCloudRun(task.id)}
                 >
                   {runningCloudTaskId === task.id ? "Running cloud" : "Run cloud"}

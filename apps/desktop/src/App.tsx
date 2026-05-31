@@ -60,6 +60,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   });
   const [githubSetupStatus, setGithubSetupStatus] = useState<string | null>(null);
   const [githubSetupError, setGithubSetupError] = useState<string | null>(null);
+  const [isConnectingGitHubRepo, setIsConnectingGitHubRepo] = useState(false);
   const [runningCloudTaskId, setRunningCloudTaskId] = useState<string | null>(null);
   const [creatingPullRequestTaskId, setCreatingPullRequestTaskId] = useState<string | null>(null);
   const [localRunErrors, setLocalRunErrors] = useState<Record<string, string>>({});
@@ -149,7 +150,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   }
 
   async function handleStartLocalRun(taskId: string) {
-    if (runningTaskId) {
+    if (runningTaskId || runningCloudTaskId) {
       return;
     }
 
@@ -187,6 +188,11 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   }
 
   async function handleConnectGitHubRepo(input: GitHubSetupInput) {
+    if (isConnectingGitHubRepo) {
+      return;
+    }
+
+    setIsConnectingGitHubRepo(true);
     try {
       setGithubSetupStatus(null);
       setGithubSetupError(null);
@@ -203,8 +209,11 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         github_credential_id: credential.id
       });
       setGithubSetupStatus("GitHub repo connected");
+      setGithubSetupInput((currentInput) => ({ ...currentInput, token: "" }));
     } catch (error) {
       setGithubSetupError(errorMessage(error, "Failed to connect GitHub repo"));
+    } finally {
+      setIsConnectingGitHubRepo(false);
     }
   }
 
@@ -214,7 +223,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   }
 
   async function handleStartCloudRun(taskId: string) {
-    if (runningCloudTaskId) {
+    if (runningTaskId || runningCloudTaskId) {
       return;
     }
 
@@ -234,7 +243,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
                 status: result.patch_artifact ? "PATCH_READY" : task.status,
                 repo_id: result.cloud_run.repo_id,
                 branch_name: result.cloud_run.head_branch,
-                patch_artifact: result.patch_artifact,
+                patch_artifact: result.patch_artifact ?? task.patch_artifact,
                 cloud_run: result.cloud_run
               }
             : task
@@ -499,7 +508,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
               }
             />
           </label>
-          <button type="submit">Connect GitHub repo</button>
+          <button type="submit" disabled={isConnectingGitHubRepo}>
+            {isConnectingGitHubRepo ? "Connecting GitHub repo" : "Connect GitHub repo"}
+          </button>
           {githubSetupStatus ? <p>{githubSetupStatus}</p> : null}
           {githubSetupError ? (
             <p className="github-setup-error" role="alert">

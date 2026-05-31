@@ -1005,6 +1005,65 @@ describe("App", () => {
     expect(await screen.findByText("GitHub repo connected")).toBeInTheDocument();
   });
 
+  it("clears the github token after successful setup", async () => {
+    const user = userEvent.setup();
+    const apiClient = createMockApiClient();
+
+    render(<App apiClient={apiClient} />);
+
+    const tokenInput = screen.getByLabelText("GitHub token");
+    await user.type(tokenInput, "ghp_test_token_1234");
+    await user.click(screen.getByRole("button", { name: "Connect GitHub repo" }));
+
+    expect(await screen.findByText("GitHub repo connected")).toBeInTheDocument();
+    expect(tokenInput).toHaveValue("");
+  });
+
+  it("prevents duplicate github setup submits while pending", async () => {
+    const user = userEvent.setup();
+    const credential = createDeferred<
+      Awaited<ReturnType<ConsoleApiClient["createGitHubCredential"]>>
+    >();
+    const createGitHubCredential =
+      vi.fn<ConsoleApiClient["createGitHubCredential"]>().mockReturnValue(credential.promise);
+    const createGitHubRepository =
+      vi.fn<ConsoleApiClient["createGitHubRepository"]>().mockResolvedValue({
+        id: "repo_github_test",
+        name: "example/demo",
+        local_path: "",
+        default_branch: "main",
+        status: "active",
+        provider: "github",
+        repo_url: "https://github.com/example/demo",
+        github_owner: "example",
+        github_repo: "demo",
+        github_credential_id: "github_credential_test",
+        connection_status: "connected"
+      });
+    const apiClient = createMockApiClient({ createGitHubCredential, createGitHubRepository });
+
+    render(<App apiClient={apiClient} />);
+
+    await user.type(screen.getByLabelText("GitHub token"), "ghp_test_token_1234");
+    const connectButton = screen.getByRole("button", { name: "Connect GitHub repo" });
+    await user.click(connectButton);
+
+    await waitFor(() => expect(connectButton).toBeDisabled());
+    await user.click(connectButton);
+    expect(createGitHubCredential).toHaveBeenCalledOnce();
+
+    credential.resolve({
+      id: "github_credential_test",
+      workspace_id: "workspace_test",
+      display_name: "Dev GitHub",
+      token_last4: "1234",
+      status: "active",
+      created_at: "2026-05-29T00:00:00Z",
+      updated_at: "2026-05-29T00:00:00Z"
+    });
+    expect(await screen.findByText("GitHub repo connected")).toBeInTheDocument();
+  });
+
   it("runs a cloud task and renders cloud branch metadata", async () => {
     const user = userEvent.setup();
     const task: TaskCard = {
@@ -1029,6 +1088,151 @@ describe("App", () => {
     expect(startCloudRun).toHaveBeenCalledWith("task_cloud");
     expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
     expect(within(board).getByText("ai-scdc/task-cloud")).toBeInTheDocument();
+  });
+
+  it("disables cloud run while local run is pending", async () => {
+    const user = userEvent.setup();
+    const localRun = createDeferred<Awaited<ReturnType<ConsoleApiClient["startLocalRun"]>>>();
+    const startLocalRun =
+      vi.fn<ConsoleApiClient["startLocalRun"]>().mockReturnValue(localRun.promise);
+    const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({
+      cloud_run: cloudRunFixture(),
+      patch_artifact: cloudPatchArtifactFixture()
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([
+        {
+          ...taskCardFixture("Concurrent run task"),
+          id: "task_cloud"
+        }
+      ]),
+      startLocalRun,
+      startCloudRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run local" }));
+
+    const runCloudButton = within(board).getByRole("button", { name: "Run cloud" });
+    await waitFor(() => expect(runCloudButton).toBeDisabled());
+    await user.click(runCloudButton);
+    expect(startCloudRun).not.toHaveBeenCalled();
+
+    localRun.resolve({
+      local_run: {
+        id: "local_run_test",
+        task_id: "task_cloud",
+        repo_id: "repo_test",
+        status: "patch_ready",
+        base_branch: "main",
+        worktree_path: ".worktrees/task_cloud",
+        patch_artifact_id: "patch_test",
+        failure_reason: null
+      },
+      patch_artifact: {
+        id: "patch_test",
+        task_id: "task_cloud",
+        local_run_id: "local_run_test",
+        summary: "Prepared local runner patch.",
+        files_changed: ["README.md"],
+        tests_run: [],
+        test_result: "not_run"
+      }
+    });
+    expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
+  });
+
+  it("disables local run while cloud run is pending", async () => {
+    const user = userEvent.setup();
+    const cloudRun = createDeferred<Awaited<ReturnType<ConsoleApiClient["startCloudRun"]>>>();
+    const startCloudRun =
+      vi.fn<ConsoleApiClient["startCloudRun"]>().mockReturnValue(cloudRun.promise);
+    const startLocalRun = vi.fn<ConsoleApiClient["startLocalRun"]>().mockResolvedValue({
+      local_run: {
+        id: "local_run_test",
+        task_id: "task_cloud",
+        repo_id: "repo_test",
+        status: "patch_ready",
+        base_branch: "main",
+        worktree_path: ".worktrees/task_cloud",
+        patch_artifact_id: "patch_test",
+        failure_reason: null
+      },
+      patch_artifact: {
+        id: "patch_test",
+        task_id: "task_cloud",
+        local_run_id: "local_run_test",
+        summary: "Prepared local runner patch.",
+        files_changed: ["README.md"],
+        tests_run: [],
+        test_result: "not_run"
+      }
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([
+        {
+          ...taskCardFixture("Concurrent cloud task"),
+          id: "task_cloud"
+        }
+      ]),
+      startCloudRun,
+      startLocalRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run cloud" }));
+
+    const runLocalButton = within(board).getByRole("button", { name: "Run local" });
+    await waitFor(() => expect(runLocalButton).toBeDisabled());
+    await user.click(runLocalButton);
+    expect(startLocalRun).not.toHaveBeenCalled();
+
+    cloudRun.resolve({
+      cloud_run: cloudRunFixture(),
+      patch_artifact: cloudPatchArtifactFixture()
+    });
+    expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
+  });
+
+  it("preserves an existing patch artifact when cloud run returns none", async () => {
+    const user = userEvent.setup();
+    const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({
+      cloud_run: cloudRunFixture(),
+      patch_artifact: undefined
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([
+        {
+          ...taskCardFixture("Cloud task with existing patch"),
+          id: "task_cloud",
+          patch_artifact: {
+            id: "patch_existing",
+            task_id: "task_cloud",
+            local_run_id: "local_run_existing",
+            summary: "Existing patch.",
+            files_changed: ["existing.patch"],
+            tests_run: [],
+            test_result: "not_run"
+          }
+        }
+      ]),
+      startCloudRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run cloud" }));
+
+    expect(await within(board).findByText("Cloud run")).toBeInTheDocument();
+    expect(within(board).getByText("existing.patch")).toBeInTheDocument();
   });
 
   it("creates a pull request after human approval", async () => {
