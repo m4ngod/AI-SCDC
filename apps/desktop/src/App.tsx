@@ -40,6 +40,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
   const [runningTestTaskId, setRunningTestTaskId] = useState<string | null>(null);
   const [reviewingTaskId, setReviewingTaskId] = useState<string | null>(null);
+  const [approvingPatchTaskId, setApprovingPatchTaskId] = useState<string | null>(null);
+  const [requestingHumanApprovalTaskId, setRequestingHumanApprovalTaskId] =
+    useState<string | null>(null);
   const [localRunErrors, setLocalRunErrors] = useState<Record<string, string>>({});
   const [workflowErrors, setWorkflowErrors] = useState<Record<string, string>>({});
   const plannerRunRef = useRef<PlannerRunDraft | null>(null);
@@ -235,6 +238,76 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     }
   }
 
+  async function handleApprovePatch(task: TaskCard) {
+    if (approvingPatchTaskId || !task.patch_artifact) {
+      return;
+    }
+
+    setApprovingPatchTaskId(task.id);
+    setWorkflowErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[task.id];
+      return nextErrors;
+    });
+    try {
+      const result = await apiClient.approvePatch(task.patch_artifact.id);
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === task.id
+            ? {
+                ...mergeWorkflowTask(currentTask, result.task),
+                patch_artifact: result.patch_artifact,
+                patch_review: result.review,
+                patch_approval: result.approval
+              }
+            : currentTask
+        )
+      );
+    } catch (error) {
+      setWorkflowErrors((currentErrors) => ({
+        ...currentErrors,
+        [task.id]: errorMessage(error, "Failed to approve patch")
+      }));
+    } finally {
+      setApprovingPatchTaskId(null);
+    }
+  }
+
+  async function handleRequestHumanApproval(task: TaskCard) {
+    if (requestingHumanApprovalTaskId || !task.patch_approval) {
+      return;
+    }
+
+    setRequestingHumanApprovalTaskId(task.id);
+    setWorkflowErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[task.id];
+      return nextErrors;
+    });
+    try {
+      const result = await apiClient.requestHumanApproval(task.patch_approval.id);
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === task.id
+            ? {
+                ...mergeWorkflowTask(currentTask, result.task),
+                patch_artifact: result.patch_artifact,
+                patch_review: result.review,
+                patch_approval: result.approval
+              }
+            : currentTask
+        )
+      );
+    } catch (error) {
+      setWorkflowErrors((currentErrors) => ({
+        ...currentErrors,
+        [task.id]: errorMessage(error, "Failed to request human approval")
+      }));
+    } finally {
+      setRequestingHumanApprovalTaskId(null);
+    }
+  }
+
   const contextPanel = (
     <>
       <section className="context-section">
@@ -255,11 +328,15 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         runningTaskId={runningTaskId}
         runningTestTaskId={runningTestTaskId}
         reviewingTaskId={reviewingTaskId}
+        approvingPatchTaskId={approvingPatchTaskId}
+        requestingHumanApprovalTaskId={requestingHumanApprovalTaskId}
         localRunErrors={localRunErrors}
         workflowErrors={workflowErrors}
         onStartLocalRun={handleStartLocalRun}
         onRunPatchTests={handleRunPatchTests}
         onReviewPatch={handleReviewPatch}
+        onApprovePatch={handleApprovePatch}
+        onRequestHumanApproval={handleRequestHumanApproval}
       />
       {taskLoadError ? (
         <section className="context-section context-error" role="alert">

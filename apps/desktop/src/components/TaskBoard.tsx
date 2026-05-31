@@ -5,11 +5,15 @@ type TaskBoardProps = {
   runningTaskId?: string | null;
   runningTestTaskId?: string | null;
   reviewingTaskId?: string | null;
+  approvingPatchTaskId?: string | null;
+  requestingHumanApprovalTaskId?: string | null;
   localRunErrors?: Record<string, string>;
   workflowErrors?: Record<string, string>;
   onStartLocalRun?: (taskId: string) => void;
   onRunPatchTests?: (task: TaskCard) => void;
   onReviewPatch?: (task: TaskCard) => void;
+  onApprovePatch?: (task: TaskCard) => void;
+  onRequestHumanApproval?: (task: TaskCard) => void;
 };
 
 export function TaskBoard({
@@ -17,11 +21,15 @@ export function TaskBoard({
   runningTaskId = null,
   runningTestTaskId = null,
   reviewingTaskId = null,
+  approvingPatchTaskId = null,
+  requestingHumanApprovalTaskId = null,
   localRunErrors = {},
   workflowErrors = {},
   onStartLocalRun,
   onRunPatchTests,
-  onReviewPatch
+  onReviewPatch,
+  onApprovePatch,
+  onRequestHumanApproval
 }: TaskBoardProps) {
   return (
     <section className="task-board" aria-label="Task board">
@@ -68,6 +76,28 @@ export function TaskBoard({
                   {reviewingTaskId === task.id ? "Reviewing" : "Review patch"}
                 </button>
               ) : null}
+              {onApprovePatch && task.status === "APPROVED" && task.patch_artifact ? (
+                <button
+                  type="button"
+                  className="task-run-button"
+                  disabled={approvingPatchTaskId !== null}
+                  onClick={() => onApprovePatch(task)}
+                >
+                  {approvingPatchTaskId === task.id ? "Approving" : "Approve patch"}
+                </button>
+              ) : null}
+              {onRequestHumanApproval && task.status === "MERGE_READY" && task.patch_approval ? (
+                <button
+                  type="button"
+                  className="task-run-button"
+                  disabled={requestingHumanApprovalTaskId !== null}
+                  onClick={() => onRequestHumanApproval(task)}
+                >
+                  {requestingHumanApprovalTaskId === task.id
+                    ? "Requesting"
+                    : "Request human approval"}
+                </button>
+              ) : null}
             </div>
             {task.patch_artifact || task.test_run || task.patch_review || task.debug_attempt ? (
               <dl className="task-patch-meta">
@@ -82,6 +112,24 @@ export function TaskBoard({
                       <dd>{task.patch_artifact.test_result}</dd>
                     </div>
                   </>
+                ) : null}
+                {task.patch_approval ? (
+                  <div>
+                    <dt>Patch approval</dt>
+                    <dd>{`${task.patch_approval.status} by ${task.patch_approval.approved_by}`}</dd>
+                  </div>
+                ) : null}
+                {task.worktree_ref ? (
+                  <div>
+                    <dt>Worktree</dt>
+                    <dd>{task.worktree_ref}</dd>
+                  </div>
+                ) : null}
+                {task.patch_approval?.merge_instructions ? (
+                  <div>
+                    <dt>Merge instructions</dt>
+                    <dd>{task.patch_approval.merge_instructions}</dd>
+                  </div>
                 ) : null}
                 {task.test_run ? (
                   <div>
@@ -120,6 +168,12 @@ export function TaskBoard({
                   </div>
                 ) : null}
               </dl>
+            ) : null}
+            {task.patch_artifact?.diff_text ? (
+              <div className="task-diff-preview">
+                <h4>Diff preview</h4>
+                <pre>{task.patch_artifact.diff_text}</pre>
+              </div>
             ) : null}
             {localRunErrors[task.id] ? (
               <p className="task-run-error" role="alert">

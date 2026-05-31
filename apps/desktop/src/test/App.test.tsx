@@ -64,7 +64,9 @@ function patchReadyTaskFixture(): TaskCard {
       summary: "Prepared local runner patch.",
       files_changed: ["apps/desktop/src/components/TaskBoard.tsx"],
       tests_run: ["pnpm --filter @ai-scdc/desktop test"],
-      test_result: "not_run"
+      test_result: "not_run",
+      diff_text:
+        "diff --git a/apps/desktop/src/components/TaskBoard.tsx b/apps/desktop/src/components/TaskBoard.tsx\n+Approve patch"
     }
   };
 }
@@ -99,6 +101,49 @@ function reviewingTaskFixture(): TaskCard {
       started_at: "2026-05-29T00:01:00Z",
       completed_at: "2026-05-29T00:02:00Z",
       created_at: "2026-05-29T00:01:00Z"
+    }
+  };
+}
+
+function approvedTaskFixture(): TaskCard {
+  return {
+    ...reviewingTaskFixture(),
+    status: "APPROVED",
+    patch_review: {
+      id: "review_test",
+      workspace_id: "workspace_test",
+      project_id: "project_demo",
+      task_id: "task_patch_ready",
+      local_run_id: "local_run_test",
+      patch_artifact_id: "patch_test",
+      test_run_id: "test_run_test",
+      reviewer_kind: "deterministic",
+      verdict: "approved",
+      issues: [],
+      required_changes: [],
+      created_at: "2026-05-29T00:03:00Z"
+    }
+  };
+}
+
+function mergeReadyTaskFixture(): TaskCard {
+  return {
+    ...approvedTaskFixture(),
+    status: "MERGE_READY",
+    worktree_ref: ".worktrees/task_patch_ready",
+    patch_approval: {
+      id: "patch_approval_test",
+      workspace_id: "workspace_test",
+      project_id: "project_demo",
+      task_id: "task_patch_ready",
+      local_run_id: "local_run_test",
+      patch_artifact_id: "patch_test",
+      review_id: "review_test",
+      status: "approved",
+      approved_by: "dev_user",
+      merge_instructions:
+        "Inspect .worktrees/task_patch_ready before merging. This workflow does not run git merge.",
+      created_at: "2026-05-29T00:04:00Z"
     }
   };
 }
@@ -186,8 +231,25 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
       },
       debug_attempt: null
     }),
-    approvePatch: vi.fn(),
-    requestHumanApproval: vi.fn(),
+    approvePatch: vi.fn().mockResolvedValue({
+      task: {
+        ...mergeReadyTaskFixture(),
+        patch_approval: undefined
+      },
+      patch_artifact: mergeReadyTaskFixture().patch_artifact!,
+      review: mergeReadyTaskFixture().patch_review!,
+      approval: mergeReadyTaskFixture().patch_approval!
+    }),
+    requestHumanApproval: vi.fn().mockResolvedValue({
+      task: {
+        ...mergeReadyTaskFixture(),
+        status: "HUMAN_APPROVAL",
+        patch_approval: undefined
+      },
+      patch_artifact: mergeReadyTaskFixture().patch_artifact!,
+      review: mergeReadyTaskFixture().patch_review!,
+      approval: mergeReadyTaskFixture().patch_approval!
+    }),
     ...overrides
   };
 }
@@ -667,5 +729,79 @@ describe("App", () => {
     expect(
       within(board).getByText("Attach the generated diff to the patch artifact.")
     ).toBeInTheDocument();
+  });
+
+  it("renders unified diff preview for patch artifacts", async () => {
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([approvedTaskFixture()])
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    expect(await within(board).findByText("Diff preview")).toBeInTheDocument();
+    expect(
+      within(board).getByText(/diff --git a\/apps\/desktop\/src\/components\/TaskBoard.tsx/)
+    ).toBeInTheDocument();
+  });
+
+  it("approves an approved patch and renders merge instructions", async () => {
+    const user = userEvent.setup();
+    const approvePatch = vi.fn<ConsoleApiClient["approvePatch"]>().mockResolvedValue({
+      task: {
+        ...mergeReadyTaskFixture(),
+        patch_approval: undefined
+      },
+      patch_artifact: mergeReadyTaskFixture().patch_artifact!,
+      review: mergeReadyTaskFixture().patch_review!,
+      approval: mergeReadyTaskFixture().patch_approval!
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([approvedTaskFixture()]),
+      approvePatch
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Approve patch" }));
+
+    expect(approvePatch).toHaveBeenCalledWith("patch_test");
+    expect(await within(board).findByText("MERGE_READY")).toBeInTheDocument();
+    expect(within(board).getByText("Patch approval")).toBeInTheDocument();
+    expect(within(board).getByText("approved by dev_user")).toBeInTheDocument();
+    expect(within(board).getByText(/This workflow does not run git merge/)).toBeInTheDocument();
+  });
+
+  it("requests human approval from a merge-ready task", async () => {
+    const user = userEvent.setup();
+    const requestHumanApproval =
+      vi.fn<ConsoleApiClient["requestHumanApproval"]>().mockResolvedValue({
+        task: {
+          ...mergeReadyTaskFixture(),
+          status: "HUMAN_APPROVAL",
+          patch_approval: undefined
+        },
+        patch_artifact: mergeReadyTaskFixture().patch_artifact!,
+        review: mergeReadyTaskFixture().patch_review!,
+        approval: mergeReadyTaskFixture().patch_approval!
+      });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([mergeReadyTaskFixture()]),
+      requestHumanApproval
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(
+      await within(board).findByRole("button", { name: "Request human approval" })
+    );
+
+    expect(requestHumanApproval).toHaveBeenCalledWith("patch_approval_test");
+    expect(await within(board).findByText("HUMAN_APPROVAL")).toBeInTheDocument();
   });
 });
