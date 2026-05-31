@@ -442,6 +442,25 @@ class LocalTaskRun(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class CloudRun(SQLModel, table=True):
+    __tablename__ = "cloud_run"
+
+    id: str = Field(default_factory=lambda: prefixed_id("cloud_run"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    task_id: str = Field(index=True, foreign_key="task.id")
+    repo_id: str = Field(index=True, foreign_key="repository.id")
+    local_run_id: str | None = Field(default=None, index=True, foreign_key="local_task_run.id")
+    base_branch: str = ""
+    head_branch: str = Field(index=True)
+    status: str = Field(default="queued", index=True)
+    sandbox_kind: str = "fake"
+    patch_artifact_id: str | None = Field(default=None, index=True)
+    failure_reason: str | None = None
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class PatchArtifact(SQLModel, table=True):
     __tablename__ = "patch_artifact"
 

@@ -185,6 +185,10 @@ class LocalRunCreate(BaseModel):
     repo_id: str = Field(min_length=1)
 
 
+class CloudRunCreate(BaseModel):
+    repo_id: str = Field(min_length=1)
+
+
 class TaskRead(BaseModel):
     id: str
     project_id: str
@@ -239,6 +243,28 @@ class PatchArtifactRead(BaseModel):
     risks: list[str]
     diff_text: str
     created_at: datetime
+
+
+class CloudRunRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    repo_id: str
+    local_run_id: str | None
+    base_branch: str
+    head_branch: str
+    status: str
+    sandbox_kind: str
+    patch_artifact_id: str | None
+    failure_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CloudRunResultRead(BaseModel):
+    cloud_run: CloudRunRead
+    patch_artifact: PatchArtifactRead | None = None
 
 
 class CommandResultRead(BaseModel):

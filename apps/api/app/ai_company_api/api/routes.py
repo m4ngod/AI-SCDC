@@ -6,6 +6,9 @@ from sqlmodel import Session
 from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     AgentRole,
+    CloudRunCreate,
+    CloudRunRead,
+    CloudRunResultRead,
     ConversationCreate,
     DebugAttemptRead,
     GitHubCredentialCreate,
@@ -40,6 +43,11 @@ from ai_company_api.schemas.api import (
     TaskUpdate,
     UsageLedgerCreate,
     UsageLedgerRead,
+)
+from ai_company_api.services.cloud_runner import (
+    get_cloud_run_read,
+    list_cloud_runs,
+    start_cloud_run,
 )
 from ai_company_api.services.github_repository import (
     create_github_credential,
@@ -386,6 +394,38 @@ def post_project_task(project_id: str, data: TaskCreate, session: SessionDep):
 @router.get("/tasks/{task_id}")
 def get_task_by_id(task_id: str, session: SessionDep):
     return get_task(session, task_id)
+
+
+@router.post(
+    "/tasks/{task_id}/cloud-runs",
+    status_code=status.HTTP_201_CREATED,
+    response_model=CloudRunResultRead,
+)
+def post_task_cloud_run(
+    task_id: str,
+    data: CloudRunCreate,
+    session: SessionDep,
+) -> CloudRunResultRead:
+    return start_cloud_run(session, task_id, data)
+
+
+@router.get(
+    "/tasks/{task_id}/cloud-runs",
+    response_model=list[CloudRunRead],
+)
+def get_task_cloud_runs(
+    task_id: str,
+    session: SessionDep,
+) -> list[CloudRunRead]:
+    return list_cloud_runs(session, task_id)
+
+
+@router.get("/cloud-runs/{cloud_run_id}", response_model=CloudRunRead)
+def get_cloud_run_by_id(
+    cloud_run_id: str,
+    session: SessionDep,
+) -> CloudRunRead:
+    return get_cloud_run_read(session, cloud_run_id)
 
 
 @router.post(

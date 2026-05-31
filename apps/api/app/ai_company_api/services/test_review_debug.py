@@ -64,6 +64,8 @@ def start_patch_test_run(
         )
 
     local_run = _get_local_run_entity(session, artifact.local_run_id)
+    if local_run.runner_kind == "cloud_fake":
+        return _start_cloud_fake_test_run(session, artifact, task, local_run)
     if not local_run.worktree_path:
         raise HTTPException(
             status_code=400,
@@ -235,6 +237,84 @@ def get_test_run(session: Session, test_run_id: str) -> LocalTestRunRead:
     if test_run is None:
         raise HTTPException(status_code=404, detail="Local test run not found")
     return _test_run_read(test_run)
+
+
+def _start_cloud_fake_test_run(
+    session: Session,
+    artifact: PatchArtifact,
+    task: Task,
+    local_run: LocalTaskRun,
+) -> PatchTestRunResultRead:
+    event_clock = _EventClock()
+    commands = list(task.required_tests or [])
+    test_run = LocalTestRun(
+        project_id=task.project_id,
+        task_id=task.id,
+        local_run_id=local_run.id,
+        patch_artifact_id=artifact.id,
+        status="running",
+        commands=commands,
+    )
+    session.add(test_run)
+    session.flush()
+    _create_workflow_event(
+        session,
+        event_clock,
+        task.id,
+        "test_run_started",
+        {"patch_artifact_id": artifact.id, "test_run_id": test_run.id},
+    )
+    _transition_task_for_workflow(
+        session,
+        event_clock,
+        task,
+        TaskStatus.SELF_TESTING,
+    )
+    _complete_test_run(
+        test_run,
+        artifact,
+        status="passed",
+        command_results=[
+            {
+                "command": commands[0] if commands else "cloud fake test",
+                "exit_code": 0,
+                "stdout": "cloud fake test passed",
+                "stderr": "",
+                "duration_ms": 0,
+            }
+        ],
+        failure_reason=None,
+    )
+    _create_workflow_event(
+        session,
+        event_clock,
+        task.id,
+        "test_run_completed",
+        {
+            "patch_artifact_id": artifact.id,
+            "test_run_id": test_run.id,
+            "status": test_run.status,
+        },
+    )
+    _transition_task_for_workflow(
+        session,
+        event_clock,
+        task,
+        TaskStatus.REVIEWING,
+    )
+    session.add(test_run)
+    session.add(artifact)
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+    session.refresh(artifact)
+    session.refresh(test_run)
+    return PatchTestRunResultRead(
+        task=_task_read(task),
+        patch_artifact=_patch_artifact_read(artifact),
+        test_run=_test_run_read(test_run),
+        debug_attempt=None,
+    )
 
 
 def list_debug_attempts(session: Session, task_id: str) -> list[DebugAttemptRead]:

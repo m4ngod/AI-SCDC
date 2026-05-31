@@ -1,0 +1,132 @@
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+from sqlmodel import Session
+
+from ai_company_api.db.session import build_engine, init_db
+from ai_company_api.main import create_app
+from ai_company_api.models.entities import CloudRun, LocalTaskRun, PatchArtifact, Project, Repository, Task
+from ai_company_api.services.task_state import TaskStatus
+
+
+def build_client(database_path: Path) -> TestClient:
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    init_db(build_engine(database_url))
+    return TestClient(create_app(database_url=database_url))
+
+
+def create_cloud_task(session: Session) -> tuple[Project, Repository, Task]:
+    project = Project(name="Cloud project")
+    session.add(project)
+    session.flush()
+    repository = Repository(
+        project_id=project.id,
+        name="Demo remote",
+        local_path="",
+        default_branch="main",
+        provider="github",
+        repo_url="https://github.com/example/demo",
+        github_owner="example",
+        github_repo="demo",
+        github_credential_id="github_credential_test",
+        connection_status="active",
+    )
+    session.add(repository)
+    session.flush()
+    task = Task(
+        project_id=project.id,
+        title="Run fake cloud sandbox",
+        role_required="backend",
+        status=TaskStatus.CREATED,
+        allowed_paths=["AI_SCDC_CLOUD_RUN.md"],
+        required_tests=["python -V"],
+    )
+    session.add(task)
+    session.commit()
+    session.refresh(project)
+    session.refresh(repository)
+    session.refresh(task)
+    return project, repository, task
+
+
+def test_start_cloud_run_creates_patch_artifact_and_bridge_local_run(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    response = client.post(f"/tasks/{task.id}/cloud-runs", json={"repo_id": repository.id})
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["cloud_run"]["status"] == "patch_ready"
+    assert result["cloud_run"]["sandbox_kind"] == "fake"
+    assert result["cloud_run"]["head_branch"].startswith("ai-scdc/task-")
+    assert result["patch_artifact"]["files_changed"] == ["AI_SCDC_CLOUD_RUN.md"]
+    assert result["patch_artifact"]["test_result"] == "not_run"
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, result["cloud_run"]["id"])
+        local_run = session.get(LocalTaskRun, result["cloud_run"]["local_run_id"])
+        artifact = session.get(PatchArtifact, result["patch_artifact"]["id"])
+        persisted_task = session.get(Task, task.id)
+
+    assert cloud_run is not None
+    assert local_run is not None
+    assert artifact is not None
+    assert persisted_task is not None
+    assert local_run.runner_kind == "cloud_fake"
+    assert local_run.patch_artifact_id == artifact.id
+    assert cloud_run.patch_artifact_id == artifact.id
+    assert persisted_task.status == TaskStatus.PATCH_READY
+
+
+def test_cloud_run_rejects_cross_project_repository(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, _repository, task = create_cloud_task(session)
+        other_project = Project(name="Other")
+        session.add(other_project)
+        session.flush()
+        other_repo = Repository(
+            project_id=other_project.id,
+            name="Other remote",
+            local_path="",
+            default_branch="main",
+            provider="github",
+            repo_url="https://github.com/example/other",
+            github_owner="example",
+            github_repo="other",
+            github_credential_id="github_credential_test",
+            connection_status="active",
+        )
+        session.add(other_repo)
+        session.commit()
+        task_id = task.id
+        session.refresh(other_repo)
+        other_repo_id = other_repo.id
+
+    response = client.post(f"/tasks/{task_id}/cloud-runs", json={"repo_id": other_repo_id})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Repository does not belong to task project"
+
+
+def test_cloud_fake_patch_can_run_synthetic_tests_and_review(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    cloud_result = client.post(f"/tasks/{task.id}/cloud-runs", json={"repo_id": repository.id}).json()
+    patch_artifact_id = cloud_result["patch_artifact"]["id"]
+    test_response = client.post(f"/patch-artifacts/{patch_artifact_id}/test-runs")
+    review_response = client.post(f"/patch-artifacts/{patch_artifact_id}/reviews")
+
+    assert test_response.status_code == 201
+    assert test_response.json()["test_run"]["status"] == "passed"
+    assert test_response.json()["test_run"]["command_results"][0]["stdout"] == "cloud fake test passed"
+    assert review_response.status_code == 201
+    assert review_response.json()["review"]["verdict"] == "approved"
+    assert review_response.json()["task"]["status"] == "APPROVED"
