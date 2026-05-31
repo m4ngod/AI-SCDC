@@ -94,6 +94,7 @@ TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.CLOSED,
     },
     TaskStatus.PR_CREATED: {
+        TaskStatus.MERGED,
         TaskStatus.CLOSED,
         TaskStatus.CANCELLED,
     },
@@ -126,11 +127,12 @@ def validate_transition(
         )
 
     if requested == TaskStatus.MERGED and (
-        current != TaskStatus.HUMAN_APPROVAL or actor_type != "system"
+        current not in {TaskStatus.HUMAN_APPROVAL, TaskStatus.PR_CREATED}
+        or actor_type != "system"
     ):
         raise InvalidTaskTransition(
             f"Invalid task transition {transition} for actor_type={actor_type}; "
-            "MERGED requires HUMAN_APPROVAL and actor_type=system; "
+            "MERGED requires HUMAN_APPROVAL or PR_CREATED and actor_type=system; "
             f"allowed={allowed}"
         )
 
