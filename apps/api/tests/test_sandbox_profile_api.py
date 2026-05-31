@@ -230,6 +230,27 @@ def test_sandbox_profile_rejects_duplicate_command_keys(
     assert response.json()["detail"] == "Sandbox command keys must be unique"
 
 
+def test_sandbox_profile_rejects_duplicate_command_keys_across_command_lists(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        init_db(session.get_bind())
+        project, repository = create_github_repo(session)
+
+    payload = profile_payload(repository.id)
+    payload["test_commands"][0]["key"] = payload["patch_commands"][0]["key"]
+
+    with build_client(database_path) as client:
+        response = client.post(
+            f"/projects/{project.id}/sandbox-profiles",
+            json=payload,
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Sandbox command keys must be unique"
+
+
 def test_sandbox_profile_requires_single_default_test_command_when_tests_exist(
     tmp_path: Path,
 ) -> None:

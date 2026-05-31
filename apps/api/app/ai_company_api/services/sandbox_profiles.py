@@ -25,6 +25,7 @@ def create_sandbox_profile(
             detail="Sandbox profiles require a GitHub repository",
         )
 
+    _validate_unique_command_keys([*data.patch_commands, *data.test_commands])
     _validate_sandbox_commands(data.patch_commands, command_kind="patch")
     _validate_sandbox_commands(data.test_commands, command_kind="test")
 
@@ -97,7 +98,6 @@ def _validate_sandbox_commands(
     *,
     command_kind: str,
 ) -> None:
-    _validate_unique_command_keys(commands)
     if command_kind == "test" and not commands:
         return
 
