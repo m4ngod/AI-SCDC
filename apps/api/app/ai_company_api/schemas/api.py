@@ -40,6 +40,11 @@ class ModelCredentialStatus(str, Enum):
     DELETED = "deleted"
 
 
+class GitHubCredentialStatus(str, Enum):
+    ACTIVE = "active"
+    DELETED = "deleted"
+
+
 class ModelRouteStatus(str, Enum):
     ACTIVE = "active"
     DISABLED = "disabled"
@@ -67,9 +72,39 @@ class RepositoryRead(BaseModel):
     name: str
     local_path: str
     default_branch: str
+    provider: str
+    repo_url: str
+    github_owner: str | None
+    github_repo: str | None
+    github_credential_id: str | None
+    connection_status: str
     status: str
     created_at: datetime
     updated_at: datetime
+
+
+class GitHubCredentialCreate(BaseModel):
+    display_name: str = Field(min_length=1)
+    token: SecretStr = Field(min_length=5)
+
+
+class GitHubCredentialRead(BaseModel):
+    id: str
+    workspace_id: str
+    display_name: str
+    token_last4: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class GitHubRepositoryCreate(BaseModel):
+    name: str = Field(min_length=1)
+    repo_url: str = Field(min_length=1)
+    github_owner: str = Field(min_length=1)
+    github_repo: str = Field(min_length=1)
+    default_branch: str = Field(default="main", min_length=1)
+    github_credential_id: str = Field(min_length=1)
 
 
 class ProjectCreate(BaseModel):

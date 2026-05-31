@@ -78,6 +78,11 @@ class ModelCredentialStatus(str, Enum):
     DELETED = "deleted"
 
 
+class GitHubCredentialStatus(str, Enum):
+    ACTIVE = "active"
+    DELETED = "deleted"
+
+
 class ModelRouteStatus(str, Enum):
     ACTIVE = "active"
     DISABLED = "disabled"
@@ -96,6 +101,16 @@ class Repository(SQLModel, table=True):
     name: str
     local_path: str
     default_branch: str = "main"
+    provider: str = Field(default="local", index=True)
+    repo_url: str = ""
+    github_owner: str | None = Field(default=None, index=True)
+    github_repo: str | None = Field(default=None, index=True)
+    github_credential_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="github_credential.id",
+    )
+    connection_status: str = Field(default="active", index=True)
     status: str = Field(default="active", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -251,6 +266,36 @@ class ModelCredential(SQLModel, table=True):
             SAEnum(
                 ModelCredentialStatus,
                 name="model_credential_status",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class GitHubCredential(SQLModel, table=True):
+    __tablename__ = "github_credential"
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("github_credential"),
+        primary_key=True,
+    )
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    display_name: str
+    token_last4: str = ""
+    encrypted_token: str
+    status: GitHubCredentialStatus = Field(
+        default=GitHubCredentialStatus.ACTIVE,
+        sa_column=Column(
+            SAEnum(
+                GitHubCredentialStatus,
+                name="github_credential_status",
                 values_callable=lambda enum_cls: [member.value for member in enum_cls],
                 native_enum=False,
                 validate_strings=True,

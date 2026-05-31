@@ -8,6 +8,9 @@ from ai_company_api.schemas.api import (
     AgentRole,
     ConversationCreate,
     DebugAttemptRead,
+    GitHubCredentialCreate,
+    GitHubCredentialRead,
+    GitHubRepositoryCreate,
     LocalRunCreate,
     LocalTaskRunRead,
     LocalTestRunRead,
@@ -37,6 +40,12 @@ from ai_company_api.schemas.api import (
     TaskUpdate,
     UsageLedgerCreate,
     UsageLedgerRead,
+)
+from ai_company_api.services.github_repository import (
+    create_github_credential,
+    create_github_repository,
+    delete_github_credential,
+    list_github_credentials,
 )
 from ai_company_api.services.local_runner import (
     get_local_task_run,
@@ -137,6 +146,47 @@ def post_project_repository(
 @router.get("/repositories/{repo_id}", response_model=RepositoryRead)
 def get_repository_by_id(repo_id: str, session: SessionDep) -> RepositoryRead:
     return get_repository_read(session, repo_id)
+
+
+@router.get("/github-credentials", response_model=list[GitHubCredentialRead])
+def get_github_credentials(session: SessionDep) -> list[GitHubCredentialRead]:
+    return list_github_credentials(session)
+
+
+@router.post(
+    "/github-credentials",
+    status_code=status.HTTP_201_CREATED,
+    response_model=GitHubCredentialRead,
+)
+def post_github_credential(
+    data: GitHubCredentialCreate,
+    session: SessionDep,
+) -> GitHubCredentialRead:
+    return create_github_credential(session, data)
+
+
+@router.delete(
+    "/github-credentials/{credential_id}",
+    response_model=GitHubCredentialRead,
+)
+def delete_github_credential_by_id(
+    credential_id: str,
+    session: SessionDep,
+) -> GitHubCredentialRead:
+    return delete_github_credential(session, credential_id)
+
+
+@router.post(
+    "/projects/{project_id}/github-repositories",
+    status_code=status.HTTP_201_CREATED,
+    response_model=RepositoryRead,
+)
+def post_project_github_repository(
+    project_id: str,
+    data: GitHubRepositoryCreate,
+    session: SessionDep,
+) -> RepositoryRead:
+    return create_github_repository(session, project_id, data)
 
 
 @router.get("/projects/{project_id}/conversations")

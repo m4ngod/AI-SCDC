@@ -20,9 +20,44 @@ def build_engine(database_url: str):
 
 def init_db(engine) -> None:
     SQLModel.metadata.create_all(engine)
+    _upgrade_sqlite_repository_phase_7_columns(engine)
     _upgrade_sqlite_planner_run_metadata(engine)
     _upgrade_sqlite_task_execution_constraints(engine)
     _upgrade_sqlite_patch_review_uniqueness(engine)
+
+
+def _upgrade_sqlite_repository_phase_7_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    repository_columns = {
+        "provider": "VARCHAR DEFAULT 'local'",
+        "repo_url": "VARCHAR DEFAULT ''",
+        "github_owner": "VARCHAR",
+        "github_repo": "VARCHAR",
+        "github_credential_id": "VARCHAR",
+        "connection_status": "VARCHAR DEFAULT 'active'",
+    }
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "repository" not in existing_tables:
+            return
+
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(text("PRAGMA table_info(repository)")).mappings()
+        }
+        for column_name, column_type in repository_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    text(f"ALTER TABLE repository ADD COLUMN {column_name} {column_type}")
+                )
 
 
 def _upgrade_sqlite_planner_run_metadata(engine) -> None:
@@ -193,6 +228,7 @@ def _sqlite_has_unique_index(connection, table_name: str, columns: tuple[str, ..
 
 
 def session_generator(engine) -> Generator[Session, None, None]:
+    init_db(engine)
     with Session(engine) as session:
         yield session
 
