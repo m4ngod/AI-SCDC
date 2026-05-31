@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, and Phase 5 deterministic test/review/debug workflow for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, and Phase 6 human patch approval and diff viewer workflow for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -315,11 +315,12 @@ HUMAN_APPROVAL
 
 This workflow records approval intent only. It does not run `git commit`, `git merge`, `git push`, `git apply`, or create a PR.
 
-Focused verification commands used for this phase:
+Focused verification commands used for Phase 6 and its Phase 5 prerequisite workflow:
 
 ```bash
 pytest apps/worker/tests/test_test_runner.py -v
 pytest apps/api/tests/test_test_review_debug_api.py -v
+pytest apps/api/tests/test_patch_approval_api.py -v
 pnpm --filter @ai-scdc/desktop test -- src/test/client.test.ts src/test/App.test.tsx
 pnpm --filter @ai-scdc/desktop typecheck
 git diff --check

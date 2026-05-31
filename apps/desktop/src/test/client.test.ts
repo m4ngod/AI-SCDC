@@ -224,6 +224,16 @@ describe("desktop API clients", () => {
       .mockResolvedValueOnce(
         jsonResponse([
           {
+            id: "local_run_old",
+            task_id: "task_api",
+            repo_id: "repo_api",
+            status: "patch_ready",
+            base_branch: "develop",
+            worktree_path: "T:/repo/.worktrees/task_api-local_run_old",
+            patch_artifact_id: "patch_old",
+            failure_reason: null
+          },
+          {
             id: "local_run_api",
             task_id: "task_api",
             repo_id: "repo_api",
@@ -252,6 +262,27 @@ describe("desktop API clients", () => {
       .mockResolvedValueOnce(
         jsonResponse([
           {
+            id: "test_run_old",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            patch_artifact_id: "patch_api",
+            status: "failed",
+            commands: ["python -V"],
+            command_results: [
+              {
+                command: "python -V",
+                exit_code: 1,
+                stdout: "",
+                stderr: "old failure",
+                duration_ms: 100
+              }
+            ],
+            failure_reason: "old failure",
+            started_at: "2026-05-29T02:00:00Z",
+            completed_at: "2026-05-29T02:00:01Z",
+            created_at: "2026-05-29T02:00:00Z"
+          },
+          {
             id: "test_run_api",
             task_id: "task_api",
             local_run_id: "local_run_api",
@@ -277,6 +308,18 @@ describe("desktop API clients", () => {
       .mockResolvedValueOnce(
         jsonResponse([
           {
+            id: "review_old",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            patch_artifact_id: "patch_api",
+            test_run_id: "test_run_old",
+            reviewer_kind: "deterministic",
+            verdict: "changes_requested",
+            issues: [{ code: "old_issue" }],
+            required_changes: ["Fix stale issue."],
+            created_at: "2026-05-29T02:04:00Z"
+          },
+          {
             id: "review_api",
             task_id: "task_api",
             local_run_id: "local_run_api",
@@ -292,6 +335,17 @@ describe("desktop API clients", () => {
       )
       .mockResolvedValueOnce(
         jsonResponse([
+          {
+            id: "patch_approval_old",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            patch_artifact_id: "patch_api",
+            review_id: "review_old",
+            status: "approved",
+            approved_by: "dev_user",
+            merge_instructions: "Older approval instructions.",
+            created_at: "2026-05-29T02:08:00Z"
+          },
           {
             id: "patch_approval_api",
             task_id: "task_api",
