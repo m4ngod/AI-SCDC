@@ -13,6 +13,7 @@ export type TaskCard = {
   patch_artifact?: PatchArtifactCard;
   test_run?: LocalTestRunCard;
   patch_review?: PatchReviewCard;
+  patch_approval?: PatchApprovalCard;
   debug_attempt?: DebugAttemptCard | null;
 };
 
@@ -43,6 +44,7 @@ export type PatchArtifactCard = {
   files_changed: string[];
   tests_run: string[];
   test_result: string;
+  diff_text?: string;
 };
 
 export type CommandResultCard = {
@@ -84,6 +86,20 @@ export type PatchReviewCard = {
   created_at: string;
 };
 
+export type PatchApprovalCard = {
+  id: string;
+  workspace_id?: string;
+  project_id?: string;
+  task_id: string;
+  local_run_id: string;
+  patch_artifact_id: string;
+  review_id: string;
+  status: string;
+  approved_by: string;
+  merge_instructions: string;
+  created_at: string;
+};
+
 export type DebugAttemptCard = {
   id: string;
   workspace_id?: string;
@@ -115,6 +131,13 @@ export type PatchReviewResult = {
   patch_artifact: PatchArtifactCard;
   review: PatchReviewCard;
   debug_attempt: DebugAttemptCard | null;
+};
+
+export type PatchApprovalResult = {
+  task: TaskCard;
+  patch_artifact: PatchArtifactCard;
+  review: PatchReviewCard;
+  approval: PatchApprovalCard;
 };
 
 export type PlannerTaskDraftCard = {
@@ -156,6 +179,8 @@ export type ConsoleApiClient = {
   startLocalRun: (taskId: string) => Promise<LocalRunResult>;
   runPatchTests: (patchArtifactId: string) => Promise<PatchTestRunResult>;
   reviewPatch: (patchArtifactId: string) => Promise<PatchReviewResult>;
+  approvePatch?: (patchArtifactId: string) => Promise<PatchApprovalResult>;
+  requestHumanApproval?: (approvalId: string) => Promise<PatchApprovalResult>;
 };
 
 type ApiProject = {
@@ -182,13 +207,15 @@ type ApiPatchArtifact = PatchArtifactCard & {
   workspace_id?: string;
   project_id?: string;
   risks?: string[];
-  diff_text: string;
+  diff_text?: string;
   created_at?: string;
 };
 
 type ApiLocalTestRun = LocalTestRunCard;
 
 type ApiPatchReview = PatchReviewCard;
+
+type ApiPatchApproval = PatchApprovalCard;
 
 type ApiDebugAttempt = DebugAttemptCard;
 
@@ -204,6 +231,13 @@ type ApiPatchReviewResult = {
   patch_artifact: ApiPatchArtifact;
   review: ApiPatchReview;
   debug_attempt: ApiDebugAttempt | null;
+};
+
+type ApiPatchApprovalResult = {
+  task: ApiTask;
+  patch_artifact: ApiPatchArtifact;
+  review: ApiPatchReview;
+  approval: ApiPatchApproval;
 };
 
 type ApiPlannerRunDecision = {
@@ -448,6 +482,74 @@ export const fakeApiClient: ConsoleApiClient = {
       review,
       debug_attempt: null
     };
+  },
+  async approvePatch(patchArtifactId: string) {
+    const { task, patchArtifact: basePatchArtifact } = fakeTaskFromPatchArtifact(patchArtifactId);
+    const patchArtifact = {
+      ...basePatchArtifact,
+      test_result: "passed"
+    };
+    const review: PatchReviewCard = {
+      id: `review_${patchArtifact.id}`,
+      workspace_id: "workspace_demo",
+      project_id: "project_demo",
+      task_id: task.id,
+      local_run_id: patchArtifact.local_run_id,
+      patch_artifact_id: patchArtifact.id,
+      test_run_id: task.test_run?.id ?? "test_run_demo",
+      reviewer_kind: "deterministic",
+      verdict: "approved",
+      issues: [],
+      required_changes: [],
+      created_at: "2026-05-29T00:03:00Z"
+    };
+    const approval: PatchApprovalCard = {
+      id: `patch_approval_${patchArtifact.id}`,
+      workspace_id: "workspace_demo",
+      project_id: "project_demo",
+      task_id: task.id,
+      local_run_id: patchArtifact.local_run_id,
+      patch_artifact_id: patchArtifact.id,
+      review_id: review.id,
+      status: "approved",
+      approved_by: "dev_user",
+      merge_instructions:
+        "Inspect the worktree before merging. This workflow does not run git merge.",
+      created_at: "2026-05-29T00:04:00Z"
+    };
+    return {
+      task: {
+        ...task,
+        status: "MERGE_READY",
+        patch_artifact: patchArtifact,
+        patch_review: review,
+        patch_approval: approval
+      },
+      patch_artifact: patchArtifact,
+      review,
+      approval
+    };
+  },
+  async requestHumanApproval(approvalId: string) {
+    const patchArtifactId = approvalId.replace(/^patch_approval_/, "");
+    const approvePatch = this.approvePatch;
+    if (!approvePatch) {
+      throw new Error("Patch approval is not available");
+    }
+    const result = await approvePatch(patchArtifactId);
+    const approval = {
+      ...result.approval,
+      id: approvalId
+    };
+    return {
+      ...result,
+      task: {
+        ...result.task,
+        status: "HUMAN_APPROVAL",
+        patch_approval: approval
+      },
+      approval
+    };
   }
 };
 
@@ -546,7 +648,8 @@ function mapPatchArtifactCard(artifact: ApiPatchArtifact): PatchArtifactCard {
     summary: artifact.summary,
     files_changed: artifact.files_changed,
     tests_run: artifact.tests_run,
-    test_result: artifact.test_result
+    test_result: artifact.test_result,
+    diff_text: artifact.diff_text
   };
 }
 
@@ -585,6 +688,22 @@ function mapPatchReviewCard(review: ApiPatchReview): PatchReviewCard {
   };
 }
 
+function mapPatchApprovalCard(approval: ApiPatchApproval): PatchApprovalCard {
+  return {
+    id: approval.id,
+    workspace_id: approval.workspace_id,
+    project_id: approval.project_id,
+    task_id: approval.task_id,
+    local_run_id: approval.local_run_id,
+    patch_artifact_id: approval.patch_artifact_id,
+    review_id: approval.review_id,
+    status: approval.status,
+    approved_by: approval.approved_by,
+    merge_instructions: approval.merge_instructions,
+    created_at: approval.created_at
+  };
+}
+
 function mapDebugAttemptCard(debugAttempt: ApiDebugAttempt): DebugAttemptCard {
   return {
     id: debugAttempt.id,
@@ -616,6 +735,15 @@ function mapPatchReviewResult(result: ApiPatchReviewResult): PatchReviewResult {
     patch_artifact: mapPatchArtifactCard(result.patch_artifact),
     review: mapPatchReviewCard(result.review),
     debug_attempt: result.debug_attempt ? mapDebugAttemptCard(result.debug_attempt) : null
+  };
+}
+
+function mapPatchApprovalResult(result: ApiPatchApprovalResult): PatchApprovalResult {
+  return {
+    task: mapTaskCard(result.task),
+    patch_artifact: mapPatchArtifactCard(result.patch_artifact),
+    review: mapPatchReviewCard(result.review),
+    approval: mapPatchApprovalCard(result.approval)
   };
 }
 
@@ -774,6 +902,34 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         `POST /patch-artifacts/${patchArtifactId}/reviews`
       );
       return mapPatchReviewResult(result);
+    },
+    async approvePatch(patchArtifactId: string) {
+      const response = await fetch(
+        apiUrl(options.baseUrl, `/patch-artifacts/${patchArtifactId}/approvals`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+      const result = await readJsonResponse<ApiPatchApprovalResult>(
+        response,
+        `POST /patch-artifacts/${patchArtifactId}/approvals`
+      );
+      return mapPatchApprovalResult(result);
+    },
+    async requestHumanApproval(approvalId: string) {
+      const response = await fetch(
+        apiUrl(options.baseUrl, `/patch-approvals/${approvalId}/request-human-approval`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+      const result = await readJsonResponse<ApiPatchApprovalResult>(
+        response,
+        `POST /patch-approvals/${approvalId}/request-human-approval`
+      );
+      return mapPatchApprovalResult(result);
     }
   };
 }

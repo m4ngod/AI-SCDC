@@ -92,6 +92,52 @@ describe("desktop API clients", () => {
     });
   });
 
+  it("fake client approves a reviewed patch", async () => {
+    expect(fakeApiClient.approvePatch).toBeDefined();
+    await expect(fakeApiClient.approvePatch!("patch_demo")).resolves.toMatchObject({
+      task: {
+        id: "task_board_ui",
+        status: "MERGE_READY",
+        patch_approval: {
+          patch_artifact_id: "patch_demo",
+          status: "approved",
+          approved_by: "dev_user"
+        }
+      },
+      patch_artifact: {
+        id: "patch_demo"
+      },
+      review: {
+        patch_artifact_id: "patch_demo",
+        verdict: "approved"
+      },
+      approval: {
+        patch_artifact_id: "patch_demo",
+        status: "approved",
+        merge_instructions: expect.stringContaining("does not run git merge")
+      }
+    });
+  });
+
+  it("fake client requests human approval for an approved patch", async () => {
+    expect(fakeApiClient.requestHumanApproval).toBeDefined();
+    await expect(
+      fakeApiClient.requestHumanApproval!("patch_approval_patch_demo")
+    ).resolves.toMatchObject({
+      task: {
+        id: "task_board_ui",
+        status: "HUMAN_APPROVAL",
+        patch_approval: {
+          id: "patch_approval_patch_demo"
+        }
+      },
+      approval: {
+        id: "patch_approval_patch_demo",
+        patch_artifact_id: "patch_demo"
+      }
+    });
+  });
+
   it("fake client creates deterministic planner drafts", async () => {
     const plannerRun = await fakeApiClient.createPlannerRun("Build model route settings");
 
@@ -607,6 +653,176 @@ describe("desktop API clients", () => {
         id: "debug_api",
         root_cause: "deterministic review found missing diff",
         fix_summary: "Attach the generated diff to the patch artifact."
+      }
+    });
+  });
+
+  it("HTTP client posts patch approvals and preserves diff text", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse(
+        {
+          task: {
+            id: "task_api",
+            title: "Review persisted patch",
+            status: "MERGE_READY",
+            role_required: "backend",
+            updated_at: "2026-05-29T02:10:00Z"
+          },
+          patch_artifact: {
+            id: "patch_api",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            summary: "Prepared local runner patch.",
+            files_changed: ["apps/api/routes.py"],
+            tests_run: ["pytest apps/api/tests/test_patch_approval_api.py -v"],
+            test_result: "passed",
+            risks: [],
+            diff_text: "diff --git a/apps/api/routes.py b/apps/api/routes.py\n+approval",
+            created_at: "2026-05-29T02:00:00Z"
+          },
+          review: {
+            id: "review_api",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            patch_artifact_id: "patch_api",
+            test_run_id: "test_run_api",
+            reviewer_kind: "deterministic",
+            verdict: "approved",
+            issues: [],
+            required_changes: [],
+            created_at: "2026-05-29T02:05:00Z"
+          },
+          approval: {
+            id: "patch_approval_api",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            patch_artifact_id: "patch_api",
+            review_id: "review_api",
+            status: "approved",
+            approved_by: "dev_user",
+            merge_instructions: "Inspect the worktree before merging. This workflow does not run git merge.",
+            created_at: "2026-05-29T02:10:00Z"
+          }
+        },
+        { status: 201 }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+    expect(client.approvePatch).toBeDefined();
+    const result = await client.approvePatch!("patch_api");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/patch-artifacts/patch_api/approvals",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(result).toMatchObject({
+      task: {
+        id: "task_api",
+        status: "MERGE_READY",
+        assigned_agent: "Backend Engineer"
+      },
+      patch_artifact: {
+        id: "patch_api",
+        diff_text: "diff --git a/apps/api/routes.py b/apps/api/routes.py\n+approval"
+      },
+      review: {
+        id: "review_api",
+        verdict: "approved"
+      },
+      approval: {
+        id: "patch_approval_api",
+        patch_artifact_id: "patch_api",
+        review_id: "review_api",
+        status: "approved"
+      }
+    });
+  });
+
+  it("HTTP client posts human approval requests and maps approval results", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({
+        task: {
+          id: "task_api",
+          title: "Review persisted patch",
+          status: "HUMAN_APPROVAL",
+          role_required: "backend",
+          updated_at: "2026-05-29T02:15:00Z"
+        },
+        patch_artifact: {
+          id: "patch_api",
+          workspace_id: "workspace_api",
+          project_id: "project_demo",
+          task_id: "task_api",
+          local_run_id: "local_run_api",
+          summary: "Prepared local runner patch.",
+          files_changed: ["apps/api/routes.py"],
+          tests_run: ["pytest apps/api/tests/test_patch_approval_api.py -v"],
+          test_result: "passed",
+          risks: [],
+          diff_text: "diff --git a/apps/api/routes.py b/apps/api/routes.py\n+approval",
+          created_at: "2026-05-29T02:00:00Z"
+        },
+        review: {
+          id: "review_api",
+          workspace_id: "workspace_api",
+          project_id: "project_demo",
+          task_id: "task_api",
+          local_run_id: "local_run_api",
+          patch_artifact_id: "patch_api",
+          test_run_id: "test_run_api",
+          reviewer_kind: "deterministic",
+          verdict: "approved",
+          issues: [],
+          required_changes: [],
+          created_at: "2026-05-29T02:05:00Z"
+        },
+        approval: {
+          id: "patch_approval_api",
+          workspace_id: "workspace_api",
+          project_id: "project_demo",
+          task_id: "task_api",
+          local_run_id: "local_run_api",
+          patch_artifact_id: "patch_api",
+          review_id: "review_api",
+          status: "approved",
+          approved_by: "dev_user",
+          merge_instructions: "Inspect the worktree before merging. This workflow does not run git merge.",
+          created_at: "2026-05-29T02:10:00Z"
+        }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+    expect(client.requestHumanApproval).toBeDefined();
+    const result = await client.requestHumanApproval!("patch_approval_api");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/patch-approvals/patch_approval_api/request-human-approval",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(result).toMatchObject({
+      task: {
+        id: "task_api",
+        status: "HUMAN_APPROVAL"
+      },
+      approval: {
+        id: "patch_approval_api",
+        merge_instructions: expect.stringContaining("does not run git merge")
       }
     });
   });
