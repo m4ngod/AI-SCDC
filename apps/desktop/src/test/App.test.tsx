@@ -744,6 +744,12 @@ describe("App", () => {
     expect(
       within(board).getByText(/diff --git a\/apps\/desktop\/src\/components\/TaskBoard.tsx/)
     ).toBeInTheDocument();
+    const diffPreview = within(board).getByRole("region", { name: "Diff preview" });
+    expect(diffPreview).toHaveAttribute("tabindex", "0");
+    expect(diffPreview).toHaveAttribute(
+      "aria-labelledby",
+      "task-task_patch_ready-diff-preview-title"
+    );
   });
 
   it("approves an approved patch and renders merge instructions", async () => {

@@ -171,8 +171,12 @@ export function TaskBoard({
             ) : null}
             {task.patch_artifact?.diff_text ? (
               <div className="task-diff-preview">
-                <h4>Diff preview</h4>
-                <pre>{task.patch_artifact.diff_text}</pre>
+                <h4 id={`task-${task.id}-diff-preview-title`}>Diff preview</h4>
+                <pre
+                  aria-labelledby={`task-${task.id}-diff-preview-title`}
+                  role="region"
+                  tabIndex={0}
+                >{task.patch_artifact.diff_text}</pre>
               </div>
             ) : null}
             {localRunErrors[task.id] ? (
