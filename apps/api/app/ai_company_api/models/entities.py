@@ -527,7 +527,11 @@ class LocalTestRun(SQLModel, table=True):
     project_id: str = Field(index=True, foreign_key="project.id")
     task_id: str = Field(index=True, foreign_key="task.id")
     local_run_id: str = Field(index=True, foreign_key="local_task_run.id")
-    patch_artifact_id: str = Field(index=True, foreign_key="patch_artifact.id")
+    patch_artifact_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="patch_artifact.id",
+    )
     status: str = Field(default="running", index=True)
     commands: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     command_results: list[dict[str, Any]] = Field(

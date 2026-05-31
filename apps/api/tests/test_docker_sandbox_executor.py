@@ -299,6 +299,7 @@ def test_docker_executor_keeps_host_env_for_docker_cli(
     monkeypatch.setenv("DOCKER_HOST", "host-docker")
     monkeypatch.setenv("DOCKER_CONFIG", "host-docker-config")
     monkeypatch.setenv("HTTP_PROXY", "http://host-proxy")
+    monkeypatch.setenv("CUSTOM_ENV", "host-custom")
     runner = RecordingRunner(docker_success_results())
     executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
     request = replace(
@@ -312,6 +313,7 @@ def test_docker_executor_keeps_host_env_for_docker_cli(
             "DOCKER_HOST": "sandbox-docker",
             "DOCKER_CONFIG": "sandbox-docker-config",
             "HTTP_PROXY": "http://sandbox-proxy",
+            "CUSTOM_ENV": "sandbox-custom",
         },
     )
 
@@ -332,7 +334,9 @@ def test_docker_executor_keeps_host_env_for_docker_cli(
     assert docker_run_env["DOCKER_HOST"] == "host-docker"
     assert docker_run_env["DOCKER_CONFIG"] == "host-docker-config"
     assert docker_run_env["HTTP_PROXY"] == "http://host-proxy"
+    assert docker_run_env["CUSTOM_ENV"] == "sandbox-custom"
     assert "AI_SCDC_SAFE_SANDBOX_VAR" in container_env_names
+    assert "CUSTOM_ENV" in container_env_names
     assert "PATH" not in container_env_names
     assert "DOCKER_HOST" not in container_env_names
     assert "DOCKER_CONFIG" not in container_env_names

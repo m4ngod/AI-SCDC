@@ -364,23 +364,19 @@ def _output_to_text(value: str | bytes | None) -> str:
 
 def _docker_cli_env(container_env: dict[str, str]) -> dict[str, str]:
     host_env = dict(os.environ)
-    host_names = {name.upper() for name in host_env}
     for name, value in container_env.items():
-        if _is_safe_sandbox_env_name(name, host_names):
+        if _is_safe_sandbox_env_name(name):
             host_env[name] = value
     return host_env
 
 
 def _safe_container_env_names(container_env: dict[str, str]) -> list[str]:
-    host_names = {name.upper() for name in os.environ}
-    return sorted(
-        name for name in container_env if _is_safe_sandbox_env_name(name, host_names)
-    )
+    return sorted(name for name in container_env if _is_safe_sandbox_env_name(name))
 
 
-def _is_safe_sandbox_env_name(name: str, host_names: set[str]) -> bool:
+def _is_safe_sandbox_env_name(name: str) -> bool:
     normalized = name.upper()
-    return normalized not in _DOCKER_CLI_ENV_DENYLIST and normalized not in host_names
+    return normalized not in _DOCKER_CLI_ENV_DENYLIST
 
 
 def _shell_quote(value: str) -> str:

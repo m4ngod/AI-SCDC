@@ -324,7 +324,7 @@ class LocalTestRunRead(BaseModel):
     project_id: str
     task_id: str
     local_run_id: str
-    patch_artifact_id: str
+    patch_artifact_id: str | None
     status: str
     commands: list[str]
     command_results: list[CommandResultRead]

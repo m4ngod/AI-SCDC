@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from ai_company_api.db.session import build_engine, init_db
@@ -291,12 +292,102 @@ def test_start_cloud_run_failure_does_not_create_patch_artifact(
     assert local_run is not None
     assert persisted_task is not None
     assert artifacts == []
-    assert test_runs == []
+    assert len(test_runs) == 1
+    assert test_runs[0].patch_artifact_id is None
+    assert test_runs[0].status == "failed"
+    assert test_runs[0].commands == ["python -V"]
+    assert test_runs[0].command_results == [
+        {
+            "command": "python -V",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "failed",
+            "duration_ms": 3,
+        }
+    ]
+    assert test_runs[0].failure_reason == "test_failed"
     assert cloud_run.patch_artifact_id is None
     assert cloud_run.failure_reason == "test_failed"
     assert local_run.patch_artifact_id is None
     assert local_run.failure_reason == "test_failed"
     assert persisted_task.status == TaskStatus.FIX_REQUESTED
+
+    read_response = client.get(f"/test-runs/{test_runs[0].id}")
+    assert read_response.status_code == 200
+    assert read_response.json()["patch_artifact_id"] is None
+
+
+def test_init_db_allows_cloud_test_run_without_patch_artifact(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "legacy-local-test-run.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                create table local_test_run (
+                    id varchar not null primary key,
+                    workspace_id varchar not null,
+                    project_id varchar not null,
+                    task_id varchar not null,
+                    local_run_id varchar not null,
+                    patch_artifact_id varchar not null,
+                    status varchar not null,
+                    commands json not null,
+                    command_results json not null,
+                    failure_reason varchar,
+                    started_at datetime not null,
+                    completed_at datetime,
+                    created_at datetime not null
+                )
+                """
+            )
+        )
+
+    init_db(engine)
+
+    with engine.begin() as connection:
+        columns = {
+            row["name"]: row
+            for row in connection.execute(
+                text("PRAGMA table_info(local_test_run)")
+            ).mappings()
+        }
+        connection.execute(
+            text(
+                """
+                insert into local_test_run (
+                    id,
+                    workspace_id,
+                    project_id,
+                    task_id,
+                    local_run_id,
+                    patch_artifact_id,
+                    status,
+                    commands,
+                    command_results,
+                    started_at,
+                    created_at
+                )
+                values (
+                    'test_run_failed_cloud',
+                    'dev_workspace',
+                    'project_one',
+                    'task_one',
+                    'local_run_one',
+                    null,
+                    'failed',
+                    '[]',
+                    '[]',
+                    '2026-05-31 00:00:00',
+                    '2026-05-31 00:00:00'
+                )
+                """
+            )
+        )
+
+    assert columns["patch_artifact_id"]["notnull"] == 0
 
 
 def test_list_and_get_cloud_run_routes_return_created_run(tmp_path: Path) -> None:

@@ -122,6 +122,23 @@ def start_cloud_run(
             *execution_result.command_results,
             *execution_result.test_command_results,
         ]
+        if execution_result.test_command_results:
+            test_run = LocalTestRun(
+                project_id=task.project_id,
+                task_id=task.id,
+                local_run_id=local_run.id,
+                patch_artifact_id=None,
+                status=execution_result.test_result,
+                commands=execution_result.tests_run,
+                command_results=_command_result_payloads(
+                    execution_result.test_command_results,
+                    secrets=secrets,
+                ),
+                failure_reason=execution_result.failure_reason,
+                completed_at=utc_now(),
+            )
+            session.add(test_run)
+
         local_run.status = execution_result.status
         local_run.failure_reason = execution_result.failure_reason
         local_run.updated_at = utc_now()

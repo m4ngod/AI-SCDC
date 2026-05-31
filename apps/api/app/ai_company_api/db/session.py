@@ -22,6 +22,7 @@ def init_db(engine) -> None:
     SQLModel.metadata.create_all(engine)
     _upgrade_sqlite_repository_phase_7_columns(engine)
     _upgrade_sqlite_cloud_run_phase_8_columns(engine)
+    _upgrade_sqlite_local_test_run_nullable_patch_artifact(engine)
     _upgrade_sqlite_planner_run_metadata(engine)
     _upgrade_sqlite_task_execution_constraints(engine)
     _upgrade_sqlite_patch_review_uniqueness(engine)
@@ -112,6 +113,109 @@ def _upgrade_sqlite_cloud_run_phase_8_columns(engine) -> None:
                 "ON cloud_run (sandbox_profile_id)"
             )
         )
+
+
+def _upgrade_sqlite_local_test_run_nullable_patch_artifact(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "local_test_run" not in existing_tables:
+            return
+
+        columns = {
+            row["name"]: row
+            for row in connection.execute(
+                text("PRAGMA table_info(local_test_run)")
+            ).mappings()
+        }
+        patch_artifact_column = columns.get("patch_artifact_id")
+        if patch_artifact_column is None or patch_artifact_column["notnull"] == 0:
+            return
+
+        connection.execute(
+            text("ALTER TABLE local_test_run RENAME TO local_test_run_notnull_legacy")
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE local_test_run (
+                    id VARCHAR NOT NULL PRIMARY KEY,
+                    workspace_id VARCHAR NOT NULL,
+                    project_id VARCHAR NOT NULL,
+                    task_id VARCHAR NOT NULL,
+                    local_run_id VARCHAR NOT NULL,
+                    patch_artifact_id VARCHAR,
+                    status VARCHAR NOT NULL,
+                    commands JSON NOT NULL,
+                    command_results JSON NOT NULL,
+                    failure_reason VARCHAR,
+                    started_at DATETIME NOT NULL,
+                    completed_at DATETIME,
+                    created_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO local_test_run (
+                    id,
+                    workspace_id,
+                    project_id,
+                    task_id,
+                    local_run_id,
+                    patch_artifact_id,
+                    status,
+                    commands,
+                    command_results,
+                    failure_reason,
+                    started_at,
+                    completed_at,
+                    created_at
+                )
+                SELECT
+                    id,
+                    workspace_id,
+                    project_id,
+                    task_id,
+                    local_run_id,
+                    patch_artifact_id,
+                    status,
+                    commands,
+                    command_results,
+                    failure_reason,
+                    started_at,
+                    completed_at,
+                    created_at
+                FROM local_test_run_notnull_legacy
+                """
+            )
+        )
+        connection.execute(text("DROP TABLE local_test_run_notnull_legacy"))
+
+        for column_name in (
+            "workspace_id",
+            "project_id",
+            "task_id",
+            "local_run_id",
+            "patch_artifact_id",
+            "status",
+            "created_at",
+        ):
+            connection.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_local_test_run_{column_name} "
+                    f"ON local_test_run ({column_name})"
+                )
+            )
 
 
 def _upgrade_sqlite_planner_run_metadata(engine) -> None:
