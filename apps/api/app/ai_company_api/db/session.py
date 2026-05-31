@@ -21,6 +21,7 @@ def build_engine(database_url: str):
 def init_db(engine) -> None:
     SQLModel.metadata.create_all(engine)
     _upgrade_sqlite_repository_phase_7_columns(engine)
+    _upgrade_sqlite_cloud_run_phase_8_columns(engine)
     _upgrade_sqlite_planner_run_metadata(engine)
     _upgrade_sqlite_task_execution_constraints(engine)
     _upgrade_sqlite_patch_review_uniqueness(engine)
@@ -72,6 +73,45 @@ def _upgrade_sqlite_repository_phase_7_columns(engine) -> None:
                     f"ON repository ({column_name})"
                 )
             )
+
+
+def _upgrade_sqlite_cloud_run_phase_8_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    cloud_run_columns = {
+        "sandbox_profile_id": "VARCHAR",
+        "patch_command_key": "VARCHAR",
+        "test_command_keys": "JSON",
+        "command_results": "JSON",
+    }
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "cloud_run" not in existing_tables:
+            return
+
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(text("PRAGMA table_info(cloud_run)")).mappings()
+        }
+        for column_name, column_type in cloud_run_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    text(f"ALTER TABLE cloud_run ADD COLUMN {column_name} {column_type}")
+                )
+
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_cloud_run_sandbox_profile_id "
+                "ON cloud_run (sandbox_profile_id)"
+            )
+        )
 
 
 def _upgrade_sqlite_planner_run_metadata(engine) -> None:

@@ -41,6 +41,8 @@ from ai_company_api.schemas.api import (
     RepositoryCreate,
     RepositoryRead,
     ResolvedModelRouteRead,
+    SandboxProfileCreate,
+    SandboxProfileRead,
     TaskCreate,
     TaskUpdate,
     UsageLedgerCreate,
@@ -113,6 +115,11 @@ from ai_company_api.services.repository import (
     list_tasks,
     reject_planner_run,
     transition_task,
+)
+from ai_company_api.services.sandbox_profiles import (
+    create_sandbox_profile,
+    get_sandbox_profile_read,
+    list_sandbox_profiles,
 )
 from ai_company_api.services.task_state import TaskStatus
 from ai_company_api.services.usage_ledger import (
@@ -202,6 +209,41 @@ def post_project_github_repository(
     session: SessionDep,
 ) -> RepositoryRead:
     return create_github_repository(session, project_id, data)
+
+
+@router.post(
+    "/projects/{project_id}/sandbox-profiles",
+    status_code=status.HTTP_201_CREATED,
+    response_model=SandboxProfileRead,
+)
+def post_project_sandbox_profile(
+    project_id: str,
+    data: SandboxProfileCreate,
+    session: SessionDep,
+) -> SandboxProfileRead:
+    return create_sandbox_profile(session, project_id, data)
+
+
+@router.get(
+    "/projects/{project_id}/sandbox-profiles",
+    response_model=list[SandboxProfileRead],
+)
+def get_project_sandbox_profiles(
+    project_id: str,
+    session: SessionDep,
+) -> list[SandboxProfileRead]:
+    return list_sandbox_profiles(session, project_id)
+
+
+@router.get(
+    "/sandbox-profiles/{sandbox_profile_id}",
+    response_model=SandboxProfileRead,
+)
+def get_sandbox_profile_by_id(
+    sandbox_profile_id: str,
+    session: SessionDep,
+) -> SandboxProfileRead:
+    return get_sandbox_profile_read(session, sandbox_profile_id)
 
 
 @router.get("/projects/{project_id}/conversations")

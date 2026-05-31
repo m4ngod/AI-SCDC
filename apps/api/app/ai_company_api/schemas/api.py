@@ -107,6 +107,40 @@ class GitHubRepositoryCreate(BaseModel):
     github_credential_id: str = Field(min_length=1)
 
 
+class SandboxCommand(BaseModel):
+    key: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    command: str = Field(min_length=1)
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    is_default: bool = False
+
+
+class SandboxProfileCreate(BaseModel):
+    repo_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    docker_image: str = Field(min_length=1)
+    patch_commands: list[SandboxCommand] = Field(min_length=1)
+    test_commands: list[SandboxCommand] = Field(default_factory=list)
+    allowed_env_vars: list[str] = Field(default_factory=list)
+    network_enabled: bool = True
+
+
+class SandboxProfileRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    repo_id: str
+    name: str
+    docker_image: str
+    patch_commands: list[SandboxCommand]
+    test_commands: list[SandboxCommand]
+    allowed_env_vars: list[str]
+    network_enabled: bool
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class ProjectCreate(BaseModel):
     name: str
     description: str = ""
@@ -187,6 +221,9 @@ class LocalRunCreate(BaseModel):
 
 class CloudRunCreate(BaseModel):
     repo_id: str = Field(min_length=1)
+    sandbox_profile_id: str | None = Field(default=None, min_length=1)
+    patch_command_key: str | None = Field(default=None, min_length=1)
+    test_command_keys: list[str] = Field(default_factory=list)
 
 
 class TaskRead(BaseModel):
@@ -245,6 +282,14 @@ class PatchArtifactRead(BaseModel):
     created_at: datetime
 
 
+class CommandResultRead(BaseModel):
+    command: str
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    duration_ms: int
+
+
 class CloudRunRead(BaseModel):
     id: str
     workspace_id: str
@@ -252,6 +297,10 @@ class CloudRunRead(BaseModel):
     task_id: str
     repo_id: str
     local_run_id: str | None
+    sandbox_profile_id: str | None
+    patch_command_key: str | None
+    test_command_keys: list[str]
+    command_results: list[CommandResultRead]
     base_branch: str
     head_branch: str
     status: str
@@ -265,14 +314,6 @@ class CloudRunRead(BaseModel):
 class CloudRunResultRead(BaseModel):
     cloud_run: CloudRunRead
     patch_artifact: PatchArtifactRead | None = None
-
-
-class CommandResultRead(BaseModel):
-    command: str
-    exit_code: int | None
-    stdout: str
-    stderr: str
-    duration_ms: int
 
 
 class LocalTestRunRead(BaseModel):

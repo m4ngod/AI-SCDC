@@ -309,6 +309,36 @@ class GitHubCredential(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class SandboxProfile(SQLModel, table=True):
+    __tablename__ = "sandbox_profile"
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("sandbox_profile"),
+        primary_key=True,
+    )
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    repo_id: str = Field(index=True, foreign_key="repository.id")
+    name: str
+    docker_image: str
+    patch_commands: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
+    test_commands: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
+    allowed_env_vars: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
+    network_enabled: bool = True
+    status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class ModelRoute(SQLModel, table=True):
     __tablename__ = "model_route"
     __table_args__ = (
@@ -451,6 +481,17 @@ class CloudRun(SQLModel, table=True):
     task_id: str = Field(index=True, foreign_key="task.id")
     repo_id: str = Field(index=True, foreign_key="repository.id")
     local_run_id: str | None = Field(default=None, index=True, foreign_key="local_task_run.id")
+    sandbox_profile_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="sandbox_profile.id",
+    )
+    patch_command_key: str | None = None
+    test_command_keys: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    command_results: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
     base_branch: str = ""
     head_branch: str = Field(index=True)
     status: str = Field(default="queued", index=True)
