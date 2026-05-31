@@ -1,19 +1,23 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
     CloudRun,
     LocalTaskRun,
+    LocalTestRun,
     PatchArtifact,
     Project,
     Repository,
     Task,
 )
-from ai_company_api.services.cloud_sandbox_executor import CommandResult
+from ai_company_api.services.cloud_sandbox_executor import (
+    CommandResult,
+    SandboxExecutionResult,
+)
 from ai_company_api.services.task_state import TaskStatus
 
 
@@ -129,6 +133,85 @@ def test_start_cloud_run_creates_patch_artifact_and_bridge_local_run(tmp_path: P
     assert persisted_task.status == TaskStatus.PATCH_READY
     assert persisted_task.branch_name == f"ai-scdc/task-{task.id}-{cloud_run.id}"
     assert persisted_task.worktree_ref == f"cloud://fake/{cloud_run.id}"
+
+
+def test_start_cloud_run_persists_executor_test_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class DockerResultExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, request):
+            return SandboxExecutionResult(
+                status="patch_ready",
+                runner_kind="docker_local",
+                base_sha="abc123",
+                head_sha="def456",
+                worktree_ref=f"cloud://docker-local/{request.cloud_run_id}",
+                summary="Docker local sandbox produced a patch artifact.",
+                files_changed=["AI_SCDC_CLOUD_RUN.md"],
+                tests_run=["python-version"],
+                test_result="passed",
+                risks=[],
+                diff_text="diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n+patch\n",
+                command_results=[
+                    CommandResult(
+                        command="git clone https://[redacted]@github.com/example/demo",
+                        exit_code=0,
+                        stdout="",
+                        stderr="",
+                        duration_ms=10,
+                    )
+                ],
+                test_command_results=[
+                    CommandResult(
+                        command="python -V",
+                        exit_code=0,
+                        stdout="Python 3.11\n",
+                        stderr="",
+                        duration_ms=3,
+                    )
+                ],
+                failure_reason=None,
+            )
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerResultExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    response = client.post(f"/tasks/{task.id}/cloud-runs", json={"repo_id": repository.id})
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["cloud_run"]["command_results"][0]["command"] == (
+        "git clone https://[redacted]@github.com/example/demo"
+    )
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        test_runs = session.exec(select(LocalTestRun)).all()
+
+    assert len(test_runs) == 1
+    assert test_runs[0].status == "passed"
+    assert test_runs[0].commands == ["python-version"]
+    assert test_runs[0].command_results == [
+        {
+            "command": "python -V",
+            "exit_code": 0,
+            "stdout": "Python 3.11\n",
+            "stderr": "",
+            "duration_ms": 3,
+        }
+    ]
+    assert test_runs[0].failure_reason is None
 
 
 def test_list_and_get_cloud_run_routes_return_created_run(tmp_path: Path) -> None:

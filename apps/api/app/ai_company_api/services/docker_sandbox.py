@@ -178,7 +178,141 @@ class DockerLocalSandboxExecutor:
         ]
 
     def run(self, request: SandboxExecutionRequest) -> SandboxExecutionResult:
-        raise NotImplementedError("Docker execution workflow is added in Task 4")
+        command_results: list[CommandResult] = []
+        test_results: list[CommandResult] = []
+        secrets = list(request.env.values())
+        runner = RedactingProcessRunner(self._process_runner, secrets)
+
+        self._workspace_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="ai-scdc-docker-",
+            dir=str(self._workspace_root),
+        ) as tmp:
+            root = Path(tmp)
+            workspace_path = root / "workspace"
+            artifact_path = root / "artifacts"
+            workspace_path.mkdir(parents=True, exist_ok=True)
+            artifact_path.mkdir(parents=True, exist_ok=True)
+
+            docker_version = runner.run(["docker", "version"], timeout_seconds=15)
+            command_results.append(
+                docker_version.to_command_result("docker version", secrets=secrets)
+            )
+            if docker_version.exit_code != 0 or docker_version.timed_out:
+                return _failed_result(
+                    "docker_unavailable",
+                    "docker_local",
+                    command_results,
+                    test_results,
+                )
+
+            patch_command = request.patch_command.command if request.patch_command else ""
+            patch_timeout = (
+                request.patch_command.timeout_seconds if request.patch_command else 300
+            )
+            steps = [
+                ("clone", f"git clone {request.repo_url} .", 300),
+                ("checkout", f"git checkout {request.base_branch}", 60),
+                ("branch", f"git checkout -B {request.head_branch}", 60),
+                ("patch", patch_command, patch_timeout),
+                ("intent-to-add", "git add -N .", 60),
+                ("name-only", "git diff --name-only", 60),
+                ("diff", "git diff --no-ext-diff", 60),
+                ("base-sha", f"git rev-parse origin/{request.base_branch}", 60),
+                ("head-sha", "git rev-parse HEAD", 60),
+            ]
+
+            captured: dict[str, ProcessResult] = {}
+            for label, command, timeout_seconds in steps:
+                process_result = runner.run(
+                    self.build_docker_run_args(
+                        request=request,
+                        workspace_path=workspace_path,
+                        artifact_path=artifact_path,
+                        command=command,
+                        timeout_seconds=timeout_seconds,
+                    ),
+                    env=request.env,
+                    timeout_seconds=timeout_seconds,
+                )
+                captured[label] = process_result
+                command_results.append(
+                    process_result.to_command_result(command, secrets=secrets)
+                )
+                if process_result.exit_code != 0 or process_result.timed_out:
+                    failure_reason = {
+                        "clone": "repo_checkout_failed",
+                        "checkout": "repo_checkout_failed",
+                        "branch": "repo_checkout_failed",
+                        "patch": "patch_command_failed",
+                        "intent-to-add": "artifact_capture_failed",
+                        "name-only": "artifact_capture_failed",
+                        "diff": "artifact_capture_failed",
+                        "base-sha": "artifact_capture_failed",
+                        "head-sha": "artifact_capture_failed",
+                    }[label]
+                    return _failed_result(
+                        failure_reason,
+                        "docker_local",
+                        command_results,
+                        test_results,
+                    )
+
+            files_changed = sorted(
+                line.strip()
+                for line in captured["name-only"].stdout.splitlines()
+                if line.strip()
+            )
+            diff_text = captured["diff"].stdout
+            if not files_changed or diff_text.strip() == "":
+                return _failed_result(
+                    "no_patch_produced",
+                    "docker_local",
+                    command_results,
+                    test_results,
+                )
+
+            _ensure_files_allowed(files_changed, request.allowed_paths)
+
+            test_status = "passed"
+            for command in request.test_commands:
+                process_result = runner.run(
+                    self.build_docker_run_args(
+                        request=request,
+                        workspace_path=workspace_path,
+                        artifact_path=artifact_path,
+                        command=command.command,
+                        timeout_seconds=command.timeout_seconds,
+                    ),
+                    env=request.env,
+                    timeout_seconds=command.timeout_seconds,
+                )
+                test_results.append(
+                    process_result.to_command_result(
+                        command.command,
+                        secrets=secrets,
+                    )
+                )
+                if process_result.exit_code != 0 or process_result.timed_out:
+                    test_status = "failed"
+
+            failure_reason = "test_failed" if test_status == "failed" else None
+            return SandboxExecutionResult(
+                status="failed" if failure_reason else "patch_ready",
+                runner_kind="docker_local",
+                base_sha=captured["base-sha"].stdout.strip() or None,
+                head_sha=captured["head-sha"].stdout.strip() or None,
+                worktree_ref=f"cloud://docker-local/{request.cloud_run_id}",
+                summary="Docker local sandbox produced a patch artifact.",
+                files_changed=files_changed,
+                tests_run=[command.key for command in request.test_commands],
+                test_result=test_status,
+                risks=[],
+                diff_text=diff_text,
+                command_results=command_results,
+                test_command_results=test_results,
+                failure_reason=failure_reason,
+            )
 
 
 def _output_to_text(value: str | bytes | None) -> str:
@@ -187,3 +321,43 @@ def _output_to_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode(errors="replace")
     return value
+
+
+def _failed_result(
+    failure_reason: str,
+    runner_kind: str,
+    command_results: list[CommandResult],
+    test_results: list[CommandResult],
+) -> SandboxExecutionResult:
+    return SandboxExecutionResult(
+        status="failed",
+        runner_kind=runner_kind,
+        base_sha=None,
+        head_sha=None,
+        worktree_ref=None,
+        summary="",
+        files_changed=[],
+        tests_run=[],
+        test_result="not_run",
+        risks=[],
+        diff_text="",
+        command_results=command_results,
+        test_command_results=test_results,
+        failure_reason=failure_reason,
+    )
+
+
+def _ensure_files_allowed(files_changed: list[str], allowed_paths: list[str]) -> None:
+    from ai_company_worker.local_runner import (
+        LocalRunnerError,
+        ensure_changed_files_allowed,
+    )
+
+    try:
+        ensure_changed_files_allowed(files_changed, allowed_paths)
+    except LocalRunnerError as exc:
+        raise DockerSandboxError(str(exc)) from exc
+
+
+class DockerSandboxError(RuntimeError):
+    pass

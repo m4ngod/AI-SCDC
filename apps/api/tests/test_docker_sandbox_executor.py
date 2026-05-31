@@ -178,3 +178,41 @@ def test_selects_docker_executor_when_enabled(monkeypatch) -> None:
     executor = select_cloud_sandbox_executor()
 
     assert executor.sandbox_kind == "docker_local"
+
+
+def test_docker_executor_captures_diff_and_test_result(tmp_path: Path) -> None:
+    runner = RecordingRunner(
+        [
+            ProcessResult(args=["docker", "version"], exit_code=0, stdout="Docker", stderr="", duration_ms=1),
+            ProcessResult(args=["docker", "clone"], exit_code=0, stdout="", stderr="", duration_ms=1),
+            ProcessResult(args=["docker", "checkout"], exit_code=0, stdout="", stderr="", duration_ms=1),
+            ProcessResult(args=["docker", "branch"], exit_code=0, stdout="", stderr="", duration_ms=1),
+            ProcessResult(args=["docker", "patch"], exit_code=0, stdout="patched", stderr="", duration_ms=2),
+            ProcessResult(args=["docker", "intent-to-add"], exit_code=0, stdout="", stderr="", duration_ms=1),
+            ProcessResult(args=["docker", "name-only"], exit_code=0, stdout="README.md\n", stderr="", duration_ms=1),
+            ProcessResult(
+                args=["docker", "diff"],
+                exit_code=0,
+                stdout="diff --git a/README.md b/README.md\n+Docker patch\n",
+                stderr="",
+                duration_ms=1,
+            ),
+            ProcessResult(args=["docker", "base-sha"], exit_code=0, stdout="abc123\n", stderr="", duration_ms=1),
+            ProcessResult(args=["docker", "head-sha"], exit_code=0, stdout="def456\n", stderr="", duration_ms=1),
+            ProcessResult(args=["docker", "test"], exit_code=0, stdout="Python 3.11\n", stderr="", duration_ms=3),
+        ]
+    )
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+
+    result = executor.run(docker_request(tmp_path))
+
+    assert result.status == "patch_ready"
+    assert result.runner_kind == "docker_local"
+    assert result.files_changed == ["README.md"]
+    assert result.diff_text.startswith("diff --git a/README.md")
+    assert result.base_sha == "abc123"
+    assert result.head_sha == "def456"
+    assert result.tests_run == ["python-version"]
+    assert result.test_result == "passed"
+    assert result.test_command_results[0].stdout == "Python 3.11\n"
+    assert result.failure_reason is None

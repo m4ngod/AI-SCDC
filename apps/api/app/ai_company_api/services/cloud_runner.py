@@ -6,6 +6,7 @@ from sqlmodel import Session, select
 from ai_company_api.models.entities import (
     CloudRun,
     LocalTaskRun,
+    LocalTestRun,
     PatchArtifact,
     Task,
     utc_now,
@@ -129,14 +130,33 @@ def start_cloud_run(
     session.add(artifact)
     session.flush()
 
+    secrets = _redaction_secrets(sandbox_env)
+    if execution_result.test_command_results:
+        test_run = LocalTestRun(
+            project_id=task.project_id,
+            task_id=task.id,
+            local_run_id=local_run.id,
+            patch_artifact_id=artifact.id,
+            status=execution_result.test_result,
+            commands=execution_result.tests_run,
+            command_results=_command_result_payloads(
+                execution_result.test_command_results,
+                secrets=secrets,
+            ),
+            failure_reason=execution_result.failure_reason,
+            completed_at=utc_now(),
+        )
+        session.add(test_run)
+
     local_run.status = execution_result.status
     local_run.patch_artifact_id = artifact.id
+    local_run.failure_reason = execution_result.failure_reason
     local_run.updated_at = utc_now()
     cloud_run.status = execution_result.status
     cloud_run.patch_artifact_id = artifact.id
     cloud_run.command_results = _command_result_payloads(
         execution_result.command_results,
-        secrets=_redaction_secrets(sandbox_env),
+        secrets=secrets,
     )
     cloud_run.failure_reason = execution_result.failure_reason
     cloud_run.updated_at = utc_now()
