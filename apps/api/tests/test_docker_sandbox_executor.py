@@ -20,20 +20,28 @@ class RecordingRunner:
     def __init__(self, results: list[ProcessResult] | None = None) -> None:
         self.calls: list[dict] = []
         self.results = results or []
+        self.env_file_snapshots: list[tuple[str, str]] = []
 
     def run(self, args, *, cwd=None, env=None, timeout_seconds=30):
+        command_args = [str(item) for item in args]
         self.calls.append(
             {
-                "args": [str(item) for item in args],
+                "args": command_args,
                 "cwd": cwd,
                 "env": env,
                 "timeout_seconds": timeout_seconds,
             }
         )
+        for index, item in enumerate(command_args[:-1]):
+            if item == "--env-file":
+                path = Path(command_args[index + 1])
+                self.env_file_snapshots.append(
+                    (command_args[index + 1], path.read_text(encoding="utf-8"))
+                )
         if self.results:
             return self.results.pop(0)
         return ProcessResult(
-            args=[str(item) for item in args],
+            args=command_args,
             exit_code=0,
             stdout="",
             stderr="",
@@ -275,17 +283,76 @@ def test_docker_executor_excludes_invalid_env_names(
 
     docker_run_env = runner.calls[1]["env"]
     docker_run_args = runner.calls[1]["args"]
-    container_env_names = [
-        docker_run_args[index + 1]
-        for index, item in enumerate(docker_run_args[:-1])
-        if item == "-e"
-    ]
-    assert docker_run_env["VALID_SANDBOX_NAME"] == "valid"
-    assert "VALID_SANDBOX_NAME" in container_env_names
+    env_file_texts = [snapshot for _path, snapshot in runner.env_file_snapshots]
+    assert docker_run_env is not request.env
+    assert docker_run_env.get("VALID_SANDBOX_NAME") != "valid"
+    assert any("VALID_SANDBOX_NAME=valid\n" in text for text in env_file_texts)
     assert "BAD=NAME" not in docker_run_env
     assert "BAD\nNAME" not in docker_run_env
-    assert "BAD=NAME" not in container_env_names
-    assert "BAD\nNAME" not in container_env_names
+    assert "--env-file" in docker_run_args
+    assert all("BAD=NAME" not in text for text in env_file_texts)
+    assert all("BAD\nNAME" not in text for text in env_file_texts)
+
+
+def test_docker_executor_delivers_sandbox_env_via_env_file_without_host_env_overlay(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LD_PRELOAD", "host-ld-preload")
+    monkeypatch.setenv("HOME", "host-home")
+    monkeypatch.setenv("API_KEY", "host-api-key")
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        test_commands=[],
+        required_tests=[],
+        env={
+            **docker_request(tmp_path).env,
+            "LD_PRELOAD": "/tmp/sandbox.so",
+            "HOME": "/sandbox/home",
+            "API_KEY": "sandbox-secret-api-key",
+            "PATH": "sandbox-path",
+            "DOCKER_HOST": "sandbox-docker",
+            "HTTP_PROXY": "http://sandbox-proxy",
+        },
+    )
+
+    result = executor.run(request)
+
+    docker_version_env = runner.calls[0]["env"]
+    docker_run_env = runner.calls[1]["env"]
+    docker_run_args = runner.calls[1]["args"]
+    env_file_text = runner.env_file_snapshots[0][1]
+    all_argv = "\n".join(" ".join(call["args"]) for call in runner.calls)
+    command_payloads = "\n".join(
+        "\n".join(
+            [
+                command_result.command,
+                command_result.stdout,
+                command_result.stderr,
+            ]
+        )
+        for command_result in result.command_results
+    )
+
+    assert result.status == "patch_ready"
+    assert docker_version_env["LD_PRELOAD"] == "host-ld-preload"
+    assert docker_version_env["HOME"] == "host-home"
+    assert docker_version_env["API_KEY"] == "host-api-key"
+    assert docker_run_env["LD_PRELOAD"] == "host-ld-preload"
+    assert docker_run_env["HOME"] == "host-home"
+    assert docker_run_env["API_KEY"] == "host-api-key"
+    assert "--env-file" in docker_run_args
+    assert "-e" not in docker_run_args
+    assert "LD_PRELOAD=/tmp/sandbox.so\n" in env_file_text
+    assert "HOME=/sandbox/home\n" in env_file_text
+    assert "API_KEY=sandbox-secret-api-key\n" in env_file_text
+    assert "PATH=sandbox-path\n" not in env_file_text
+    assert "DOCKER_HOST=sandbox-docker\n" not in env_file_text
+    assert "HTTP_PROXY=http://sandbox-proxy\n" not in env_file_text
+    assert "sandbox-secret-api-key" not in all_argv
+    assert "sandbox-secret-api-key" not in command_payloads
 
 
 def test_redacting_process_runner_removes_token_from_result(
@@ -433,27 +500,22 @@ def test_docker_executor_keeps_host_env_for_docker_cli(
     executor.run(request)
 
     docker_run_env = runner.calls[1]["env"]
-    docker_run_args = runner.calls[1]["args"]
-    container_env_names = [
-        docker_run_args[index + 1]
-        for index, item in enumerate(docker_run_args[:-1])
-        if item == "-e"
-    ]
+    env_file_text = runner.env_file_snapshots[0][1]
     assert docker_run_env is not request.env
     assert docker_run_env["AI_SCDC_HOST_ENV_MARKER"] == "host-value"
-    assert docker_run_env["AI_SCDC_GITHUB_TOKEN"] == "ghp_example1234567890"
-    assert docker_run_env["AI_SCDC_SAFE_SANDBOX_VAR"] == "sandbox-value"
+    assert docker_run_env.get("AI_SCDC_GITHUB_TOKEN") != "ghp_example1234567890"
+    assert docker_run_env.get("AI_SCDC_SAFE_SANDBOX_VAR") != "sandbox-value"
     assert docker_run_env["PATH"] == "host-path"
     assert docker_run_env["DOCKER_HOST"] == "host-docker"
     assert docker_run_env["DOCKER_CONFIG"] == "host-docker-config"
     assert docker_run_env["HTTP_PROXY"] == "http://host-proxy"
-    assert docker_run_env["CUSTOM_ENV"] == "sandbox-custom"
-    assert "AI_SCDC_SAFE_SANDBOX_VAR" in container_env_names
-    assert "CUSTOM_ENV" in container_env_names
-    assert "PATH" not in container_env_names
-    assert "DOCKER_HOST" not in container_env_names
-    assert "DOCKER_CONFIG" not in container_env_names
-    assert "HTTP_PROXY" not in container_env_names
+    assert docker_run_env["CUSTOM_ENV"] == "host-custom"
+    assert "AI_SCDC_SAFE_SANDBOX_VAR=sandbox-value\n" in env_file_text
+    assert "CUSTOM_ENV=sandbox-custom\n" in env_file_text
+    assert "PATH=sandbox-path\n" not in env_file_text
+    assert "DOCKER_HOST=sandbox-docker\n" not in env_file_text
+    assert "DOCKER_CONFIG=sandbox-docker-config\n" not in env_file_text
+    assert "HTTP_PROXY=http://sandbox-proxy\n" not in env_file_text
 
 
 def test_docker_executor_quotes_fixed_git_setup_commands(

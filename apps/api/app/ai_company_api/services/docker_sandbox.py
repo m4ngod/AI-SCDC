@@ -171,13 +171,14 @@ class DockerLocalSandboxExecutor:
         artifact_path: Path,
         command: str,
         timeout_seconds: int,
+        env_file_path: Path | None = None,
     ) -> list[str]:
         network_args = (
             ["--network", "bridge"] if request.network_enabled else ["--network", "none"]
         )
         env_args: list[str] = []
-        for name in _safe_container_env_names(request.env):
-            env_args.extend(["-e", name])
+        if env_file_path is not None:
+            env_args.extend(["--env-file", env_file_path.as_posix()])
         docker_image = _validated_docker_image(request.docker_image)
         if docker_image is None:
             raise DockerSandboxError("invalid_docker_image")
@@ -205,7 +206,7 @@ class DockerLocalSandboxExecutor:
         test_results: list[CommandResult] = []
         secrets = list(request.env.values())
         runner = RedactingProcessRunner(self._process_runner, secrets)
-        docker_cli_env = _docker_cli_env(request.env)
+        docker_cli_env = _docker_cli_env()
         docker_image = _validated_docker_image(request.docker_image)
         if docker_image is None:
             return _failed_result(
@@ -233,6 +234,10 @@ class DockerLocalSandboxExecutor:
             artifact_path = root / "artifacts"
             workspace_path.mkdir(parents=True, exist_ok=True)
             artifact_path.mkdir(parents=True, exist_ok=True)
+            env_file_path = _write_docker_env_file(
+                artifact_path / "container.env",
+                request.env,
+            )
 
             docker_version = runner.run(
                 ["docker", "version"],
@@ -277,6 +282,7 @@ class DockerLocalSandboxExecutor:
                         request=request,
                         workspace_path=workspace_path,
                         artifact_path=artifact_path,
+                        env_file_path=env_file_path,
                         command=command,
                         timeout_seconds=timeout_seconds,
                     ),
@@ -342,6 +348,7 @@ class DockerLocalSandboxExecutor:
                         request=request,
                         workspace_path=workspace_path,
                         artifact_path=artifact_path,
+                        env_file_path=env_file_path,
                         command=command.command,
                         timeout_seconds=command.timeout_seconds,
                     ),
@@ -384,16 +391,28 @@ def _output_to_text(value: str | bytes | None) -> str:
     return value
 
 
-def _docker_cli_env(container_env: dict[str, str]) -> dict[str, str]:
-    host_env = dict(os.environ)
-    for name, value in container_env.items():
-        if _is_safe_sandbox_env_name(name):
-            host_env[name] = value
-    return host_env
+def _docker_cli_env() -> dict[str, str]:
+    return dict(os.environ)
 
 
 def _safe_container_env_names(container_env: dict[str, str]) -> list[str]:
     return sorted(name for name in container_env if _is_safe_sandbox_env_name(name))
+
+
+def _write_docker_env_file(path: Path, container_env: dict[str, str]) -> Path | None:
+    items = [
+        (name, container_env[name])
+        for name in _safe_container_env_names(container_env)
+        if _is_safe_docker_env_value(container_env[name])
+    ]
+    if not items:
+        return None
+
+    path.write_text(
+        "".join(f"{name}={value}\n" for name, value in items),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _is_safe_sandbox_env_name(name: str) -> bool:
@@ -402,6 +421,10 @@ def _is_safe_sandbox_env_name(name: str) -> bool:
         bool(_ENV_NAME_RE.fullmatch(name))
         and normalized not in _DOCKER_CLI_ENV_DENYLIST
     )
+
+
+def _is_safe_docker_env_value(value: str) -> bool:
+    return "\n" not in value and "\r" not in value
 
 
 def _validated_docker_image(image: str | None) -> str | None:
