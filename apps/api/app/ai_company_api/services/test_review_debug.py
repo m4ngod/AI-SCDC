@@ -246,7 +246,7 @@ def _start_cloud_fake_test_run(
     local_run: LocalTaskRun,
 ) -> PatchTestRunResultRead:
     event_clock = _EventClock()
-    commands = list(task.required_tests or [])
+    commands = list(task.required_tests or ["cloud fake test"])
     test_run = LocalTestRun(
         project_id=task.project_id,
         task_id=task.id,
@@ -282,7 +282,7 @@ def _start_cloud_fake_test_run(
                 "stderr": "",
                 "duration_ms": 0,
             }
-            for command in (commands or ["cloud fake test"])
+            for command in commands
         ],
         failure_reason=None,
     )

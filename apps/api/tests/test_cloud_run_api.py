@@ -45,7 +45,7 @@ def create_cloud_task(
         role_required="backend",
         status=TaskStatus.CREATED,
         allowed_paths=["AI_SCDC_CLOUD_RUN.md"],
-        required_tests=required_tests or ["python -V"],
+        required_tests=["python -V"] if required_tests is None else required_tests,
     )
     session.add(task)
     session.commit()
@@ -98,11 +98,11 @@ def test_list_and_get_cloud_run_routes_return_created_run(tmp_path: Path) -> Non
         f"/tasks/{task.id}/cloud-runs",
         json={"repo_id": repository.id},
     )
+    assert create_response.status_code == 201
     cloud_run_id = create_response.json()["cloud_run"]["id"]
     list_response = client.get(f"/tasks/{task.id}/cloud-runs")
     get_response = client.get(f"/cloud-runs/{cloud_run_id}")
 
-    assert create_response.status_code == 201
     assert list_response.status_code == 200
     assert [cloud_run["id"] for cloud_run in list_response.json()] == [cloud_run_id]
     assert get_response.status_code == 200
@@ -215,3 +215,29 @@ def test_cloud_fake_test_run_records_result_for_each_required_command(
         "cloud fake test passed",
     ]
     assert [result["exit_code"] for result in test_run["command_results"]] == [0, 0]
+
+
+def test_cloud_fake_test_run_persists_fallback_command_when_required_tests_empty(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session, required_tests=[])
+
+    cloud_result = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={"repo_id": repository.id},
+    ).json()
+    patch_artifact_id = cloud_result["patch_artifact"]["id"]
+    test_response = client.post(f"/patch-artifacts/{patch_artifact_id}/test-runs")
+
+    assert test_response.status_code == 201
+    result = test_response.json()
+    test_run = result["test_run"]
+    assert test_run["commands"] == ["cloud fake test"]
+    assert [item["command"] for item in test_run["command_results"]] == [
+        "cloud fake test"
+    ]
+    assert test_run["command_results"][0]["stdout"] == "cloud fake test passed"
+    assert result["patch_artifact"]["tests_run"] == ["cloud fake test"]
