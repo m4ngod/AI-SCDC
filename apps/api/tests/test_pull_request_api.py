@@ -1,7 +1,11 @@
 from pathlib import Path
+import json
+import subprocess
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+import pytest
+from sqlmodel import Session, select
 
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
@@ -14,8 +18,13 @@ from ai_company_api.models.entities import (
     PatchArtifact,
     PatchReview,
     Project,
+    PullRequestRecord,
     Repository,
     Task,
+)
+from ai_company_api.services.github_pull_request import (
+    GitHubPullRequestAdapter,
+    create_pull_request_for_approval,
 )
 from ai_company_api.services.secret_vault import DevSecretVault
 from ai_company_api.services.task_state import TaskStatus
@@ -35,6 +44,22 @@ def build_database_session(database_path: Path) -> Session:
 
 def count_events(events: list[dict], event_type: str) -> int:
     return sum(1 for event in events if event["event_type"] == event_type)
+
+
+class _FakeUrlOpenResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(
+            {
+                "number": 7,
+                "html_url": "https://github.com/example/demo/pull/7",
+            }
+        ).encode("utf-8")
 
 
 def create_approved_cloud_patch(
@@ -195,6 +220,87 @@ def test_create_pull_request_requires_human_approval(tmp_path: Path) -> None:
     assert response.json()["detail"]["expected_status"] == "HUMAN_APPROVAL"
 
 
+def test_real_adapter_keeps_token_out_of_git_argv_and_sets_commit_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_company_api.services import github_pull_request
+
+    token = "ghp_raw_secret_token"
+    repo_url = "https://github.com/example/demo"
+    calls: list[dict] = []
+
+    def fake_run(
+        args,
+        *,
+        cwd=None,
+        check=False,
+        capture_output=False,
+        text=False,
+        timeout=None,
+        env=None,
+    ):
+        calls.append(
+            {
+                "args": [str(item) for item in args],
+                "cwd": cwd,
+                "check": check,
+                "capture_output": capture_output,
+                "text": text,
+                "timeout": timeout,
+                "env": env,
+            }
+        )
+        if args[1] == "clone":
+            Path(args[3]).mkdir(parents=True)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+
+    def fake_urlopen(api_request, timeout):
+        assert api_request.headers["Authorization"] == f"Bearer {token}"
+        assert timeout == 30
+        return _FakeUrlOpenResponse()
+
+    monkeypatch.setattr(github_pull_request.subprocess, "run", fake_run)
+    monkeypatch.setattr(github_pull_request.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        github_pull_request.tempfile,
+        "TemporaryDirectory",
+        lambda prefix: tempfile_directory(tmp_path, prefix),
+    )
+
+    created = GitHubPullRequestAdapter().create_pull_request(
+        owner="example",
+        repo="demo",
+        repo_url=repo_url,
+        token=token,
+        base_branch="main",
+        head_branch="ai-scdc/task-1",
+        diff_text="",
+        title="Create pull request",
+        body="Body",
+    )
+
+    all_argv = [item for call in calls for item in call["args"]]
+    clone_call = next(call for call in calls if call["args"][1] == "clone")
+    commit_call = next(call for call in calls if "commit" in call["args"])
+
+    assert created.number == 7
+    assert created.url == "https://github.com/example/demo/pull/7"
+    assert token not in " ".join(all_argv)
+    assert clone_call["args"][2] == repo_url
+    assert clone_call["env"]["AI_SCDC_GIT_TOKEN"] == token
+    assert clone_call["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert "GIT_ASKPASS" in clone_call["env"]
+    assert "-c" in commit_call["args"]
+    assert "user.email=ai-scdc@example.local" in commit_call["args"]
+    assert "user.name=AI SCDC" in commit_call["args"]
+
+
 def test_create_pull_request_uses_fake_adapter_and_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -223,6 +329,82 @@ def test_create_pull_request_uses_fake_adapter_and_is_idempotent(
     assert count_events(events, "pull_request_created") == 1
 
 
+def test_creating_pull_request_record_returns_conflict_without_new_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_company_api.services import github_pull_request
+
+    class FailingAdapter:
+        def create_pull_request(self, **_kwargs):
+            raise AssertionError("adapter should not be called")
+
+    monkeypatch.setattr(github_pull_request, "DEFAULT_ADAPTER", FailingAdapter())
+
+    database_path = tmp_path / "app.db"
+    with build_database_session(database_path) as session:
+        _project, repository, task, cloud_run, artifact, approval = (
+            create_approved_cloud_patch(session)
+        )
+        record = PullRequestRecord(
+            project_id=task.project_id,
+            task_id=task.id,
+            repo_id=repository.id,
+            patch_artifact_id=artifact.id,
+            patch_approval_id=approval.id,
+            cloud_run_id=cloud_run.id,
+            head_branch=cloud_run.head_branch,
+            base_branch=cloud_run.base_branch,
+            github_pr_number=0,
+            github_pr_url="",
+            status="creating",
+        )
+        session.add(record)
+        session.commit()
+        task_id = task.id
+        approval_id = approval.id
+
+    with build_client(database_path) as client:
+        response = client.post(f"/patch-approvals/{approval_id}/pull-requests")
+        events = client.get(f"/tasks/{task_id}/events").json()
+
+    assert response.status_code == 409
+    assert "already being created" in response.json()["detail"]
+    assert count_events(events, "pull_request_created") == 0
+
+
+def test_adapter_failure_marks_reserved_record_failed_and_redacts_token(
+    tmp_path: Path,
+) -> None:
+    raw_token = "ghp_example1234567890"
+
+    class RaisingAdapter:
+        def create_pull_request(self, **_kwargs):
+            raise RuntimeError(f"GitHub rejected token {raw_token}")
+
+    database_path = tmp_path / "app.db"
+    with build_database_session(database_path) as session:
+        _project, _repository, _task, _cloud_run, _artifact, approval = (
+            create_approved_cloud_patch(session)
+        )
+        approval_id = approval.id
+
+        with pytest.raises(HTTPException) as exc_info:
+            create_pull_request_for_approval(
+                session,
+                approval_id,
+                adapter=RaisingAdapter(),
+            )
+
+        response_error = exc_info.value
+        records = session.exec(select(PullRequestRecord)).all()
+
+    assert getattr(response_error, "status_code") == 502
+    assert raw_token not in str(response_error.detail)
+    assert records[0].patch_approval_id == approval_id
+    assert records[0].status == "failed"
+
+
 def test_list_pull_requests_for_patch_artifact_returns_created_pr(
     tmp_path: Path,
 ) -> None:
@@ -243,3 +425,15 @@ def test_list_pull_requests_for_patch_artifact_returns_created_pr(
     assert [item["id"] for item in list_response.json()] == [
         create_response.json()["pull_request"]["id"]
     ]
+
+
+class tempfile_directory:
+    def __init__(self, base_path: Path, prefix: str) -> None:
+        self.path = base_path / prefix.rstrip("-")
+
+    def __enter__(self) -> str:
+        self.path.mkdir(parents=True)
+        return str(self.path)
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None

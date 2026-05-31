@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import os
 import subprocess
 import tempfile
 from urllib import request
@@ -58,17 +59,41 @@ class GitHubPullRequestAdapter:
     ) -> CreatedPullRequest:
         try:
             with tempfile.TemporaryDirectory(prefix="ai-scdc-pr-") as temp_dir:
-                clone_url = _authenticated_repo_url(repo_url, token)
                 worktree = Path(temp_dir) / repo
-                _run_git(["clone", clone_url, str(worktree)], token)
-                _run_git(["checkout", "-B", head_branch, f"origin/{base_branch}"], token, cwd=worktree)
+                askpass_path = _write_git_askpass(Path(temp_dir))
+                git_env = _git_auth_env(askpass_path, token)
+                _run_git(["clone", repo_url, str(worktree)], token, env=git_env)
+                _run_git(
+                    ["checkout", "-B", head_branch, f"origin/{base_branch}"],
+                    token,
+                    cwd=worktree,
+                    env=git_env,
+                )
                 patch_path = worktree / "ai-scdc.patch"
                 patch_path.write_text(diff_text, encoding="utf-8")
-                _run_git(["apply", str(patch_path)], token, cwd=worktree)
+                _run_git(["apply", str(patch_path)], token, cwd=worktree, env=git_env)
                 patch_path.unlink(missing_ok=True)
-                _run_git(["add", "-A"], token, cwd=worktree)
-                _run_git(["commit", "-m", title], token, cwd=worktree)
-                _run_git(["push", "origin", f"HEAD:{head_branch}"], token, cwd=worktree)
+                _run_git(["add", "-A"], token, cwd=worktree, env=git_env)
+                _run_git(
+                    [
+                        "-c",
+                        "user.email=ai-scdc@example.local",
+                        "-c",
+                        "user.name=AI SCDC",
+                        "commit",
+                        "-m",
+                        title,
+                    ],
+                    token,
+                    cwd=worktree,
+                    env=git_env,
+                )
+                _run_git(
+                    ["push", "origin", f"HEAD:{head_branch}"],
+                    token,
+                    cwd=worktree,
+                    env=git_env,
+                )
 
             payload = json.dumps(
                 {
@@ -136,7 +161,7 @@ def create_pull_request_for_approval(
 
     existing = _existing_pull_request(session, approval.id)
     if existing is not None:
-        return _pull_request_result_read(session, existing), 200
+        return _handle_existing_pull_request(session, existing)
 
     artifact = _get_patch_artifact_entity(session, approval.patch_artifact_id)
     task = get_task(session, approval.task_id)
@@ -169,36 +194,68 @@ def create_pull_request_for_approval(
 
     credential = get_active_github_credential(session, credential_id)
     token = (vault or DevSecretVault()).open(credential.encrypted_token)
-    created_pr = (adapter or DEFAULT_ADAPTER).create_pull_request(
-        owner=repository.github_owner or "",
-        repo=repository.github_repo or "",
-        repo_url=repository.repo_url,
-        token=token,
-        base_branch=cloud_run.base_branch or repository.default_branch,
+    base_branch = cloud_run.base_branch or repository.default_branch
+    record = PullRequestRecord(
+        workspace_id=approval.workspace_id,
+        project_id=approval.project_id,
+        task_id=approval.task_id,
+        repo_id=repository.id,
+        patch_artifact_id=artifact.id,
+        patch_approval_id=approval.id,
+        cloud_run_id=cloud_run.id,
         head_branch=cloud_run.head_branch,
-        diff_text=artifact.diff_text,
-        title=f"{task.title}",
-        body=f"Created from patch artifact {artifact.id}.",
+        base_branch=base_branch,
+        github_pr_number=0,
+        github_pr_url="",
+        status="creating",
+        created_by="dev_user",
     )
+    session.add(record)
 
     try:
-        record = PullRequestRecord(
-            workspace_id=approval.workspace_id,
-            project_id=approval.project_id,
-            task_id=approval.task_id,
-            repo_id=repository.id,
-            patch_artifact_id=artifact.id,
-            patch_approval_id=approval.id,
-            cloud_run_id=cloud_run.id,
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        existing = _existing_pull_request(session, approval.id)
+        if existing is not None:
+            return _handle_existing_pull_request(session, existing)
+        raise HTTPException(
+            status_code=409,
+            detail="Pull request record could not be created because of a uniqueness conflict",
+        ) from exc
+
+    record_id = record.id
+    try:
+        created_pr = (adapter or DEFAULT_ADAPTER).create_pull_request(
+            owner=repository.github_owner or "",
+            repo=repository.github_repo or "",
+            repo_url=repository.repo_url,
+            token=token,
+            base_branch=base_branch,
             head_branch=cloud_run.head_branch,
-            base_branch=cloud_run.base_branch or repository.default_branch,
-            github_pr_number=created_pr.number,
-            github_pr_url=created_pr.url,
-            status="created",
-            created_by="dev_user",
+            diff_text=artifact.diff_text,
+            title=f"{task.title}",
+            body=f"Created from patch artifact {artifact.id}.",
         )
+    except Exception as exc:
+        _mark_pull_request_failed(session, record_id)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "Pull request creation failed",
+                "error": _redact_token(str(exc), token),
+            },
+        ) from exc
+
+    try:
+        record = session.get(PullRequestRecord, record_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Pull request not found")
+        task = get_task(session, approval.task_id)
+        record.github_pr_number = created_pr.number
+        record.github_pr_url = created_pr.url
+        record.status = "created"
         session.add(record)
-        session.flush()
         _transition_task_to_pr_created(session, task)
         create_task_event(
             session,
@@ -219,7 +276,7 @@ def create_pull_request_for_approval(
         session.rollback()
         existing = _existing_pull_request(session, approval.id)
         if existing is not None:
-            return _pull_request_result_read(session, existing), 200
+            return _handle_existing_pull_request(session, existing)
         raise HTTPException(
             status_code=409,
             detail="Pull request record could not be created because of a uniqueness conflict",
@@ -260,6 +317,28 @@ def _existing_pull_request(
         .limit(1)
     )
     return session.exec(statement).first()
+
+
+def _handle_existing_pull_request(
+    session: Session,
+    record: PullRequestRecord,
+) -> tuple[PullRequestResultRead, int]:
+    if record.status == "created":
+        return _pull_request_result_read(session, record), 200
+    if record.status == "creating":
+        raise HTTPException(
+            status_code=409,
+            detail="Pull request is already being created for this patch approval",
+        )
+    if record.status == "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="Pull request creation previously failed for this patch approval",
+        )
+    raise HTTPException(
+        status_code=409,
+        detail=f"Pull request is in unsupported status {record.status}",
+    )
 
 
 def _latest_cloud_run_for_artifact(
@@ -438,21 +517,17 @@ def _pull_request_read(record: PullRequestRecord) -> PullRequestRead:
     )
 
 
-def _authenticated_repo_url(repo_url: str, token: str) -> str:
-    if repo_url.startswith("https://"):
-        return repo_url.replace("https://", f"https://x-access-token:{token}@", 1)
-    return repo_url
-
-
 def _run_git(
     args: list[str],
     token: str,
     *,
     cwd: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> None:
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
+        env=env,
         check=False,
         capture_output=True,
         text=True,
@@ -467,3 +542,51 @@ def _redact_token(message: str, token: str) -> str:
     if token:
         message = message.replace(token, "[redacted]")
     return message
+
+
+def _write_git_askpass(directory: Path) -> Path:
+    if os.name == "nt":
+        askpass_path = directory / "git-askpass.bat"
+        askpass_path.write_text(
+            "@echo off\r\n"
+            "echo %1 | findstr /I \"Username\" >nul\r\n"
+            "if %ERRORLEVEL%==0 (\r\n"
+            "  echo x-access-token\r\n"
+            ") else (\r\n"
+            "  echo %AI_SCDC_GIT_TOKEN%\r\n"
+            ")\r\n",
+            encoding="utf-8",
+        )
+    else:
+        askpass_path = directory / "git-askpass.sh"
+        askpass_path.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
+            "  *) printf '%s\\n' \"$AI_SCDC_GIT_TOKEN\" ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        askpass_path.chmod(0o700)
+    return askpass_path
+
+
+def _git_auth_env(askpass_path: Path, token: str) -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "AI_SCDC_GIT_TOKEN": token,
+            "GIT_ASKPASS": str(askpass_path),
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return env
+
+
+def _mark_pull_request_failed(session: Session, record_id: str) -> None:
+    record = session.get(PullRequestRecord, record_id)
+    if record is None:
+        return
+    record.status = "failed"
+    session.add(record)
+    session.commit()
