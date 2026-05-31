@@ -66,6 +66,8 @@ def start_patch_test_run(
     local_run = _get_local_run_entity(session, artifact.local_run_id)
     if local_run.runner_kind == "cloud_fake":
         return _start_cloud_fake_test_run(session, artifact, task, local_run)
+    if local_run.runner_kind == "docker_local":
+        return _start_persisted_docker_test_run(session, artifact, task, local_run)
     if not local_run.worktree_path:
         raise HTTPException(
             status_code=400,
@@ -318,6 +320,101 @@ def _start_cloud_fake_test_run(
     )
 
 
+def _start_persisted_docker_test_run(
+    session: Session,
+    artifact: PatchArtifact,
+    task: Task,
+    local_run: LocalTaskRun,
+) -> PatchTestRunResultRead:
+    test_run = _latest_test_run_for_local_run(session, artifact.id, local_run.id)
+    if test_run is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Docker local run has no persisted test results",
+                "local_run_id": local_run.id,
+                "patch_artifact_id": artifact.id,
+            },
+        )
+
+    event_clock = _EventClock()
+    _create_workflow_event(
+        session,
+        event_clock,
+        task.id,
+        "test_run_started",
+        {"patch_artifact_id": artifact.id, "test_run_id": test_run.id},
+    )
+    _transition_task_for_workflow(
+        session,
+        event_clock,
+        task,
+        TaskStatus.SELF_TESTING,
+    )
+    _complete_test_run(
+        test_run,
+        artifact,
+        status=test_run.status,
+        command_results=test_run.command_results or [],
+        failure_reason=test_run.failure_reason,
+    )
+    _create_workflow_event(
+        session,
+        event_clock,
+        task.id,
+        "test_run_completed",
+        {
+            "patch_artifact_id": artifact.id,
+            "test_run_id": test_run.id,
+            "status": test_run.status,
+            "failure_reason": test_run.failure_reason,
+        },
+    )
+
+    debug_attempt: DebugAttempt | None = None
+    if test_run.status == "passed":
+        _transition_task_for_workflow(
+            session,
+            event_clock,
+            task,
+            TaskStatus.REVIEWING,
+        )
+    else:
+        failure_reason = _failure_reason(test_run.command_results or [])
+        if failure_reason == "Test command failed." and test_run.failure_reason:
+            failure_reason = test_run.failure_reason
+        debug_attempt = _create_debug_attempt(
+            session,
+            event_clock,
+            task,
+            artifact,
+            test_run,
+            root_cause=failure_reason,
+        )
+        _transition_task_for_workflow(
+            session,
+            event_clock,
+            task,
+            TaskStatus.FIX_REQUESTED,
+        )
+
+    session.add(test_run)
+    session.add(artifact)
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+    session.refresh(artifact)
+    session.refresh(test_run)
+    if debug_attempt is not None:
+        session.refresh(debug_attempt)
+    return PatchTestRunResultRead(
+        task=_task_read(task),
+        patch_artifact=_patch_artifact_read(artifact),
+        test_run=_test_run_read(test_run),
+        debug_attempt=_debug_attempt_read(debug_attempt) if debug_attempt else None,
+    )
+
+
 def list_debug_attempts(session: Session, task_id: str) -> list[DebugAttemptRead]:
     get_task(session, task_id)
     statement = (
@@ -518,6 +615,21 @@ def _latest_test_run(
     statement = (
         select(LocalTestRun)
         .where(LocalTestRun.patch_artifact_id == patch_artifact_id)
+        .order_by(LocalTestRun.created_at.desc(), LocalTestRun.id.desc())
+        .limit(1)
+    )
+    return session.exec(statement).first()
+
+
+def _latest_test_run_for_local_run(
+    session: Session,
+    patch_artifact_id: str,
+    local_run_id: str,
+) -> LocalTestRun | None:
+    statement = (
+        select(LocalTestRun)
+        .where(LocalTestRun.patch_artifact_id == patch_artifact_id)
+        .where(LocalTestRun.local_run_id == local_run_id)
         .order_by(LocalTestRun.created_at.desc(), LocalTestRun.id.desc())
         .limit(1)
     )

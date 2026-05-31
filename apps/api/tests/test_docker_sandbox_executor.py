@@ -236,6 +236,38 @@ def test_docker_executor_separates_git_clone_options_from_repo_url(
     )
 
 
+def test_docker_executor_redacts_credentials_embedded_in_repo_url(
+    tmp_path: Path,
+) -> None:
+    credentialed_url = "https://user:secret-token@github.com/example/demo"
+    results = docker_success_results()
+    results[1] = ProcessResult(
+        args=["docker", "clone"],
+        exit_code=0,
+        stdout=f"cloned {credentialed_url}",
+        stderr=f"warning {credentialed_url}",
+        duration_ms=1,
+    )
+    runner = RecordingRunner(results)
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        repo_url=credentialed_url,
+        env={},
+        test_commands=[],
+        required_tests=[],
+    )
+
+    result = executor.run(request)
+
+    assert result.status == "patch_ready"
+    assert "secret-token" not in str(result.command_results)
+    assert "user:secret-token@" not in str(result.command_results)
+    assert "[redacted]" in result.command_results[1].command
+    assert "[redacted]" in result.command_results[1].stdout
+    assert "[redacted]" in result.command_results[1].stderr
+
+
 @pytest.mark.parametrize(
     ("field_name", "field_value"),
     [

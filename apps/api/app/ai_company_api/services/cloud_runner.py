@@ -23,6 +23,7 @@ from ai_company_api.services.cloud_sandbox_executor import (
     SandboxCommandSelection,
     SandboxExecutionRequest,
     SandboxExecutionResult,
+    repo_url_redaction_secrets,
     select_cloud_sandbox_executor,
 )
 from ai_company_api.services.github_repository import get_active_github_credential
@@ -148,13 +149,8 @@ def start_cloud_run(
     cloud_run.status = "running"
     cloud_run.local_run_id = local_run.id
     cloud_run.updated_at = utc_now()
-    task.repo_id = repository.id
-    task.branch_name = head_branch
-    task.worktree_ref = execution_result.worktree_ref
-    _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.ASSIGNED)
-    _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.IN_PROGRESS)
 
-    secrets = _redaction_secrets(sandbox_env)
+    secrets = _redaction_secrets(sandbox_env, repository.repo_url)
     if not _should_create_patch_artifact(execution_result):
         failure_command_results = [
             *execution_result.command_results,
@@ -197,12 +193,6 @@ def start_cloud_run(
                 "local_run_id": local_run.id,
                 "failure_reason": execution_result.failure_reason,
             },
-        )
-        _transition_task_for_cloud_runner(
-            session,
-            event_clock,
-            task,
-            TaskStatus.FIX_REQUESTED,
         )
         session.add(local_run)
         session.add(cloud_run)
@@ -282,7 +272,10 @@ def start_cloud_run(
                 "patch_artifact_id": artifact.id,
             },
         )
-    _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.PATCH_READY)
+    task.repo_id = repository.id
+    task.branch_name = head_branch
+    task.worktree_ref = execution_result.worktree_ref
+    _transition_task_to_patch_ready(session, event_clock, task)
 
     session.add(local_run)
     session.add(cloud_run)
@@ -393,6 +386,37 @@ def _should_create_patch_artifact(result: SandboxExecutionResult) -> bool:
     )
 
 
+def _transition_task_to_patch_ready(
+    session: Session,
+    event_clock: "_EventClock",
+    task: Task,
+) -> None:
+    current_status = TaskStatus(task.status)
+    if current_status == TaskStatus.CREATED:
+        _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.ASSIGNED)
+        _transition_task_for_cloud_runner(
+            session,
+            event_clock,
+            task,
+            TaskStatus.IN_PROGRESS,
+        )
+    elif current_status in {TaskStatus.ASSIGNED, TaskStatus.FIX_REQUESTED}:
+        _transition_task_for_cloud_runner(
+            session,
+            event_clock,
+            task,
+            TaskStatus.IN_PROGRESS,
+        )
+
+    if TaskStatus(task.status) != TaskStatus.PATCH_READY:
+        _transition_task_for_cloud_runner(
+            session,
+            event_clock,
+            task,
+            TaskStatus.PATCH_READY,
+        )
+
+
 def _transition_task_for_cloud_runner(
     session: Session,
     event_clock: "_EventClock",
@@ -457,8 +481,12 @@ def _create_cloud_run_event(
     event.created_at = event_clock.next()
 
 
-def _redaction_secrets(env: dict[str, str]) -> list[str]:
-    return [value for value in env.values() if value]
+def _redaction_secrets(env: dict[str, str], repo_url: str = "") -> list[str]:
+    return [
+        value
+        for value in [*env.values(), *repo_url_redaction_secrets(repo_url)]
+        if value
+    ]
 
 
 def _command_result_payloads(

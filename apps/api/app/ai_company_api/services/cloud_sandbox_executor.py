@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, replace
 from importlib import import_module
+from urllib.parse import unquote, urlsplit
 from typing import Protocol
 
 
@@ -9,6 +10,23 @@ def redact_secrets(text: str, secrets: list[str]) -> str:
     for secret in sorted((secret for secret in secrets if secret), key=len, reverse=True):
         redacted = redacted.replace(secret, "[redacted]")
     return redacted
+
+
+def repo_url_redaction_secrets(repo_url: str) -> list[str]:
+    try:
+        parsed = urlsplit(repo_url)
+    except ValueError:
+        return []
+    if not parsed.netloc or "@" not in parsed.netloc:
+        return []
+
+    userinfo = parsed.netloc.rsplit("@", 1)[0]
+    secrets = [repo_url, f"{userinfo}@"]
+    if parsed.username:
+        secrets.append(unquote(parsed.username))
+    if parsed.password:
+        secrets.append(unquote(parsed.password))
+    return [secret for secret in secrets if secret]
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
     SandboxExecutionRequest,
     SandboxExecutionResult,
+    repo_url_redaction_secrets,
     redact_secrets,
 )
 
@@ -204,7 +205,7 @@ class DockerLocalSandboxExecutor:
     def run(self, request: SandboxExecutionRequest) -> SandboxExecutionResult:
         command_results: list[CommandResult] = []
         test_results: list[CommandResult] = []
-        secrets = list(request.env.values())
+        secrets = [*request.env.values(), *repo_url_redaction_secrets(request.repo_url)]
         runner = RedactingProcessRunner(self._process_runner, secrets)
         docker_cli_env = _docker_cli_env()
         docker_image = _validated_docker_image(request.docker_image)
