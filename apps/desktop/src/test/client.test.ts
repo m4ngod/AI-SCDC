@@ -93,8 +93,7 @@ describe("desktop API clients", () => {
   });
 
   it("fake client approves a reviewed patch", async () => {
-    expect(fakeApiClient.approvePatch).toBeDefined();
-    await expect(fakeApiClient.approvePatch!("patch_demo")).resolves.toMatchObject({
+    await expect(fakeApiClient.approvePatch("patch_demo")).resolves.toMatchObject({
       task: {
         id: "task_board_ui",
         status: "MERGE_READY",
@@ -120,9 +119,8 @@ describe("desktop API clients", () => {
   });
 
   it("fake client requests human approval for an approved patch", async () => {
-    expect(fakeApiClient.requestHumanApproval).toBeDefined();
     await expect(
-      fakeApiClient.requestHumanApproval!("patch_approval_patch_demo")
+      fakeApiClient.requestHumanApproval("patch_approval_patch_demo")
     ).resolves.toMatchObject({
       task: {
         id: "task_board_ui",
@@ -719,8 +717,7 @@ describe("desktop API clients", () => {
       baseUrl: "http://127.0.0.1:8000/",
       projectId: "project_demo"
     });
-    expect(client.approvePatch).toBeDefined();
-    const result = await client.approvePatch!("patch_api");
+    const result = await client.approvePatch("patch_api");
 
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/patch-artifacts/patch_api/approvals",
@@ -808,8 +805,7 @@ describe("desktop API clients", () => {
       baseUrl: "http://127.0.0.1:8000/",
       projectId: "project_demo"
     });
-    expect(client.requestHumanApproval).toBeDefined();
-    const result = await client.requestHumanApproval!("patch_approval_api");
+    const result = await client.requestHumanApproval("patch_approval_api");
 
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/patch-approvals/patch_approval_api/request-human-approval",

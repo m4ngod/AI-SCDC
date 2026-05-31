@@ -186,6 +186,8 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
       },
       debug_attempt: null
     }),
+    approvePatch: vi.fn(),
+    requestHumanApproval: vi.fn(),
     ...overrides
   };
 }

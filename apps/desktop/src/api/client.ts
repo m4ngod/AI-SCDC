@@ -179,8 +179,8 @@ export type ConsoleApiClient = {
   startLocalRun: (taskId: string) => Promise<LocalRunResult>;
   runPatchTests: (patchArtifactId: string) => Promise<PatchTestRunResult>;
   reviewPatch: (patchArtifactId: string) => Promise<PatchReviewResult>;
-  approvePatch?: (patchArtifactId: string) => Promise<PatchApprovalResult>;
-  requestHumanApproval?: (approvalId: string) => Promise<PatchApprovalResult>;
+  approvePatch: (patchArtifactId: string) => Promise<PatchApprovalResult>;
+  requestHumanApproval: (approvalId: string) => Promise<PatchApprovalResult>;
 };
 
 type ApiProject = {
@@ -532,11 +532,7 @@ export const fakeApiClient: ConsoleApiClient = {
   },
   async requestHumanApproval(approvalId: string) {
     const patchArtifactId = approvalId.replace(/^patch_approval_/, "");
-    const approvePatch = this.approvePatch;
-    if (!approvePatch) {
-      throw new Error("Patch approval is not available");
-    }
-    const result = await approvePatch(patchArtifactId);
+    const result = await this.approvePatch(patchArtifactId);
     const approval = {
       ...result.approval,
       id: approvalId
