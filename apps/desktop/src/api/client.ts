@@ -15,6 +15,8 @@ export type TaskCard = {
   patch_review?: PatchReviewCard;
   patch_approval?: PatchApprovalCard;
   debug_attempt?: DebugAttemptCard | null;
+  cloud_run?: CloudRunCard;
+  pull_request?: PullRequestCard;
 };
 
 export type RepositoryCard = {
@@ -23,6 +25,37 @@ export type RepositoryCard = {
   local_path: string;
   default_branch: string;
   status: string;
+  provider?: string;
+  repo_url?: string;
+  github_owner?: string | null;
+  github_repo?: string | null;
+  github_credential_id?: string | null;
+  connection_status?: string;
+};
+
+export type GitHubCredentialCard = {
+  id: string;
+  workspace_id?: string;
+  display_name: string;
+  token_last4: string;
+  status: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type GitHubCredentialInput = {
+  display_name: string;
+  token: string;
+};
+
+export type GitHubRepositoryInput = {
+  project_id?: string;
+  name?: string;
+  repo_url: string;
+  github_owner: string;
+  github_repo: string;
+  default_branch?: string;
+  github_credential_id: string;
 };
 
 export type LocalTaskRunCard = {
@@ -114,9 +147,59 @@ export type DebugAttemptCard = {
   created_at: string;
 };
 
+export type CloudRunCard = {
+  id: string;
+  workspace_id?: string;
+  project_id?: string;
+  task_id: string;
+  repo_id: string;
+  local_run_id?: string | null;
+  base_branch?: string;
+  head_branch: string;
+  status: string;
+  sandbox_kind?: string;
+  patch_artifact_id?: string | null;
+  failure_reason?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type PullRequestCard = {
+  id: string;
+  workspace_id?: string;
+  project_id?: string;
+  task_id: string;
+  repo_id?: string;
+  patch_artifact_id: string;
+  patch_approval_id?: string;
+  approval_id?: string;
+  cloud_run_id?: string | null;
+  head_branch?: string;
+  base_branch?: string;
+  github_pr_number?: number;
+  number?: number;
+  github_pr_url?: string;
+  url: string;
+  status: string;
+  created_by?: string;
+  created_at?: string;
+};
+
 export type LocalRunResult = {
   local_run: LocalTaskRunCard;
   patch_artifact?: PatchArtifactCard;
+};
+
+export type CloudRunResult = {
+  cloud_run: CloudRunCard;
+  patch_artifact?: PatchArtifactCard;
+};
+
+export type PullRequestResult = {
+  task: TaskCard;
+  patch_artifact?: PatchArtifactCard;
+  approval?: PatchApprovalCard;
+  pull_request: PullRequestCard;
 };
 
 export type PatchTestRunResult = {
@@ -176,6 +259,11 @@ export type ConsoleApiClient = {
   createPlannerRun: (goal: string) => Promise<PlannerRunDraft>;
   approvePlannerRun: (plannerRunId: string) => Promise<PlannerRunDecision>;
   rejectPlannerRun: (plannerRunId: string, reason?: string) => Promise<PlannerRunDecision>;
+  createGitHubCredential?: (input: GitHubCredentialInput) => Promise<GitHubCredentialCard>;
+  listGitHubCredentials?: () => Promise<GitHubCredentialCard[]>;
+  createGitHubRepository?: (input: GitHubRepositoryInput) => Promise<RepositoryCard>;
+  startCloudRun?: (taskId: string) => Promise<CloudRunResult>;
+  createPullRequest?: (approvalId: string) => Promise<PullRequestResult>;
   startLocalRun: (taskId: string) => Promise<LocalRunResult>;
   runPatchTests: (patchArtifactId: string) => Promise<PatchTestRunResult>;
   reviewPatch: (patchArtifactId: string) => Promise<PatchReviewResult>;
@@ -201,7 +289,11 @@ type ApiTask = {
 
 type ApiRepository = RepositoryCard;
 
+type ApiGitHubCredential = GitHubCredentialCard;
+
 type ApiLocalTaskRun = LocalTaskRunCard;
+
+type ApiCloudRun = CloudRunCard;
 
 type ApiPatchArtifact = PatchArtifactCard & {
   workspace_id?: string;
@@ -218,6 +310,11 @@ type ApiPatchReview = PatchReviewCard;
 type ApiPatchApproval = PatchApprovalCard;
 
 type ApiDebugAttempt = DebugAttemptCard;
+
+type ApiPullRequest = PullRequestCard & {
+  github_pr_url?: string;
+  github_pr_number?: number;
+};
 
 type ApiPatchTestRunResult = {
   task: ApiTask;
@@ -238,6 +335,18 @@ type ApiPatchApprovalResult = {
   patch_artifact: ApiPatchArtifact;
   review: ApiPatchReview;
   approval: ApiPatchApproval;
+};
+
+type ApiCloudRunResult = {
+  cloud_run: ApiCloudRun;
+  patch_artifact?: ApiPatchArtifact | null;
+};
+
+type ApiPullRequestResult = {
+  task: ApiTask;
+  patch_artifact?: ApiPatchArtifact;
+  approval?: ApiPatchApproval;
+  pull_request: ApiPullRequest;
 };
 
 type ApiPlannerRunDecision = {
@@ -296,9 +405,14 @@ function fakeTaskFromPatchArtifact(patchArtifactId: string) {
     };
   }
 
-  const taskId = patchArtifactId.startsWith("patch_")
+  const taskId = patchArtifactId.startsWith("patch_cloud_")
+    ? patchArtifactId.slice("patch_cloud_".length)
+    : patchArtifactId.startsWith("patch_")
     ? patchArtifactId.slice("patch_".length)
     : "task_demo_created";
+  const localRunId = patchArtifactId.startsWith("patch_cloud_")
+    ? `cloud_run_${taskId}`
+    : fakeLocalRunId(taskId);
   const task: TaskCard = {
     id: taskId,
     title: "Prepared local runner patch",
@@ -312,7 +426,7 @@ function fakeTaskFromPatchArtifact(patchArtifactId: string) {
     patchArtifact: {
       id: patchArtifactId,
       task_id: taskId,
-      local_run_id: fakeLocalRunId(taskId),
+      local_run_id: localRunId,
       summary: "Prepared local runner patch.",
       files_changed: ["README.md"],
       tests_run: ["pnpm --filter @ai-scdc/desktop test"],
@@ -379,6 +493,122 @@ export const fakeApiClient: ConsoleApiClient = {
       approval_id: "approval_demo",
       status: "REJECTED",
       created_tasks: []
+    };
+  },
+  async createGitHubCredential(input: GitHubCredentialInput) {
+    return {
+      id: "github_credential_demo",
+      workspace_id: "workspace_demo",
+      display_name: input.display_name,
+      token_last4: input.token.slice(-4),
+      status: "active",
+      created_at: "2026-05-29T00:00:00Z",
+      updated_at: "2026-05-29T00:00:00Z"
+    };
+  },
+  async listGitHubCredentials() {
+    return [
+      {
+        id: "github_credential_demo",
+        workspace_id: "workspace_demo",
+        display_name: "Example GitHub",
+        token_last4: "7890",
+        status: "active",
+        created_at: "2026-05-29T00:00:00Z",
+        updated_at: "2026-05-29T00:00:00Z"
+      }
+    ];
+  },
+  async createGitHubRepository(input: GitHubRepositoryInput) {
+    return {
+      id: "repo_github_demo",
+      name: input.name ?? `${input.github_owner}/${input.github_repo}`,
+      local_path: "",
+      default_branch: input.default_branch ?? "main",
+      status: "active",
+      provider: "github",
+      repo_url: input.repo_url,
+      github_owner: input.github_owner,
+      github_repo: input.github_repo,
+      github_credential_id: input.github_credential_id,
+      connection_status: "connected"
+    };
+  },
+  async startCloudRun(taskId: string) {
+    const cloudRunId = `cloud_run_${taskId}`;
+    const patchArtifactId = `patch_cloud_${taskId}`;
+    return {
+      cloud_run: {
+        id: cloudRunId,
+        workspace_id: "workspace_demo",
+        project_id: "project_demo",
+        task_id: taskId,
+        repo_id: "repo_github_demo",
+        local_run_id: cloudRunId,
+        base_branch: "main",
+        head_branch: `ai-scdc/${taskId}`,
+        status: "patch_ready",
+        sandbox_kind: "fake",
+        patch_artifact_id: patchArtifactId,
+        failure_reason: null,
+        created_at: "2026-05-29T00:00:00Z",
+        updated_at: "2026-05-29T00:00:00Z"
+      },
+      patch_artifact: {
+        id: patchArtifactId,
+        task_id: taskId,
+        local_run_id: cloudRunId,
+        summary: "Prepared cloud runner patch.",
+        files_changed: ["README.md"],
+        tests_run: [],
+        test_result: "not_run"
+      }
+    };
+  },
+  async createPullRequest(approvalId: string) {
+    const patchArtifactId = approvalId.replace(/^patch_approval_/, "");
+    const { task, patchArtifact } = fakeTaskFromPatchArtifact(patchArtifactId);
+    return {
+      task: {
+        ...task,
+        status: "PR_CREATED",
+        patch_artifact: patchArtifact
+      },
+      patch_artifact: patchArtifact,
+      approval: {
+        id: approvalId,
+        workspace_id: "workspace_demo",
+        project_id: "project_demo",
+        task_id: task.id,
+        local_run_id: patchArtifact.local_run_id,
+        patch_artifact_id: patchArtifact.id,
+        review_id: `review_${patchArtifact.id}`,
+        status: "approved",
+        approved_by: "dev_user",
+        merge_instructions:
+          "Inspect the pull request before merging. This workflow does not run git merge.",
+        created_at: "2026-05-29T00:04:00Z"
+      },
+      pull_request: {
+        id: "pull_request_demo",
+        workspace_id: "workspace_demo",
+        project_id: "project_demo",
+        task_id: task.id,
+        repo_id: "repo_github_demo",
+        patch_artifact_id: patchArtifact.id,
+        patch_approval_id: approvalId,
+        approval_id: approvalId,
+        cloud_run_id: patchArtifact.local_run_id,
+        head_branch: `ai-scdc/${task.id}`,
+        base_branch: "main",
+        github_pr_number: 1,
+        number: 1,
+        github_pr_url: "https://github.com/example/demo/pull/1",
+        url: "https://github.com/example/demo/pull/1",
+        status: "created",
+        created_by: "dev_user",
+        created_at: "2026-05-29T00:05:00Z"
+      }
     };
   },
   async startLocalRun(taskId: string) {
@@ -716,6 +946,50 @@ function mapDebugAttemptCard(debugAttempt: ApiDebugAttempt): DebugAttemptCard {
   };
 }
 
+function mapCloudRunCard(cloudRun: ApiCloudRun): CloudRunCard {
+  return {
+    id: cloudRun.id,
+    workspace_id: cloudRun.workspace_id,
+    project_id: cloudRun.project_id,
+    task_id: cloudRun.task_id,
+    repo_id: cloudRun.repo_id,
+    local_run_id: cloudRun.local_run_id,
+    base_branch: cloudRun.base_branch,
+    head_branch: cloudRun.head_branch,
+    status: cloudRun.status,
+    sandbox_kind: cloudRun.sandbox_kind,
+    patch_artifact_id: cloudRun.patch_artifact_id,
+    failure_reason: cloudRun.failure_reason,
+    created_at: cloudRun.created_at,
+    updated_at: cloudRun.updated_at
+  };
+}
+
+function mapPullRequestCard(pullRequest: ApiPullRequest): PullRequestCard {
+  const url = pullRequest.url ?? pullRequest.github_pr_url ?? "";
+  const number = pullRequest.number ?? pullRequest.github_pr_number;
+  return {
+    id: pullRequest.id,
+    workspace_id: pullRequest.workspace_id,
+    project_id: pullRequest.project_id,
+    task_id: pullRequest.task_id,
+    repo_id: pullRequest.repo_id,
+    patch_artifact_id: pullRequest.patch_artifact_id,
+    patch_approval_id: pullRequest.patch_approval_id,
+    approval_id: pullRequest.approval_id ?? pullRequest.patch_approval_id,
+    cloud_run_id: pullRequest.cloud_run_id,
+    head_branch: pullRequest.head_branch,
+    base_branch: pullRequest.base_branch,
+    github_pr_number: pullRequest.github_pr_number ?? pullRequest.number,
+    number,
+    github_pr_url: pullRequest.github_pr_url ?? pullRequest.url,
+    url,
+    status: pullRequest.status,
+    created_by: pullRequest.created_by,
+    created_at: pullRequest.created_at
+  };
+}
+
 function mapPatchTestRunResult(result: ApiPatchTestRunResult): PatchTestRunResult {
   return {
     task: mapTaskCard(result.task),
@@ -743,6 +1017,24 @@ function mapPatchApprovalResult(result: ApiPatchApprovalResult): PatchApprovalRe
   };
 }
 
+function mapCloudRunResult(result: ApiCloudRunResult): CloudRunResult {
+  return {
+    cloud_run: mapCloudRunCard(result.cloud_run),
+    patch_artifact: result.patch_artifact ? mapPatchArtifactCard(result.patch_artifact) : undefined
+  };
+}
+
+function mapPullRequestResult(result: ApiPullRequestResult): PullRequestResult {
+  return {
+    task: mapTaskCard(result.task),
+    patch_artifact: result.patch_artifact
+      ? mapPatchArtifactCard(result.patch_artifact)
+      : undefined,
+    approval: result.approval ? mapPatchApprovalCard(result.approval) : undefined,
+    pull_request: mapPullRequestCard(result.pull_request)
+  };
+}
+
 export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiClient {
   let resolvedProjectId = options.projectId;
   const workflowStatuses = new Set([
@@ -752,7 +1044,8 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
     "FIX_REQUESTED",
     "APPROVED",
     "MERGE_READY",
-    "HUMAN_APPROVAL"
+    "HUMAN_APPROVAL",
+    "PR_CREATED"
   ]);
 
   async function getProjectId() {
@@ -799,23 +1092,31 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
       return taskCard;
     }
 
-    const localRuns = await listJson<ApiLocalTaskRun>(
-      `/tasks/${task.id}/local-runs`,
-      `GET /tasks/${task.id}/local-runs`
-    );
+    const [localRuns, cloudRuns] = await Promise.all([
+      listJson<ApiLocalTaskRun>(
+        `/tasks/${task.id}/local-runs`,
+        `GET /tasks/${task.id}/local-runs`
+      ),
+      listJson<ApiCloudRun>(
+        `/tasks/${task.id}/cloud-runs`,
+        `GET /tasks/${task.id}/cloud-runs`
+      )
+    ]);
     const localRun = [...localRuns].reverse().find((item) => item.patch_artifact_id);
-    if (!localRun?.patch_artifact_id) {
+    const cloudRun = [...cloudRuns].reverse().find((item) => item.patch_artifact_id);
+    const patchArtifactId = cloudRun?.patch_artifact_id ?? localRun?.patch_artifact_id;
+    if (!patchArtifactId) {
       return taskCard;
     }
 
     const artifactResponse = await fetch(
-      apiUrl(options.baseUrl, `/patch-artifacts/${localRun.patch_artifact_id}`)
+      apiUrl(options.baseUrl, `/patch-artifacts/${patchArtifactId}`)
     );
     const artifact = await readJsonResponse<ApiPatchArtifact>(
       artifactResponse,
-      `GET /patch-artifacts/${localRun.patch_artifact_id}`
+      `GET /patch-artifacts/${patchArtifactId}`
     );
-    const [testRuns, reviews, approvals] = await Promise.all([
+    const [testRuns, reviews, approvals, pullRequests] = await Promise.all([
       listJson<ApiLocalTestRun>(
         `/patch-artifacts/${artifact.id}/test-runs`,
         `GET /patch-artifacts/${artifact.id}/test-runs`
@@ -827,21 +1128,28 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
       listJson<ApiPatchApproval>(
         `/patch-artifacts/${artifact.id}/approvals`,
         `GET /patch-artifacts/${artifact.id}/approvals`
+      ),
+      listJson<ApiPullRequest>(
+        `/patch-artifacts/${artifact.id}/pull-requests`,
+        `GET /patch-artifacts/${artifact.id}/pull-requests`
       )
     ]);
     const latestTestRun = latest(testRuns);
     const latestReview = latest(reviews);
     const latestApproval = latest(approvals);
+    const latestPullRequest = latest(pullRequests);
 
     return {
       ...taskCard,
-      repo_id: taskCard.repo_id ?? localRun.repo_id,
-      branch_name: taskCard.branch_name ?? localRun.base_branch,
-      worktree_ref: taskCard.worktree_ref ?? localRun.worktree_path,
+      repo_id: taskCard.repo_id ?? cloudRun?.repo_id ?? localRun?.repo_id,
+      branch_name: taskCard.branch_name ?? cloudRun?.head_branch ?? localRun?.base_branch,
+      worktree_ref: taskCard.worktree_ref ?? localRun?.worktree_path,
       patch_artifact: mapPatchArtifactCard(artifact),
       test_run: latestTestRun ? mapLocalTestRunCard(latestTestRun) : undefined,
       patch_review: latestReview ? mapPatchReviewCard(latestReview) : undefined,
-      patch_approval: latestApproval ? mapPatchApprovalCard(latestApproval) : undefined
+      patch_approval: latestApproval ? mapPatchApprovalCard(latestApproval) : undefined,
+      cloud_run: cloudRun ? mapCloudRunCard(cloudRun) : undefined,
+      pull_request: latestPullRequest ? mapPullRequestCard(latestPullRequest) : undefined
     };
   }
 
@@ -908,6 +1216,84 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         `POST /planner-runs/${plannerRunId}/reject`
       );
       return mapPlannerRunDecision(decision);
+    },
+    async createGitHubCredential(input: GitHubCredentialInput) {
+      const response = await fetch(apiUrl(options.baseUrl, "/github-credentials"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input)
+      });
+      return readJsonResponse<ApiGitHubCredential>(response, "POST /github-credentials");
+    },
+    async listGitHubCredentials() {
+      const response = await fetch(apiUrl(options.baseUrl, "/github-credentials"));
+      return readJsonResponse<ApiGitHubCredential[]>(response, "GET /github-credentials");
+    },
+    async createGitHubRepository(input: GitHubRepositoryInput) {
+      const projectId = input.project_id ?? (await getProjectId());
+      const body = {
+        project_id: projectId,
+        name: input.name ?? `${input.github_owner}/${input.github_repo}`,
+        github_credential_id: input.github_credential_id,
+        repo_url: input.repo_url,
+        github_owner: input.github_owner,
+        github_repo: input.github_repo,
+        default_branch: input.default_branch ?? "main"
+      };
+      const response = await fetch(
+        apiUrl(options.baseUrl, `/projects/${projectId}/github-repositories`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        }
+      );
+      return readJsonResponse<ApiRepository>(
+        response,
+        `POST /projects/${projectId}/github-repositories`
+      );
+    },
+    async startCloudRun(taskId: string) {
+      const projectId = await getProjectId();
+      const repositoriesResponse = await fetch(
+        apiUrl(options.baseUrl, `/projects/${projectId}/repositories`)
+      );
+      const repositories = await readJsonResponse<ApiRepository[]>(
+        repositoriesResponse,
+        `GET /projects/${projectId}/repositories`
+      );
+      const repository =
+        repositories.find((item) => item.provider === "github" && item.status === "active") ??
+        repositories.find((item) => item.provider === "github") ??
+        repositories[0];
+      if (!repository) {
+        throw new Error("No repository registered for project");
+      }
+
+      const response = await fetch(apiUrl(options.baseUrl, `/tasks/${taskId}/cloud-runs`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo_id: repository.id })
+      });
+      const result = await readJsonResponse<ApiCloudRunResult>(
+        response,
+        `POST /tasks/${taskId}/cloud-runs`
+      );
+      return mapCloudRunResult(result);
+    },
+    async createPullRequest(approvalId: string) {
+      const response = await fetch(
+        apiUrl(options.baseUrl, `/patch-approvals/${approvalId}/pull-requests`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+      const result = await readJsonResponse<ApiPullRequestResult>(
+        response,
+        `POST /patch-approvals/${approvalId}/pull-requests`
+      );
+      return mapPullRequestResult(result);
     },
     async startLocalRun(taskId: string) {
       const projectId = await getProjectId();
