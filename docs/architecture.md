@@ -85,6 +85,12 @@ Phase 6 adds the human patch approval boundary and a compact unified diff viewer
 
 The desktop shows changed files, unified diff text, test result, review verdict, patch approval state, worktree path, and merge instructions. A separate human-approval request moves `MERGE_READY -> HUMAN_APPROVAL`; Phase 6 still does not commit, merge, push, apply patches, create branches, or open pull requests.
 
+## Phase 7 Boundary
+
+Phase 7 adds a GitHub-only pull request publishing boundary. A task can run through a deterministic fake cloud sandbox, produce a normal patch artifact, pass the existing local verification/review workflow, receive patch approval, move to `HUMAN_APPROVAL`, and then create a GitHub pull request only after the user clicks `Create PR`.
+
+The first cloud sandbox is a control-plane fake worker, not a real container service. The API stores GitHub PAT metadata through the development secret vault, registers GitHub repositories, records `CloudRun` and `PullRequestRecord` rows, and moves tasks to `PR_CREATED` after successful PR creation. Phase 7 does not merge pull requests, write to default branches, deploy code, add GitHub OAuth, or add GitLab support.
+
 ## Roadmap
 
 Completed:
@@ -96,9 +102,9 @@ Completed:
 5. Local Runner vertical slice with repository registration, git worktree execution, patch artifact capture, task events, and desktop run controls.
 6. Deterministic local test, patch review, and debug-attempt workflow with desktop controls, durable verification records, and idempotent review results.
 7. Human patch approval boundary with compact diff preview, durable approval records, `MERGE_READY` and `HUMAN_APPROVAL` transitions, and no automatic git merge.
+8. GitHub-only cloud-run and pull-request boundary with PAT metadata, fake cloud sandbox artifacts, explicit `Create PR`, durable PR records, and no automatic merge.
 
 Future:
 
-1. Cloud sandbox workers, GitHub/GitLab integration, artifacts, and PR creation.
-2. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
-3. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.
+1. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
+2. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.

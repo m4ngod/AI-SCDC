@@ -315,6 +315,78 @@ HUMAN_APPROVAL
 
 This workflow records approval intent only. It does not run `git commit`, `git merge`, `git push`, `git apply`, or create a PR.
 
+## Phase 7 GitHub PR Smoke Test
+
+Phase 7 can create a real GitHub pull request after an approved patch reaches `HUMAN_APPROVAL`. Automated tests use the fake GitHub adapter and do not require network access.
+
+Start the API:
+
+```powershell
+pnpm dev:api
+```
+
+In another PowerShell session:
+
+```powershell
+$base = "http://127.0.0.1:8000"
+$secureToken = Read-Host "GitHub PAT" -AsSecureString
+$githubToken = [System.Net.NetworkCredential]::new("", $secureToken).Password
+
+function JsonBody($value) {
+  $value | ConvertTo-Json -Depth 8 -Compress
+}
+
+$credential = Invoke-RestMethod `
+  -Uri "$base/github-credentials" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (JsonBody @{
+    display_name = "Local GitHub"
+    token = $githubToken
+  })
+
+$githubOwner = Read-Host "GitHub owner"
+$githubRepo = Read-Host "GitHub repo"
+
+$project = Invoke-RestMethod `
+  -Uri "$base/projects" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (JsonBody @{ name = "Phase 7 smoke"; description = "GitHub PR smoke test" })
+
+$repository = Invoke-RestMethod `
+  -Uri "$base/projects/$($project.id)/github-repositories" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (JsonBody @{
+    name = "$githubOwner/$githubRepo"
+    repo_url = "https://github.com/$githubOwner/$githubRepo"
+    github_owner = $githubOwner
+    github_repo = $githubRepo
+    default_branch = "main"
+    github_credential_id = $credential.id
+  })
+```
+
+Continue by creating a task, starting a cloud run, running tests, reviewing, approving, requesting human approval, then:
+
+```powershell
+$pr = Invoke-RestMethod `
+  -Uri "$base/patch-approvals/$($approval.approval.id)/pull-requests" `
+  -Method Post
+
+$pr.task.status
+$pr.pull_request.github_pr_url
+```
+
+Expected task status:
+
+```text
+PR_CREATED
+```
+
+Do not commit GitHub PATs or paste them into chat. The API returns only credential metadata.
+
 Focused verification commands used for Phase 6 and its Phase 5 prerequisite workflow:
 
 ```bash
