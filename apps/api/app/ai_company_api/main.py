@@ -22,7 +22,7 @@ DEV_CORS_ORIGINS = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 )
-SECRET_REQUEST_FIELDS = {"secret_value"}
+SECRET_REQUEST_FIELDS = {"secret_value", "token"}
 REDACTED_SECRET_INPUT = "[redacted]"
 
 

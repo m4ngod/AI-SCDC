@@ -59,6 +59,20 @@ def _upgrade_sqlite_repository_phase_7_columns(engine) -> None:
                     text(f"ALTER TABLE repository ADD COLUMN {column_name} {column_type}")
                 )
 
+        for column_name in (
+            "provider",
+            "github_owner",
+            "github_repo",
+            "github_credential_id",
+            "connection_status",
+        ):
+            connection.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_repository_{column_name} "
+                    f"ON repository ({column_name})"
+                )
+            )
+
 
 def _upgrade_sqlite_planner_run_metadata(engine) -> None:
     if engine.dialect.name != "sqlite":
@@ -228,7 +242,6 @@ def _sqlite_has_unique_index(connection, table_name: str, columns: tuple[str, ..
 
 
 def session_generator(engine) -> Generator[Session, None, None]:
-    init_db(engine)
     with Session(engine) as session:
         yield session
 
