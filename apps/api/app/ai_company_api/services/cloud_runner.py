@@ -79,7 +79,7 @@ def start_cloud_run(
     cloud_run.updated_at = utc_now()
     task.repo_id = repository.id
     task.branch_name = head_branch
-    task.worktree_ref = f"cloud_fake:{cloud_run.id}"
+    task.worktree_ref = f"cloud://fake/{cloud_run.id}"
     _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.ASSIGNED)
     _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.IN_PROGRESS)
 

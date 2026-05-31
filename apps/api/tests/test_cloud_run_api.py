@@ -79,6 +79,7 @@ def test_start_cloud_run_creates_patch_artifact_and_bridge_local_run(tmp_path: P
     assert local_run.patch_artifact_id == artifact.id
     assert cloud_run.patch_artifact_id == artifact.id
     assert persisted_task.status == TaskStatus.PATCH_READY
+    assert persisted_task.worktree_ref == f"cloud://fake/{cloud_run.id}"
 
 
 def test_cloud_run_rejects_cross_project_repository(tmp_path: Path) -> None:
