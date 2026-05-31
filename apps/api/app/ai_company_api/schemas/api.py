@@ -273,6 +273,27 @@ class PatchReviewResultRead(BaseModel):
     debug_attempt: DebugAttemptRead | None = None
 
 
+class PatchApprovalRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    local_run_id: str
+    patch_artifact_id: str
+    review_id: str
+    status: str
+    approved_by: str
+    merge_instructions: str
+    created_at: datetime
+
+
+class PatchApprovalResultRead(BaseModel):
+    task: TaskRead
+    patch_artifact: PatchArtifactRead
+    review: PatchReviewRead
+    approval: PatchApprovalRead
+
+
 class PlannerRunDecisionRead(BaseModel):
     planner_run_id: str
     approval_id: str

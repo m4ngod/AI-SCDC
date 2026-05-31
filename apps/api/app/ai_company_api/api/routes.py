@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 from sqlmodel import Session
 
 from ai_company_api.db.session import get_session_dependency
@@ -23,6 +23,8 @@ from ai_company_api.schemas.api import (
     PlannerRunDecisionRead,
     PlannerRunRead,
     PlannerRunReject,
+    PatchApprovalRead,
+    PatchApprovalResultRead,
     PatchArtifactRead,
     PatchReviewRead,
     PatchReviewResultRead,
@@ -41,6 +43,12 @@ from ai_company_api.services.local_runner import (
     get_patch_artifact,
     list_local_task_runs,
     start_local_task_run,
+)
+from ai_company_api.services.patch_approval import (
+    approve_patch_artifact,
+    get_patch_approval,
+    list_patch_approvals,
+    request_human_approval,
 )
 from ai_company_api.services.test_review_debug import (
     get_patch_review,
@@ -422,6 +430,50 @@ def get_patch_review_by_id(
     session: SessionDep,
 ) -> PatchReviewRead:
     return get_patch_review(session, review_id)
+
+
+@router.post(
+    "/patch-artifacts/{patch_artifact_id}/approvals",
+    response_model=PatchApprovalResultRead,
+)
+def post_patch_artifact_approval(
+    patch_artifact_id: str,
+    response: Response,
+    session: SessionDep,
+) -> PatchApprovalResultRead:
+    result, status_code = approve_patch_artifact(session, patch_artifact_id)
+    response.status_code = status_code
+    return result
+
+
+@router.get(
+    "/patch-artifacts/{patch_artifact_id}/approvals",
+    response_model=list[PatchApprovalRead],
+)
+def get_patch_artifact_approvals(
+    patch_artifact_id: str,
+    session: SessionDep,
+) -> list[PatchApprovalRead]:
+    return list_patch_approvals(session, patch_artifact_id)
+
+
+@router.get("/patch-approvals/{approval_id}", response_model=PatchApprovalRead)
+def get_patch_approval_by_id(
+    approval_id: str,
+    session: SessionDep,
+) -> PatchApprovalRead:
+    return get_patch_approval(session, approval_id)
+
+
+@router.post(
+    "/patch-approvals/{approval_id}/request-human-approval",
+    response_model=PatchApprovalResultRead,
+)
+def post_patch_approval_human_approval_request(
+    approval_id: str,
+    session: SessionDep,
+) -> PatchApprovalResultRead:
+    return request_human_approval(session, approval_id)
 
 
 @router.get("/test-runs/{test_run_id}", response_model=LocalTestRunRead)

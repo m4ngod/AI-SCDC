@@ -463,6 +463,31 @@ class PatchReview(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class PatchApproval(SQLModel, table=True):
+    __tablename__ = "patch_approval"
+    __table_args__ = (
+        UniqueConstraint(
+            "patch_artifact_id",
+            name="uq_patch_approval_patch_artifact_id",
+        ),
+    )
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("patch_approval"),
+        primary_key=True,
+    )
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    task_id: str = Field(index=True, foreign_key="task.id")
+    local_run_id: str = Field(index=True, foreign_key="local_task_run.id")
+    patch_artifact_id: str = Field(index=True, foreign_key="patch_artifact.id")
+    review_id: str = Field(index=True, foreign_key="patch_review.id")
+    status: str = Field(default="approved", index=True)
+    approved_by: str = "dev_user"
+    merge_instructions: str
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class DebugAttempt(SQLModel, table=True):
     __tablename__ = "debug_attempt"
 
