@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, and Phase 6 human patch approval and diff viewer workflow for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, and Phase 7 GitHub-only cloud-run and pull-request boundary for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
