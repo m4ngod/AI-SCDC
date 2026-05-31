@@ -148,6 +148,78 @@ function mergeReadyTaskFixture(): TaskCard {
   };
 }
 
+function cloudRunFixture() {
+  return {
+    id: "cloud_run_test",
+    workspace_id: "workspace_test",
+    project_id: "project_demo",
+    task_id: "task_cloud",
+    repo_id: "repo_github_test",
+    local_run_id: "cloud_run_test",
+    base_branch: "main",
+    head_branch: "ai-scdc/task-cloud",
+    status: "patch_ready",
+    sandbox_kind: "fake",
+    patch_artifact_id: "patch_cloud_test",
+    failure_reason: null,
+    created_at: "2026-05-29T00:00:00Z",
+    updated_at: "2026-05-29T00:00:00Z"
+  };
+}
+
+function cloudPatchArtifactFixture() {
+  return {
+    id: "patch_cloud_test",
+    task_id: "task_cloud",
+    local_run_id: "cloud_run_test",
+    summary: "Prepared cloud runner patch.",
+    files_changed: ["README.md"],
+    tests_run: [],
+    test_result: "not_run"
+  };
+}
+
+function humanApprovalTaskFixture(): TaskCard {
+  return {
+    ...mergeReadyTaskFixture(),
+    status: "HUMAN_APPROVAL",
+    cloud_run: cloudRunFixture(),
+    patch_artifact: {
+      ...mergeReadyTaskFixture().patch_artifact!,
+      id: "patch_cloud_test",
+      task_id: "task_patch_ready",
+      local_run_id: "cloud_run_test"
+    },
+    patch_approval: {
+      ...mergeReadyTaskFixture().patch_approval!,
+      id: "patch_approval_test",
+      patch_artifact_id: "patch_cloud_test",
+      local_run_id: "cloud_run_test"
+    }
+  };
+}
+
+function pullRequestFixture() {
+  return {
+    id: "pull_request_test",
+    workspace_id: "workspace_test",
+    project_id: "project_demo",
+    task_id: "task_patch_ready",
+    repo_id: "repo_github_test",
+    patch_artifact_id: "patch_cloud_test",
+    patch_approval_id: "patch_approval_test",
+    cloud_run_id: "cloud_run_test",
+    head_branch: "ai-scdc/task-cloud",
+    base_branch: "main",
+    github_pr_number: 1,
+    github_pr_url: "https://github.com/example/demo/pull/1",
+    url: "https://github.com/example/demo/pull/1",
+    status: "created",
+    created_by: "dev_user",
+    created_at: "2026-05-29T00:05:00Z"
+  };
+}
+
 function secondPatchReadyTaskFixture(): TaskCard {
   return {
     ...patchReadyTaskFixture(),
@@ -883,5 +955,112 @@ describe("App", () => {
 
     expect(requestHumanApproval).toHaveBeenCalledWith("patch_approval_test");
     expect(await within(board).findByText("HUMAN_APPROVAL")).toBeInTheDocument();
+  });
+
+  it("registers a github repository from the setup panel", async () => {
+    const user = userEvent.setup();
+    const createGitHubCredential =
+      vi.fn<ConsoleApiClient["createGitHubCredential"]>().mockResolvedValue({
+        id: "github_credential_test",
+        workspace_id: "workspace_test",
+        display_name: "Dev GitHub",
+        token_last4: "1234",
+        status: "active",
+        created_at: "2026-05-29T00:00:00Z",
+        updated_at: "2026-05-29T00:00:00Z"
+      });
+    const createGitHubRepository =
+      vi.fn<ConsoleApiClient["createGitHubRepository"]>().mockResolvedValue({
+        id: "repo_github_test",
+        name: "example/demo",
+        local_path: "",
+        default_branch: "main",
+        status: "active",
+        provider: "github",
+        repo_url: "https://github.com/example/demo",
+        github_owner: "example",
+        github_repo: "demo",
+        github_credential_id: "github_credential_test",
+        connection_status: "connected"
+      });
+    const apiClient = createMockApiClient({ createGitHubCredential, createGitHubRepository });
+
+    render(<App apiClient={apiClient} />);
+
+    await user.type(screen.getByLabelText("GitHub token"), "ghp_test_token_1234");
+    await user.click(screen.getByRole("button", { name: "Connect GitHub repo" }));
+
+    expect(createGitHubCredential).toHaveBeenCalledWith({
+      display_name: "Dev GitHub",
+      token: "ghp_test_token_1234"
+    });
+    expect(createGitHubRepository).toHaveBeenCalledWith({
+      name: "example/demo",
+      repo_url: "https://github.com/example/demo",
+      github_owner: "example",
+      github_repo: "demo",
+      default_branch: "main",
+      github_credential_id: "github_credential_test"
+    });
+    expect(await screen.findByText("GitHub repo connected")).toBeInTheDocument();
+  });
+
+  it("runs a cloud task and renders cloud branch metadata", async () => {
+    const user = userEvent.setup();
+    const task: TaskCard = {
+      ...taskCardFixture("Run cloud task"),
+      id: "task_cloud"
+    };
+    const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({
+      cloud_run: cloudRunFixture(),
+      patch_artifact: cloudPatchArtifactFixture()
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([task]),
+      startCloudRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run cloud" }));
+
+    expect(startCloudRun).toHaveBeenCalledWith("task_cloud");
+    expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
+    expect(within(board).getByText("ai-scdc/task-cloud")).toBeInTheDocument();
+  });
+
+  it("creates a pull request after human approval", async () => {
+    const user = userEvent.setup();
+    const humanApprovalTask = humanApprovalTaskFixture();
+    const createPullRequest = vi.fn<ConsoleApiClient["createPullRequest"]>().mockResolvedValue({
+      task: {
+        ...humanApprovalTask,
+        status: "PR_CREATED",
+        pull_request: undefined
+      },
+      patch_artifact: humanApprovalTask.patch_artifact!,
+      approval: humanApprovalTask.patch_approval!,
+      pull_request: pullRequestFixture()
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([humanApprovalTask]),
+      createPullRequest
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Create PR" }));
+
+    expect(createPullRequest).toHaveBeenCalledWith("patch_approval_test");
+    expect(await within(board).findByText("PR_CREATED")).toBeInTheDocument();
+    expect(
+      within(board).getByRole("link", {
+        name: "https://github.com/example/demo/pull/1"
+      })
+    ).toHaveAttribute("href", "https://github.com/example/demo/pull/1");
   });
 });

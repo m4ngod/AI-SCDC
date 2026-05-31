@@ -7,13 +7,17 @@ type TaskBoardProps = {
   reviewingTaskId?: string | null;
   approvingPatchTaskId?: string | null;
   requestingHumanApprovalTaskId?: string | null;
+  runningCloudTaskId?: string | null;
+  creatingPullRequestTaskId?: string | null;
   localRunErrors?: Record<string, string>;
   workflowErrors?: Record<string, string>;
   onStartLocalRun?: (taskId: string) => void;
+  onStartCloudRun?: (taskId: string) => void;
   onRunPatchTests?: (task: TaskCard) => void;
   onReviewPatch?: (task: TaskCard) => void;
   onApprovePatch?: (task: TaskCard) => void;
   onRequestHumanApproval?: (task: TaskCard) => void;
+  onCreatePullRequest?: (task: TaskCard) => void;
 };
 
 export function TaskBoard({
@@ -23,13 +27,17 @@ export function TaskBoard({
   reviewingTaskId = null,
   approvingPatchTaskId = null,
   requestingHumanApprovalTaskId = null,
+  runningCloudTaskId = null,
+  creatingPullRequestTaskId = null,
   localRunErrors = {},
   workflowErrors = {},
   onStartLocalRun,
+  onStartCloudRun,
   onRunPatchTests,
   onReviewPatch,
   onApprovePatch,
-  onRequestHumanApproval
+  onRequestHumanApproval,
+  onCreatePullRequest
 }: TaskBoardProps) {
   return (
     <section className="task-board" aria-label="Task board">
@@ -54,6 +62,16 @@ export function TaskBoard({
                   onClick={() => onStartLocalRun(task.id)}
                 >
                   {runningTaskId === task.id ? "Running" : "Run local"}
+                </button>
+              ) : null}
+              {onStartCloudRun && task.status === "CREATED" ? (
+                <button
+                  type="button"
+                  className="task-run-button"
+                  disabled={runningCloudTaskId !== null}
+                  onClick={() => onStartCloudRun(task.id)}
+                >
+                  {runningCloudTaskId === task.id ? "Running cloud" : "Run cloud"}
                 </button>
               ) : null}
               {onRunPatchTests && task.status === "PATCH_READY" && task.patch_artifact ? (
@@ -98,8 +116,23 @@ export function TaskBoard({
                     : "Request human approval"}
                 </button>
               ) : null}
+              {onCreatePullRequest && task.status === "HUMAN_APPROVAL" && task.patch_approval ? (
+                <button
+                  type="button"
+                  className="task-run-button"
+                  disabled={creatingPullRequestTaskId !== null}
+                  onClick={() => onCreatePullRequest(task)}
+                >
+                  {creatingPullRequestTaskId === task.id ? "Creating PR" : "Create PR"}
+                </button>
+              ) : null}
             </div>
-            {task.patch_artifact || task.test_run || task.patch_review || task.debug_attempt ? (
+            {task.patch_artifact ||
+            task.test_run ||
+            task.patch_review ||
+            task.debug_attempt ||
+            task.cloud_run ||
+            task.pull_request ? (
               <dl className="task-patch-meta">
                 {task.patch_artifact ? (
                   <>
@@ -112,6 +145,24 @@ export function TaskBoard({
                       <dd>{task.patch_artifact.test_result}</dd>
                     </div>
                   </>
+                ) : null}
+                {task.cloud_run ? (
+                  <div>
+                    <dt>Cloud run</dt>
+                    <dd>
+                      {task.cloud_run.status} on <span>{task.cloud_run.head_branch}</span>
+                    </dd>
+                  </div>
+                ) : null}
+                {task.pull_request ? (
+                  <div>
+                    <dt>Pull request</dt>
+                    <dd>
+                      <a href={task.pull_request.github_pr_url ?? task.pull_request.url}>
+                        {task.pull_request.github_pr_url ?? task.pull_request.url}
+                      </a>
+                    </dd>
+                  </div>
                 ) : null}
                 {task.patch_approval ? (
                   <div>

@@ -16,6 +16,7 @@ body {
 }
 
 button,
+input,
 textarea {
   font: inherit;
 }
@@ -398,6 +399,67 @@ dd {
 .context-error p {
   color: #9d2d20;
   font-weight: 700;
+}
+
+.github-setup-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.github-setup-form label {
+  display: grid;
+  gap: 4px;
+  color: #344047;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.github-setup-form input {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid #b9c3c9;
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: #172026;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.github-setup-form input:focus {
+  border-color: #2f6f86;
+  outline: 2px solid #c7dde5;
+}
+
+.github-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.github-setup-form button {
+  justify-self: start;
+  min-height: 30px;
+  border: 1px solid #24586a;
+  border-radius: 6px;
+  padding: 0 10px;
+  color: #ffffff;
+  background: #2f6f86;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.github-setup-form p {
+  margin: 0;
+  color: #2f6f86;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.github-setup-form .github-setup-error {
+  color: #9d2d20;
 }
 
 .planner-draft-panel {

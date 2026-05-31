@@ -52,6 +52,99 @@ export const demoTasks: TaskCard[] = [
     }
   },
   {
+    id: "task_human_approval",
+    title: "Review cloud patch for PR",
+    status: "HUMAN_APPROVAL",
+    role_required: "frontend",
+    assigned_agent: "Cloud Runner",
+    updated_at: "2026-05-29T00:05:00Z",
+    branch_name: "ai-scdc/task-human-approval",
+    patch_artifact: {
+      id: "patch_human_approval",
+      task_id: "task_human_approval",
+      local_run_id: "cloud_run_human_approval",
+      summary: "Prepared cloud runner patch.",
+      files_changed: ["apps/desktop/src/App.tsx"],
+      tests_run: ["pnpm --filter @ai-scdc/desktop test"],
+      test_result: "passed",
+      diff_text: "diff --git a/apps/desktop/src/App.tsx b/apps/desktop/src/App.tsx\n+Cloud PR flow"
+    },
+    cloud_run: {
+      id: "cloud_run_human_approval",
+      task_id: "task_human_approval",
+      repo_id: "repo_github_demo",
+      local_run_id: "cloud_run_human_approval",
+      base_branch: "main",
+      head_branch: "ai-scdc/task-human-approval",
+      status: "patch_ready",
+      sandbox_kind: "fake",
+      patch_artifact_id: "patch_human_approval",
+      failure_reason: null,
+      created_at: "2026-05-29T00:05:00Z",
+      updated_at: "2026-05-29T00:05:00Z"
+    },
+    patch_approval: {
+      id: "patch_approval_human_approval",
+      task_id: "task_human_approval",
+      local_run_id: "cloud_run_human_approval",
+      patch_artifact_id: "patch_human_approval",
+      review_id: "review_human_approval",
+      status: "approved",
+      approved_by: "dev_user",
+      merge_instructions:
+        "Inspect the pull request before merging. This workflow does not run git merge.",
+      created_at: "2026-05-29T00:05:00Z"
+    }
+  },
+  {
+    id: "task_pr_created",
+    title: "Open desktop shell pull request",
+    status: "PR_CREATED",
+    role_required: "frontend",
+    assigned_agent: "Release Manager",
+    updated_at: "2026-05-29T00:06:00Z",
+    branch_name: "ai-scdc/task-pr-created",
+    patch_artifact: {
+      id: "patch_pr_created",
+      task_id: "task_pr_created",
+      local_run_id: "cloud_run_pr_created",
+      summary: "Prepared pull request patch.",
+      files_changed: ["apps/desktop/src/components/TaskBoard.tsx"],
+      tests_run: ["pnpm --filter @ai-scdc/desktop test"],
+      test_result: "passed"
+    },
+    cloud_run: {
+      id: "cloud_run_pr_created",
+      task_id: "task_pr_created",
+      repo_id: "repo_github_demo",
+      local_run_id: "cloud_run_pr_created",
+      base_branch: "main",
+      head_branch: "ai-scdc/task-pr-created",
+      status: "patch_ready",
+      sandbox_kind: "fake",
+      patch_artifact_id: "patch_pr_created",
+      failure_reason: null,
+      created_at: "2026-05-29T00:06:00Z",
+      updated_at: "2026-05-29T00:06:00Z"
+    },
+    pull_request: {
+      id: "pull_request_demo",
+      task_id: "task_pr_created",
+      repo_id: "repo_github_demo",
+      patch_artifact_id: "patch_pr_created",
+      patch_approval_id: "patch_approval_pr_created",
+      cloud_run_id: "cloud_run_pr_created",
+      head_branch: "ai-scdc/task-pr-created",
+      base_branch: "main",
+      github_pr_number: 1,
+      github_pr_url: "https://github.com/example/demo/pull/1",
+      url: "https://github.com/example/demo/pull/1",
+      status: "created",
+      created_by: "dev_user",
+      created_at: "2026-05-29T00:06:00Z"
+    }
+  },
+  {
     id: "task_state_machine",
     title: "Add task state machine",
     status: "REVIEWING",

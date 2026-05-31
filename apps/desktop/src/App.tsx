@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import type { ConsoleApiClient, PlannerRunDraft, TaskCard } from "./api/client";
 import { createConfiguredApiClient } from "./api/client";
 import { GoalInput } from "./components/GoalInput";
@@ -9,6 +9,14 @@ import "./styles/app.css";
 
 type AppProps = {
   apiClient?: ConsoleApiClient;
+};
+
+type GitHubSetupInput = {
+  token: string;
+  repo_url: string;
+  github_owner: string;
+  github_repo: string;
+  default_branch: string;
 };
 
 const defaultApiClient = createConfiguredApiClient();
@@ -43,6 +51,17 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const [approvingPatchTaskId, setApprovingPatchTaskId] = useState<string | null>(null);
   const [requestingHumanApprovalTaskId, setRequestingHumanApprovalTaskId] =
     useState<string | null>(null);
+  const [githubSetupInput, setGithubSetupInput] = useState<GitHubSetupInput>({
+    token: "",
+    repo_url: "https://github.com/example/demo",
+    github_owner: "example",
+    github_repo: "demo",
+    default_branch: "main"
+  });
+  const [githubSetupStatus, setGithubSetupStatus] = useState<string | null>(null);
+  const [githubSetupError, setGithubSetupError] = useState<string | null>(null);
+  const [runningCloudTaskId, setRunningCloudTaskId] = useState<string | null>(null);
+  const [creatingPullRequestTaskId, setCreatingPullRequestTaskId] = useState<string | null>(null);
   const [localRunErrors, setLocalRunErrors] = useState<Record<string, string>>({});
   const [workflowErrors, setWorkflowErrors] = useState<Record<string, string>>({});
   const plannerRunRef = useRef<PlannerRunDraft | null>(null);
@@ -164,6 +183,70 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       }));
     } finally {
       setRunningTaskId(null);
+    }
+  }
+
+  async function handleConnectGitHubRepo(input: GitHubSetupInput) {
+    try {
+      setGithubSetupStatus(null);
+      setGithubSetupError(null);
+      const credential = await apiClient.createGitHubCredential({
+        display_name: "Dev GitHub",
+        token: input.token
+      });
+      await apiClient.createGitHubRepository({
+        name: `${input.github_owner}/${input.github_repo}`,
+        repo_url: input.repo_url,
+        github_owner: input.github_owner,
+        github_repo: input.github_repo,
+        default_branch: input.default_branch,
+        github_credential_id: credential.id
+      });
+      setGithubSetupStatus("GitHub repo connected");
+    } catch (error) {
+      setGithubSetupError(errorMessage(error, "Failed to connect GitHub repo"));
+    }
+  }
+
+  async function handleSubmitGitHubSetup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await handleConnectGitHubRepo(githubSetupInput);
+  }
+
+  async function handleStartCloudRun(taskId: string) {
+    if (runningCloudTaskId) {
+      return;
+    }
+
+    setRunningCloudTaskId(taskId);
+    setWorkflowErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[taskId];
+      return nextErrors;
+    });
+    try {
+      const result = await apiClient.startCloudRun(taskId);
+      setTasks((currentTasks) =>
+        currentTasks.map((task) =>
+          task.id === taskId
+            ? {
+                ...task,
+                status: result.patch_artifact ? "PATCH_READY" : task.status,
+                repo_id: result.cloud_run.repo_id,
+                branch_name: result.cloud_run.head_branch,
+                patch_artifact: result.patch_artifact,
+                cloud_run: result.cloud_run
+              }
+            : task
+        )
+      );
+    } catch (error) {
+      setWorkflowErrors((currentErrors) => ({
+        ...currentErrors,
+        [taskId]: errorMessage(error, "Failed to start cloud run")
+      }));
+    } finally {
+      setRunningCloudTaskId(null);
     }
   }
 
@@ -308,8 +391,123 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     }
   }
 
+  async function handleCreatePullRequest(task: TaskCard) {
+    if (creatingPullRequestTaskId || !task.patch_approval) {
+      return;
+    }
+
+    setCreatingPullRequestTaskId(task.id);
+    setWorkflowErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[task.id];
+      return nextErrors;
+    });
+    try {
+      const result = await apiClient.createPullRequest(task.patch_approval.id);
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === task.id
+            ? {
+                ...mergeWorkflowTask(currentTask, result.task),
+                patch_artifact: result.patch_artifact ?? currentTask.patch_artifact,
+                patch_approval: result.approval ?? currentTask.patch_approval,
+                cloud_run: currentTask.cloud_run,
+                pull_request: result.pull_request
+              }
+            : currentTask
+        )
+      );
+    } catch (error) {
+      setWorkflowErrors((currentErrors) => ({
+        ...currentErrors,
+        [task.id]: errorMessage(error, "Failed to create pull request")
+      }));
+    } finally {
+      setCreatingPullRequestTaskId(null);
+    }
+  }
+
   const contextPanel = (
     <>
+      <section className="context-section">
+        <h2>GitHub setup</h2>
+        <form className="github-setup-form" onSubmit={handleSubmitGitHubSetup}>
+          <label>
+            <span>GitHub token</span>
+            <input
+              type="password"
+              value={githubSetupInput.token}
+              onChange={(event) =>
+                setGithubSetupInput((currentInput) => ({
+                  ...currentInput,
+                  token: event.target.value
+                }))
+              }
+            />
+          </label>
+          <label>
+            <span>Repository URL</span>
+            <input
+              type="url"
+              value={githubSetupInput.repo_url}
+              onChange={(event) =>
+                setGithubSetupInput((currentInput) => ({
+                  ...currentInput,
+                  repo_url: event.target.value
+                }))
+              }
+            />
+          </label>
+          <div className="github-setup-grid">
+            <label>
+              <span>Owner</span>
+              <input
+                type="text"
+                value={githubSetupInput.github_owner}
+                onChange={(event) =>
+                  setGithubSetupInput((currentInput) => ({
+                    ...currentInput,
+                    github_owner: event.target.value
+                  }))
+                }
+              />
+            </label>
+            <label>
+              <span>Repository</span>
+              <input
+                type="text"
+                value={githubSetupInput.github_repo}
+                onChange={(event) =>
+                  setGithubSetupInput((currentInput) => ({
+                    ...currentInput,
+                    github_repo: event.target.value
+                  }))
+                }
+              />
+            </label>
+          </div>
+          <label>
+            <span>Default branch</span>
+            <input
+              type="text"
+              value={githubSetupInput.default_branch}
+              onChange={(event) =>
+                setGithubSetupInput((currentInput) => ({
+                  ...currentInput,
+                  default_branch: event.target.value
+                }))
+              }
+            />
+          </label>
+          <button type="submit">Connect GitHub repo</button>
+          {githubSetupStatus ? <p>{githubSetupStatus}</p> : null}
+          {githubSetupError ? (
+            <p className="github-setup-error" role="alert">
+              {githubSetupError}
+            </p>
+          ) : null}
+        </form>
+      </section>
       <section className="context-section">
         <h2>Agent status</h2>
         <dl>
@@ -330,13 +528,17 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         reviewingTaskId={reviewingTaskId}
         approvingPatchTaskId={approvingPatchTaskId}
         requestingHumanApprovalTaskId={requestingHumanApprovalTaskId}
+        runningCloudTaskId={runningCloudTaskId}
+        creatingPullRequestTaskId={creatingPullRequestTaskId}
         localRunErrors={localRunErrors}
         workflowErrors={workflowErrors}
         onStartLocalRun={handleStartLocalRun}
+        onStartCloudRun={handleStartCloudRun}
         onRunPatchTests={handleRunPatchTests}
         onReviewPatch={handleReviewPatch}
         onApprovePatch={handleApprovePatch}
         onRequestHumanApproval={handleRequestHumanApproval}
+        onCreatePullRequest={handleCreatePullRequest}
       />
       {taskLoadError ? (
         <section className="context-section context-error" role="alert">
