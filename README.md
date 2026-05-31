@@ -366,17 +366,61 @@ $repository = Invoke-RestMethod `
     default_branch = "main"
     github_credential_id = $credential.id
   })
-```
 
-Continue by creating a task, starting a cloud run, running tests, reviewing, approving, requesting human approval, then:
+$task = Invoke-RestMethod `
+  -Uri "$base/projects/$($project.id)/tasks" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (JsonBody @{
+    title = "Update cloud smoke file"
+    description = "Create a fake cloud sandbox patch for Phase 7 smoke testing."
+    role_required = "backend"
+    acceptance_criteria = @("Fake cloud patch is produced and reviewed.")
+    allowed_paths = @("AI_SCDC_CLOUD_RUN.md")
+    required_tests = @("cloud fake test")
+    repo_id = $repository.id
+    branch_name = $repository.default_branch
+  })
 
-```powershell
+$cloudRun = Invoke-RestMethod `
+  -Uri "$base/tasks/$($task.id)/cloud-runs" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (JsonBody @{ repo_id = $repository.id })
+
+$artifact = $cloudRun.patch_artifact
+
+$testRun = Invoke-RestMethod `
+  -Uri "$base/patch-artifacts/$($artifact.id)/test-runs" `
+  -Method Post
+
+$review = Invoke-RestMethod `
+  -Uri "$base/patch-artifacts/$($artifact.id)/reviews" `
+  -Method Post
+
+$approval = Invoke-RestMethod `
+  -Uri "$base/patch-artifacts/$($artifact.id)/approvals" `
+  -Method Post
+
+$humanApproval = Invoke-RestMethod `
+  -Uri "$base/patch-approvals/$($approval.approval.id)/request-human-approval" `
+  -Method Post
+
 $pr = Invoke-RestMethod `
   -Uri "$base/patch-approvals/$($approval.approval.id)/pull-requests" `
   -Method Post
 
-$pr.task.status
-$pr.pull_request.github_pr_url
+[ordered]@{
+  cloud_run_status = $cloudRun.cloud_run.status
+  test_status = $testRun.test_run.status
+  review_verdict = $review.review.verdict
+  approved_status = $approval.task.status
+  human_approval_status = $humanApproval.task.status
+  pr_status = $pr.task.status
+  pr_url = $pr.pull_request.github_pr_url
+}
+
+Remove-Variable githubToken, secureToken -ErrorAction SilentlyContinue
 ```
 
 Expected task status:
@@ -387,9 +431,10 @@ PR_CREATED
 
 Do not commit GitHub PATs or paste them into chat. The API returns only credential metadata.
 
-Focused verification commands used for Phase 6 and its Phase 5 prerequisite workflow:
+Focused verification commands used for Phase 7 and its Phase 6/Phase 5 prerequisite workflow:
 
 ```bash
+pytest apps/api/tests/test_github_repository_api.py apps/api/tests/test_cloud_run_api.py apps/api/tests/test_pull_request_api.py -v
 pytest apps/worker/tests/test_test_runner.py -v
 pytest apps/api/tests/test_test_review_debug_api.py -v
 pytest apps/api/tests/test_patch_approval_api.py -v

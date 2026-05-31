@@ -106,5 +106,6 @@ Completed:
 
 Future:
 
-1. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
-2. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.
+1. Real cloud sandbox workers, GitLab support, and broader pull-request lifecycle automation beyond GitHub-only PR creation.
+2. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
+3. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.
