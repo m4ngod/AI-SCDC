@@ -137,7 +137,7 @@ describe("desktop API clients", () => {
   });
 
   it("fake client creates GitHub credentials and repositories", async () => {
-    const credential = await fakeApiClient.createGitHubCredential!({
+    const credential = await fakeApiClient.createGitHubCredential({
       display_name: "Example GitHub",
       token: "ghp_example1234567890"
     });
@@ -149,7 +149,7 @@ describe("desktop API clients", () => {
       status: "active"
     });
 
-    const repository = await fakeApiClient.createGitHubRepository!({
+    const repository = await fakeApiClient.createGitHubRepository({
       project_id: "project_demo",
       github_credential_id: credential.id,
       repo_url: "https://github.com/example/demo",
@@ -168,7 +168,7 @@ describe("desktop API clients", () => {
   });
 
   it("fake client runs cloud workflow and creates pull requests", async () => {
-    const cloud = await fakeApiClient.startCloudRun!("task_demo_created");
+    const cloud = await fakeApiClient.startCloudRun("task_demo_created");
 
     expect(cloud).toMatchObject({
       cloud_run: {
@@ -185,7 +185,7 @@ describe("desktop API clients", () => {
 
     const approval = await fakeApiClient.approvePatch(cloud.patch_artifact!.id);
     const human = await fakeApiClient.requestHumanApproval(approval.approval.id);
-    const pullRequest = await fakeApiClient.createPullRequest!(human.approval.id);
+    const pullRequest = await fakeApiClient.createPullRequest(human.approval.id);
 
     expect(pullRequest).toMatchObject({
       task: {
@@ -572,11 +572,11 @@ describe("desktop API clients", () => {
       baseUrl: "http://127.0.0.1:8000/",
       projectId: "project_demo"
     });
-    const credential = await client.createGitHubCredential!({
+    const credential = await client.createGitHubCredential({
       display_name: "Example GitHub",
       token: "ghp_example1234567890"
     });
-    const repository = await client.createGitHubRepository!({
+    const repository = await client.createGitHubRepository({
       project_id: "project_demo",
       github_credential_id: credential.id,
       repo_url: "https://github.com/example/demo",
@@ -699,8 +699,8 @@ describe("desktop API clients", () => {
       baseUrl: "http://127.0.0.1:8000/",
       projectId: "project_demo"
     });
-    const cloud = await client.startCloudRun!("task_api");
-    const pullRequest = await client.createPullRequest!("patch_approval_api");
+    const cloud = await client.startCloudRun("task_api");
+    const pullRequest = await client.createPullRequest("patch_approval_api");
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,

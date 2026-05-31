@@ -178,6 +178,80 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
       status: "REJECTED",
       created_tasks: []
     }),
+    createGitHubCredential: vi.fn().mockResolvedValue({
+      id: "github_credential_test",
+      workspace_id: "workspace_test",
+      display_name: "Example GitHub",
+      token_last4: "7890",
+      status: "active",
+      created_at: "2026-05-29T00:00:00Z",
+      updated_at: "2026-05-29T00:00:00Z"
+    }),
+    listGitHubCredentials: vi.fn().mockResolvedValue([]),
+    createGitHubRepository: vi.fn().mockResolvedValue({
+      id: "repo_github_test",
+      name: "example/demo",
+      local_path: "",
+      default_branch: "main",
+      status: "active",
+      provider: "github",
+      repo_url: "https://github.com/example/demo",
+      github_owner: "example",
+      github_repo: "demo",
+      github_credential_id: "github_credential_test",
+      connection_status: "connected"
+    }),
+    startCloudRun: vi.fn().mockResolvedValue({
+      cloud_run: {
+        id: "cloud_run_test",
+        workspace_id: "workspace_test",
+        project_id: "project_demo",
+        task_id: "task_created_from_planner",
+        repo_id: "repo_github_test",
+        local_run_id: "cloud_run_test",
+        base_branch: "main",
+        head_branch: "codex/task-created-from-planner",
+        status: "patch_ready",
+        sandbox_kind: "fake",
+        patch_artifact_id: "patch_cloud_test",
+        failure_reason: null,
+        created_at: "2026-05-29T00:00:00Z",
+        updated_at: "2026-05-29T00:00:00Z"
+      },
+      patch_artifact: {
+        id: "patch_cloud_test",
+        task_id: "task_created_from_planner",
+        local_run_id: "cloud_run_test",
+        summary: "Prepared cloud runner patch.",
+        files_changed: ["README.md"],
+        tests_run: [],
+        test_result: "not_run"
+      }
+    }),
+    createPullRequest: vi.fn().mockResolvedValue({
+      task: {
+        ...mergeReadyTaskFixture(),
+        status: "PR_CREATED"
+      },
+      pull_request: {
+        id: "pull_request_test",
+        workspace_id: "workspace_test",
+        project_id: "project_demo",
+        task_id: "task_patch_ready",
+        repo_id: "repo_github_test",
+        patch_artifact_id: "patch_test",
+        patch_approval_id: "patch_approval_test",
+        cloud_run_id: "cloud_run_test",
+        head_branch: "codex/task-patch-ready",
+        base_branch: "main",
+        github_pr_number: 1,
+        github_pr_url: "https://github.com/example/demo/pull/1",
+        url: "https://github.com/example/demo/pull/1",
+        status: "created",
+        created_by: "dev_user",
+        created_at: "2026-05-29T00:05:00Z"
+      }
+    }),
     startLocalRun: vi.fn().mockResolvedValue({
       local_run: {
         id: "local_run_test",
