@@ -295,6 +295,7 @@ def test_real_adapter_keeps_token_out_of_git_argv_and_sets_commit_identity(
     assert token not in " ".join(all_argv)
     assert clone_call["args"][2] == repo_url
     assert clone_call["env"]["AI_SCDC_GIT_TOKEN"] == token
+    assert "'credential.helper='" in clone_call["env"]["GIT_CONFIG_PARAMETERS"]
     assert clone_call["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert "GIT_ASKPASS" in clone_call["env"]
     assert "-c" in commit_call["args"]

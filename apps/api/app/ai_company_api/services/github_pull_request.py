@@ -605,10 +605,23 @@ def _git_auth_env(askpass_path: Path, token: str) -> dict[str, str]:
         {
             "AI_SCDC_GIT_TOKEN": token,
             "GIT_ASKPASS": str(askpass_path),
+            "GIT_CONFIG_PARAMETERS": _git_config_parameters_without_credential_helper(
+                env.get("GIT_CONFIG_PARAMETERS")
+            ),
             "GIT_TERMINAL_PROMPT": "0",
         }
     )
     return env
+
+
+def _git_config_parameters_without_credential_helper(existing: str | None) -> str:
+    disable_credential_helper = "'credential.helper='"
+    existing_parameters = (existing or "").strip()
+    if not existing_parameters:
+        return disable_credential_helper
+    if disable_credential_helper in existing_parameters:
+        return existing_parameters
+    return f"{existing_parameters} {disable_credential_helper}"
 
 
 def _mark_pull_request_failed(session: Session, record_id: str) -> None:
