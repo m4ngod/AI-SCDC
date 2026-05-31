@@ -28,6 +28,7 @@ _DOCKER_CLI_ENV_DENYLIST = {
     "PATH",
     "PATHEXT",
 }
+_DEFAULT_DOCKER_IMAGE = "python:3.11-bookworm"
 
 
 @dataclass(frozen=True)
@@ -175,6 +176,9 @@ class DockerLocalSandboxExecutor:
         env_args: list[str] = []
         for name in _safe_container_env_names(request.env):
             env_args.extend(["-e", name])
+        docker_image = _validated_docker_image(request.docker_image)
+        if docker_image is None:
+            raise DockerSandboxError("invalid_docker_image")
 
         return [
             "docker",
@@ -188,7 +192,7 @@ class DockerLocalSandboxExecutor:
             "-w",
             "/workspace/repo",
             *env_args,
-            request.docker_image or "python:3.11-bookworm",
+            docker_image,
             "sh",
             "-lc",
             command,
@@ -200,6 +204,15 @@ class DockerLocalSandboxExecutor:
         secrets = list(request.env.values())
         runner = RedactingProcessRunner(self._process_runner, secrets)
         docker_cli_env = _docker_cli_env(request.env)
+        docker_image = _validated_docker_image(request.docker_image)
+        if docker_image is None:
+            return _failed_result(
+                "invalid_docker_image",
+                "docker_local",
+                command_results,
+                test_results,
+            )
+        request = replace(request, docker_image=docker_image)
 
         self._workspace_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
@@ -377,6 +390,15 @@ def _safe_container_env_names(container_env: dict[str, str]) -> list[str]:
 def _is_safe_sandbox_env_name(name: str) -> bool:
     normalized = name.upper()
     return normalized not in _DOCKER_CLI_ENV_DENYLIST
+
+
+def _validated_docker_image(image: str | None) -> str | None:
+    if image is None:
+        return _DEFAULT_DOCKER_IMAGE
+    candidate = image.strip()
+    if candidate == "" or candidate.startswith("-"):
+        return None
+    return candidate
 
 
 def _shell_quote(value: str) -> str:

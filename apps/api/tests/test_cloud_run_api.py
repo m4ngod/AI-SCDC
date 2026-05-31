@@ -390,6 +390,163 @@ def test_init_db_allows_cloud_test_run_without_patch_artifact(
     assert columns["patch_artifact_id"]["notnull"] == 0
 
 
+def test_init_db_preserves_local_test_run_foreign_keys_when_patch_artifact_nullable(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "legacy-local-test-run-fks.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text("PRAGMA foreign_keys=OFF"))
+        connection.execute(
+            text(
+                """
+                create table local_test_run (
+                    id varchar not null primary key,
+                    workspace_id varchar not null,
+                    project_id varchar not null references project(id),
+                    task_id varchar not null references task(id),
+                    local_run_id varchar not null references local_task_run(id),
+                    patch_artifact_id varchar not null references patch_artifact(id),
+                    status varchar not null,
+                    commands json not null,
+                    command_results json not null,
+                    failure_reason varchar,
+                    started_at datetime not null,
+                    completed_at datetime,
+                    created_at datetime not null
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                create table patch_review (
+                    id varchar not null primary key,
+                    workspace_id varchar not null,
+                    project_id varchar not null references project(id),
+                    task_id varchar not null references task(id),
+                    local_run_id varchar not null references local_task_run(id),
+                    patch_artifact_id varchar not null references patch_artifact(id),
+                    test_run_id varchar references local_test_run(id),
+                    reviewer_kind varchar not null,
+                    verdict varchar not null,
+                    issues json not null,
+                    required_changes json not null,
+                    created_at datetime not null
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                insert into local_test_run (
+                    id,
+                    workspace_id,
+                    project_id,
+                    task_id,
+                    local_run_id,
+                    patch_artifact_id,
+                    status,
+                    commands,
+                    command_results,
+                    started_at,
+                    created_at
+                )
+                values (
+                    'test_run_legacy',
+                    'dev_workspace',
+                    'project_one',
+                    'task_one',
+                    'local_run_one',
+                    'patch_one',
+                    'passed',
+                    '["python -V"]',
+                    '[]',
+                    '2026-05-31 00:00:00',
+                    '2026-05-31 00:00:00'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                insert into patch_review (
+                    id,
+                    workspace_id,
+                    project_id,
+                    task_id,
+                    local_run_id,
+                    patch_artifact_id,
+                    test_run_id,
+                    reviewer_kind,
+                    verdict,
+                    issues,
+                    required_changes,
+                    created_at
+                )
+                values (
+                    'review_legacy',
+                    'dev_workspace',
+                    'project_one',
+                    'task_one',
+                    'local_run_one',
+                    'patch_one',
+                    'test_run_legacy',
+                    'deterministic',
+                    'approved',
+                    '[]',
+                    '[]',
+                    '2026-05-31 00:00:01'
+                )
+                """
+            )
+        )
+
+    init_db(engine)
+
+    with engine.begin() as connection:
+        local_test_run_fks = {
+            (row["from"], row["table"], row["to"])
+            for row in connection.execute(
+                text("PRAGMA foreign_key_list(local_test_run)")
+            ).mappings()
+        }
+        patch_review_fks = {
+            (row["from"], row["table"], row["to"])
+            for row in connection.execute(
+                text("PRAGMA foreign_key_list(patch_review)")
+            ).mappings()
+        }
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        local_test_run_id = connection.execute(
+            text("SELECT id FROM local_test_run WHERE id='test_run_legacy'")
+        ).scalar_one()
+        patch_review_test_run_id = connection.execute(
+            text("SELECT test_run_id FROM patch_review WHERE id='review_legacy'")
+        ).scalar_one()
+
+    assert ("project_id", "project", "id") in local_test_run_fks
+    assert ("task_id", "task", "id") in local_test_run_fks
+    assert ("local_run_id", "local_task_run", "id") in local_test_run_fks
+    assert ("patch_artifact_id", "patch_artifact", "id") in local_test_run_fks
+    assert ("test_run_id", "local_test_run", "id") in patch_review_fks
+    assert "local_test_run_notnull_legacy" not in tables
+    assert local_test_run_id == "test_run_legacy"
+    assert patch_review_test_run_id == "test_run_legacy"
+    assert all(
+        table != "local_test_run_notnull_legacy"
+        for _from, table, _to in local_test_run_fks | patch_review_fks
+    )
+
+
 def test_list_and_get_cloud_run_routes_return_created_run(tmp_path: Path) -> None:
     database_path = tmp_path / "app.db"
     client = build_client(database_path)

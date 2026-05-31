@@ -139,67 +139,83 @@ def _upgrade_sqlite_local_test_run_nullable_patch_artifact(engine) -> None:
         if patch_artifact_column is None or patch_artifact_column["notnull"] == 0:
             return
 
-        connection.execute(
-            text("ALTER TABLE local_test_run RENAME TO local_test_run_notnull_legacy")
-        )
-        connection.execute(
-            text(
-                """
-                CREATE TABLE local_test_run (
-                    id VARCHAR NOT NULL PRIMARY KEY,
-                    workspace_id VARCHAR NOT NULL,
-                    project_id VARCHAR NOT NULL,
-                    task_id VARCHAR NOT NULL,
-                    local_run_id VARCHAR NOT NULL,
-                    patch_artifact_id VARCHAR,
-                    status VARCHAR NOT NULL,
-                    commands JSON NOT NULL,
-                    command_results JSON NOT NULL,
-                    failure_reason VARCHAR,
-                    started_at DATETIME NOT NULL,
-                    completed_at DATETIME,
-                    created_at DATETIME NOT NULL
+        legacy_alter_table = connection.execute(
+            text("PRAGMA legacy_alter_table")
+        ).scalar()
+        connection.execute(text("PRAGMA legacy_alter_table=ON"))
+        try:
+            connection.execute(
+                text(
+                    "ALTER TABLE local_test_run "
+                    "RENAME TO local_test_run_notnull_legacy"
                 )
-                """
             )
-        )
-        connection.execute(
-            text(
-                """
-                INSERT INTO local_test_run (
-                    id,
-                    workspace_id,
-                    project_id,
-                    task_id,
-                    local_run_id,
-                    patch_artifact_id,
-                    status,
-                    commands,
-                    command_results,
-                    failure_reason,
-                    started_at,
-                    completed_at,
-                    created_at
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE local_test_run (
+                        id VARCHAR NOT NULL PRIMARY KEY,
+                        workspace_id VARCHAR NOT NULL,
+                        project_id VARCHAR NOT NULL,
+                        task_id VARCHAR NOT NULL,
+                        local_run_id VARCHAR NOT NULL,
+                        patch_artifact_id VARCHAR,
+                        status VARCHAR NOT NULL,
+                        commands JSON NOT NULL,
+                        command_results JSON NOT NULL,
+                        failure_reason VARCHAR,
+                        started_at DATETIME NOT NULL,
+                        completed_at DATETIME,
+                        created_at DATETIME NOT NULL,
+                        FOREIGN KEY(project_id) REFERENCES project (id),
+                        FOREIGN KEY(task_id) REFERENCES task (id),
+                        FOREIGN KEY(local_run_id) REFERENCES local_task_run (id),
+                        FOREIGN KEY(patch_artifact_id) REFERENCES patch_artifact (id)
+                    )
+                    """
                 )
-                SELECT
-                    id,
-                    workspace_id,
-                    project_id,
-                    task_id,
-                    local_run_id,
-                    patch_artifact_id,
-                    status,
-                    commands,
-                    command_results,
-                    failure_reason,
-                    started_at,
-                    completed_at,
-                    created_at
-                FROM local_test_run_notnull_legacy
-                """
             )
-        )
-        connection.execute(text("DROP TABLE local_test_run_notnull_legacy"))
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO local_test_run (
+                        id,
+                        workspace_id,
+                        project_id,
+                        task_id,
+                        local_run_id,
+                        patch_artifact_id,
+                        status,
+                        commands,
+                        command_results,
+                        failure_reason,
+                        started_at,
+                        completed_at,
+                        created_at
+                    )
+                    SELECT
+                        id,
+                        workspace_id,
+                        project_id,
+                        task_id,
+                        local_run_id,
+                        patch_artifact_id,
+                        status,
+                        commands,
+                        command_results,
+                        failure_reason,
+                        started_at,
+                        completed_at,
+                        created_at
+                    FROM local_test_run_notnull_legacy
+                    """
+                )
+            )
+            connection.execute(text("DROP TABLE local_test_run_notnull_legacy"))
+        finally:
+            connection.execute(
+                text(f"PRAGMA legacy_alter_table={int(legacy_alter_table or 0)}")
+            )
 
         for column_name in (
             "workspace_id",

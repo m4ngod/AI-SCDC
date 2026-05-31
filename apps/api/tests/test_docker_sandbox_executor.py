@@ -175,6 +175,38 @@ def test_docker_run_args_do_not_mount_host_home_or_docker_socket(
     assert "-v" in args
 
 
+def test_docker_executor_rejects_option_like_docker_image(tmp_path: Path) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        docker_image="--volume=/var/run/docker.sock:/var/run/docker.sock",
+    )
+
+    result = executor.run(request)
+
+    assert result.status == "failed"
+    assert result.failure_reason == "invalid_docker_image"
+    assert runner.calls == []
+
+
+def test_docker_executor_accepts_normal_docker_image(tmp_path: Path) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        docker_image="python:3.11-bookworm",
+        test_commands=[],
+        required_tests=[],
+    )
+
+    result = executor.run(request)
+
+    docker_run_images = [call["args"][-4] for call in runner.calls[1:10]]
+    assert result.status == "patch_ready"
+    assert set(docker_run_images) == {"python:3.11-bookworm"}
+
+
 def test_redacting_process_runner_removes_token_from_result(
     tmp_path: Path,
 ) -> None:
