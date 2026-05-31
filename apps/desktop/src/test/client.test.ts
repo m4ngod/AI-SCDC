@@ -179,7 +179,7 @@ describe("desktop API clients", () => {
           {
             id: "task_api_persisted",
             title: "Persisted API task",
-            status: "REVIEWING",
+            status: "CREATED",
             role_required: "backend",
             created_at: "2026-05-29T01:00:00Z"
           }
@@ -199,12 +199,159 @@ describe("desktop API clients", () => {
       {
         id: "task_api_persisted",
         title: "Persisted API task",
-        status: "REVIEWING",
+        status: "CREATED",
         role_required: "backend",
         assigned_agent: "Backend Engineer",
         updated_at: "2026-05-29T01:00:00Z"
       }
     ]);
+  });
+
+  it("HTTP client hydrates persisted patch workflow metadata when listing tasks", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "task_api",
+            title: "Approve persisted patch",
+            status: "MERGE_READY",
+            role_required: "backend",
+            updated_at: "2026-05-29T03:00:00Z"
+          }
+        ])
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "local_run_api",
+            task_id: "task_api",
+            repo_id: "repo_api",
+            status: "patch_ready",
+            base_branch: "main",
+            worktree_path: "T:/repo/.worktrees/task_api-local_run_api",
+            patch_artifact_id: "patch_api",
+            failure_reason: null
+          }
+        ])
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: "patch_api",
+          task_id: "task_api",
+          local_run_id: "local_run_api",
+          summary: "Prepared local runner patch.",
+          files_changed: ["README.md"],
+          tests_run: ["python -V"],
+          test_result: "passed",
+          risks: [],
+          diff_text: "diff --git a/README.md b/README.md\n+approval",
+          created_at: "2026-05-29T02:00:00Z"
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "test_run_api",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            patch_artifact_id: "patch_api",
+            status: "passed",
+            commands: ["python -V"],
+            command_results: [
+              {
+                command: "python -V",
+                exit_code: 0,
+                stdout: "Python",
+                stderr: "",
+                duration_ms: 100
+              }
+            ],
+            failure_reason: null,
+            started_at: "2026-05-29T02:01:00Z",
+            completed_at: "2026-05-29T02:01:01Z",
+            created_at: "2026-05-29T02:01:00Z"
+          }
+        ])
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "review_api",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            patch_artifact_id: "patch_api",
+            test_run_id: "test_run_api",
+            reviewer_kind: "deterministic",
+            verdict: "approved",
+            issues: [],
+            required_changes: [],
+            created_at: "2026-05-29T02:05:00Z"
+          }
+        ])
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "patch_approval_api",
+            task_id: "task_api",
+            local_run_id: "local_run_api",
+            patch_artifact_id: "patch_api",
+            review_id: "review_api",
+            status: "approved",
+            approved_by: "dev_user",
+            merge_instructions: "Inspect the worktree before merging. This workflow does not run git merge.",
+            created_at: "2026-05-29T02:10:00Z"
+          }
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+    const tasks = await client.listTasks();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/tasks/task_api/local-runs"
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/patch-artifacts/patch_api"
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/patch-artifacts/patch_api/test-runs"
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/patch-artifacts/patch_api/reviews"
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/patch-artifacts/patch_api/approvals"
+    );
+    expect(tasks[0]).toMatchObject({
+      id: "task_api",
+      status: "MERGE_READY",
+      repo_id: "repo_api",
+      branch_name: "main",
+      worktree_ref: "T:/repo/.worktrees/task_api-local_run_api",
+      patch_artifact: {
+        id: "patch_api",
+        diff_text: "diff --git a/README.md b/README.md\n+approval"
+      },
+      test_run: {
+        id: "test_run_api",
+        status: "passed"
+      },
+      patch_review: {
+        id: "review_api",
+        verdict: "approved"
+      },
+      patch_approval: {
+        id: "patch_approval_api",
+        status: "approved",
+        approved_by: "dev_user"
+      }
+    });
   });
 
   it("HTTP client formats FastAPI JSON detail errors", async () => {

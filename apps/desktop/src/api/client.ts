@@ -745,6 +745,15 @@ function mapPatchApprovalResult(result: ApiPatchApprovalResult): PatchApprovalRe
 
 export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiClient {
   let resolvedProjectId = options.projectId;
+  const workflowStatuses = new Set([
+    "PATCH_READY",
+    "SELF_TESTING",
+    "REVIEWING",
+    "FIX_REQUESTED",
+    "APPROVED",
+    "MERGE_READY",
+    "HUMAN_APPROVAL"
+  ]);
 
   async function getProjectId() {
     if (resolvedProjectId) {
@@ -771,6 +780,71 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
     return resolvedProjectId;
   }
 
+  function shouldHydrateWorkflow(task: ApiTask) {
+    return workflowStatuses.has(task.status);
+  }
+
+  async function listJson<T>(path: string, context: string): Promise<T[]> {
+    const response = await fetch(apiUrl(options.baseUrl, path));
+    return readJsonResponse<T[]>(response, context);
+  }
+
+  function latest<T>(items: T[]): T | undefined {
+    return items[items.length - 1];
+  }
+
+  async function hydrateTaskWorkflow(task: ApiTask): Promise<TaskCard> {
+    const taskCard = mapTaskCard(task);
+    if (!shouldHydrateWorkflow(task)) {
+      return taskCard;
+    }
+
+    const localRuns = await listJson<ApiLocalTaskRun>(
+      `/tasks/${task.id}/local-runs`,
+      `GET /tasks/${task.id}/local-runs`
+    );
+    const localRun = [...localRuns].reverse().find((item) => item.patch_artifact_id);
+    if (!localRun?.patch_artifact_id) {
+      return taskCard;
+    }
+
+    const artifactResponse = await fetch(
+      apiUrl(options.baseUrl, `/patch-artifacts/${localRun.patch_artifact_id}`)
+    );
+    const artifact = await readJsonResponse<ApiPatchArtifact>(
+      artifactResponse,
+      `GET /patch-artifacts/${localRun.patch_artifact_id}`
+    );
+    const [testRuns, reviews, approvals] = await Promise.all([
+      listJson<ApiLocalTestRun>(
+        `/patch-artifacts/${artifact.id}/test-runs`,
+        `GET /patch-artifacts/${artifact.id}/test-runs`
+      ),
+      listJson<ApiPatchReview>(
+        `/patch-artifacts/${artifact.id}/reviews`,
+        `GET /patch-artifacts/${artifact.id}/reviews`
+      ),
+      listJson<ApiPatchApproval>(
+        `/patch-artifacts/${artifact.id}/approvals`,
+        `GET /patch-artifacts/${artifact.id}/approvals`
+      )
+    ]);
+    const latestTestRun = latest(testRuns);
+    const latestReview = latest(reviews);
+    const latestApproval = latest(approvals);
+
+    return {
+      ...taskCard,
+      repo_id: taskCard.repo_id ?? localRun.repo_id,
+      branch_name: taskCard.branch_name ?? localRun.base_branch,
+      worktree_ref: taskCard.worktree_ref ?? localRun.worktree_path,
+      patch_artifact: mapPatchArtifactCard(artifact),
+      test_run: latestTestRun ? mapLocalTestRunCard(latestTestRun) : undefined,
+      patch_review: latestReview ? mapPatchReviewCard(latestReview) : undefined,
+      patch_approval: latestApproval ? mapPatchApprovalCard(latestApproval) : undefined
+    };
+  }
+
   return {
     async listTasks() {
       const projectId = await getProjectId();
@@ -779,7 +853,7 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         response,
         `GET /projects/${projectId}/tasks`
       );
-      return tasks.map(mapTaskCard);
+      return Promise.all(tasks.map(hydrateTaskWorkflow));
     },
     async createTask(goal: string) {
       const projectId = await getProjectId();

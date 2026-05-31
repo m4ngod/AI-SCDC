@@ -285,7 +285,7 @@ After a patch reaches `APPROVED`, approve it without merging:
 ```powershell
 $approval = Invoke-RestMethod `
   -Method Post `
-  -Uri "$baseUrl/patch-artifacts/$($patch.id)/approvals"
+  -Uri "$base/patch-artifacts/$($artifact.id)/approvals"
 
 $approval.task.status
 $approval.approval.merge_instructions
@@ -302,7 +302,7 @@ Then request human approval:
 ```powershell
 $humanApproval = Invoke-RestMethod `
   -Method Post `
-  -Uri "$baseUrl/patch-approvals/$($approval.approval.id)/request-human-approval"
+  -Uri "$base/patch-approvals/$($approval.approval.id)/request-human-approval"
 
 $humanApproval.task.status
 ```
