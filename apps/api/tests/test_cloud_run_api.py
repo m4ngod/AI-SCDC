@@ -109,6 +109,41 @@ def test_list_and_get_cloud_run_routes_return_created_run(tmp_path: Path) -> Non
     assert get_response.json()["id"] == cloud_run_id
 
 
+def test_cloud_run_ignores_unvalidated_sandbox_profile_fields(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    response = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={
+            "repo_id": repository.id,
+            "sandbox_profile_id": "sandbox_profile_unvalidated",
+            "patch_command_key": "patch",
+            "test_command_keys": ["test"],
+        },
+    )
+
+    assert response.status_code == 201
+    cloud_run = response.json()["cloud_run"]
+    assert cloud_run["sandbox_profile_id"] is None
+    assert cloud_run["patch_command_key"] is None
+    assert cloud_run["test_command_keys"] == []
+    assert cloud_run["command_results"] == []
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        persisted = session.get(CloudRun, cloud_run["id"])
+
+    assert persisted is not None
+    assert persisted.sandbox_profile_id is None
+    assert persisted.patch_command_key is None
+    assert persisted.test_command_keys == []
+    assert persisted.command_results == []
+
+
 def test_cloud_run_rejects_cross_project_repository(tmp_path: Path) -> None:
     database_path = tmp_path / "app.db"
     client = build_client(database_path)

@@ -25,7 +25,8 @@ def create_sandbox_profile(
             detail="Sandbox profiles require a GitHub repository",
         )
 
-    _validate_default_patch_command(data.patch_commands)
+    _validate_sandbox_commands(data.patch_commands, command_kind="patch")
+    _validate_sandbox_commands(data.test_commands, command_kind="test")
 
     profile = SandboxProfile(
         workspace_id=project.workspace_id,
@@ -58,18 +59,67 @@ def get_sandbox_profile_read(
     session: Session,
     sandbox_profile_id: str,
 ) -> SandboxProfileRead:
-    profile = session.get(SandboxProfile, sandbox_profile_id)
+    return _sandbox_profile_read(get_sandbox_profile(session, sandbox_profile_id))
+
+
+def get_sandbox_profile(session: Session, profile_id: str) -> SandboxProfile:
+    profile = session.get(SandboxProfile, profile_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="Sandbox profile not found")
-    return _sandbox_profile_read(profile)
+    return profile
 
 
-def _validate_default_patch_command(commands: list[SandboxCommand]) -> None:
+def validate_sandbox_profile_for_repo(
+    session: Session,
+    profile_id: str,
+    *,
+    project_id: str,
+    repo_id: str,
+) -> SandboxProfile:
+    profile = get_sandbox_profile(session, profile_id)
+    if profile.status != "active":
+        raise HTTPException(status_code=400, detail="Sandbox profile is not active")
+    if profile.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Sandbox profile does not belong to project",
+        )
+    if profile.repo_id != repo_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Sandbox profile does not belong to repository",
+        )
+    return profile
+
+
+def _validate_sandbox_commands(
+    commands: list[SandboxCommand],
+    *,
+    command_kind: str,
+) -> None:
+    _validate_unique_command_keys(commands)
+    if command_kind == "test" and not commands:
+        return
+
     default_count = sum(1 for command in commands if command.is_default)
-    if default_count != 1:
+    if command_kind == "patch" and default_count != 1:
         raise HTTPException(
             status_code=400,
             detail="Sandbox profile requires exactly one default patch command",
+        )
+    if command_kind == "test" and default_count != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Sandbox profile requires exactly one default test command",
+        )
+
+
+def _validate_unique_command_keys(commands: list[SandboxCommand]) -> None:
+    command_keys = [command.key for command in commands]
+    if len(command_keys) != len(set(command_keys)):
+        raise HTTPException(
+            status_code=400,
+            detail="Sandbox command keys must be unique",
         )
 
 

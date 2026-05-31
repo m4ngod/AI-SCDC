@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlmodel import Session
@@ -195,6 +197,201 @@ def test_sandbox_profile_requires_single_default_command(tmp_path: Path) -> None
     assert response.json()["detail"] == (
         "Sandbox profile requires exactly one default patch command"
     )
+
+
+@pytest.mark.parametrize("command_list", ["patch_commands", "test_commands"])
+def test_sandbox_profile_rejects_duplicate_command_keys(
+    tmp_path: Path,
+    command_list: str,
+) -> None:
+    database_path = tmp_path / "app.db"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        init_db(session.get_bind())
+        project, repository = create_github_repo(session)
+
+    payload = profile_payload(repository.id)
+    payload[command_list].append(
+        {
+            "key": payload[command_list][0]["key"],
+            "label": "Duplicate key",
+            "command": "python -c \"print('duplicate')\"",
+            "timeout_seconds": 30,
+            "is_default": False,
+        }
+    )
+
+    with build_client(database_path) as client:
+        response = client.post(
+            f"/projects/{project.id}/sandbox-profiles",
+            json=payload,
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Sandbox command keys must be unique"
+
+
+def test_sandbox_profile_requires_single_default_test_command_when_tests_exist(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        init_db(session.get_bind())
+        project, repository = create_github_repo(session)
+
+    payload = profile_payload(repository.id)
+    payload["test_commands"][0]["is_default"] = False
+
+    with build_client(database_path) as client:
+        response = client.post(
+            f"/projects/{project.id}/sandbox-profiles",
+            json=payload,
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Sandbox profile requires exactly one default test command"
+    )
+
+
+def test_sandbox_profile_allows_empty_test_commands(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        init_db(session.get_bind())
+        project, repository = create_github_repo(session)
+
+    payload = profile_payload(repository.id)
+    payload["test_commands"] = []
+
+    with build_client(database_path) as client:
+        response = client.post(
+            f"/projects/{project.id}/sandbox-profiles",
+            json=payload,
+        )
+
+    assert response.status_code == 201
+    assert response.json()["test_commands"] == []
+
+
+def test_validate_sandbox_profile_for_repo_rejects_inactive_profile(
+    tmp_path: Path,
+) -> None:
+    from ai_company_api.services.sandbox_profiles import (
+        validate_sandbox_profile_for_repo,
+    )
+
+    database_path = tmp_path / "app.db"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        init_db(session.get_bind())
+        project, repository = create_github_repo(session)
+        profile = SandboxProfile(
+            project_id=project.id,
+            repo_id=repository.id,
+            name="Inactive",
+            docker_image="python:3.11-slim",
+            patch_commands=profile_payload(repository.id)["patch_commands"],
+            status="inactive",
+        )
+        session.add(profile)
+        session.commit()
+        session.refresh(profile)
+
+        with pytest.raises(HTTPException) as exc_info:
+            validate_sandbox_profile_for_repo(
+                session,
+                profile.id,
+                project_id=project.id,
+                repo_id=repository.id,
+            )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Sandbox profile is not active"
+
+
+def test_validate_sandbox_profile_for_repo_rejects_repo_mismatch(
+    tmp_path: Path,
+) -> None:
+    from ai_company_api.services.sandbox_profiles import (
+        validate_sandbox_profile_for_repo,
+    )
+
+    database_path = tmp_path / "app.db"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        init_db(session.get_bind())
+        project, repository = create_github_repo(session)
+        other_repository = Repository(
+            project_id=project.id,
+            name="example/other",
+            local_path="",
+            default_branch="main",
+            provider="github",
+            repo_url="https://github.com/example/other",
+            github_owner="example",
+            github_repo="other",
+            github_credential_id=repository.github_credential_id,
+            connection_status="active",
+        )
+        session.add(other_repository)
+        session.flush()
+        profile = SandboxProfile(
+            project_id=project.id,
+            repo_id=repository.id,
+            name="Default",
+            docker_image="python:3.11-slim",
+            patch_commands=profile_payload(repository.id)["patch_commands"],
+        )
+        session.add(profile)
+        session.commit()
+        session.refresh(profile)
+        session.refresh(other_repository)
+
+        with pytest.raises(HTTPException) as exc_info:
+            validate_sandbox_profile_for_repo(
+                session,
+                profile.id,
+                project_id=project.id,
+                repo_id=other_repository.id,
+            )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Sandbox profile does not belong to repository"
+
+
+def test_validate_sandbox_profile_for_repo_rejects_project_mismatch(
+    tmp_path: Path,
+) -> None:
+    from ai_company_api.services.sandbox_profiles import (
+        validate_sandbox_profile_for_repo,
+    )
+
+    database_path = tmp_path / "app.db"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        init_db(session.get_bind())
+        project, repository = create_github_repo(session)
+        other_project = Project(name="Other")
+        session.add(other_project)
+        session.flush()
+        profile = SandboxProfile(
+            project_id=project.id,
+            repo_id=repository.id,
+            name="Default",
+            docker_image="python:3.11-slim",
+            patch_commands=profile_payload(repository.id)["patch_commands"],
+        )
+        session.add(profile)
+        session.commit()
+        session.refresh(profile)
+        session.refresh(other_project)
+
+        with pytest.raises(HTTPException) as exc_info:
+            validate_sandbox_profile_for_repo(
+                session,
+                profile.id,
+                project_id=other_project.id,
+                repo_id=repository.id,
+            )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Sandbox profile does not belong to project"
 
 
 def test_init_db_adds_phase_8_cloud_run_columns(tmp_path: Path) -> None:
