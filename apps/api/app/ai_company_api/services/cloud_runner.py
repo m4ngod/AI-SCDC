@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import os
 
 from fastapi import HTTPException
 from sqlmodel import Session, select
@@ -19,10 +20,14 @@ from ai_company_api.schemas.api import (
 )
 from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
+    SandboxCommandSelection,
     SandboxExecutionRequest,
+    SandboxExecutionResult,
     select_cloud_sandbox_executor,
 )
+from ai_company_api.services.github_repository import get_active_github_credential
 from ai_company_api.services.repository import create_task_event, get_repository, get_task
+from ai_company_api.services.sandbox_profiles import validate_sandbox_profile_for_repo
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
@@ -50,6 +55,37 @@ def start_cloud_run(
 
     event_clock = _EventClock()
     executor = select_cloud_sandbox_executor()
+    sandbox_profile_id: str | None = None
+    patch_command_key: str | None = None
+    test_command_keys: list[str] = []
+    docker_image: str | None = None
+    patch_command: SandboxCommandSelection | None = None
+    test_commands: list[SandboxCommandSelection] = []
+    sandbox_env: dict[str, str] = {}
+    network_enabled = True
+    if executor.sandbox_kind == "docker_local":
+        if data.sandbox_profile_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Docker cloud runs require a sandbox profile",
+            )
+        if repository.github_credential_id is None:
+            raise HTTPException(status_code=404, detail="GitHub credential not found")
+        get_active_github_credential(session, repository.github_credential_id)
+        profile = validate_sandbox_profile_for_repo(
+            session,
+            data.sandbox_profile_id,
+            project_id=task.project_id,
+            repo_id=repository.id,
+        )
+        patch_command, test_commands = _select_profile_commands(profile, data)
+        sandbox_profile_id = profile.id
+        patch_command_key = patch_command.key
+        test_command_keys = [command.key for command in test_commands]
+        docker_image = profile.docker_image
+        sandbox_env = _sandbox_profile_env(profile.allowed_env_vars or [])
+        network_enabled = profile.network_enabled
+
     cloud_run = CloudRun(
         project_id=task.project_id,
         task_id=task.id,
@@ -58,6 +94,9 @@ def start_cloud_run(
         head_branch="",
         status="queued",
         sandbox_kind=executor.sandbox_kind,
+        sandbox_profile_id=sandbox_profile_id,
+        patch_command_key=patch_command_key,
+        test_command_keys=test_command_keys,
     )
     session.add(cloud_run)
     session.flush()
@@ -65,7 +104,6 @@ def start_cloud_run(
     head_branch = f"ai-scdc/task-{task.id}-{cloud_run.id}"
     cloud_run.head_branch = head_branch
     cloud_run.sandbox_kind = executor.sandbox_kind
-    sandbox_env: dict[str, str] = {}
     execution_result = executor.run(
         SandboxExecutionRequest(
             task_id=task.id,
@@ -77,11 +115,11 @@ def start_cloud_run(
             head_branch=head_branch,
             allowed_paths=task.allowed_paths or [],
             required_tests=task.required_tests or [],
-            docker_image=None,
-            patch_command=None,
-            test_commands=[],
+            docker_image=docker_image,
+            patch_command=patch_command,
+            test_commands=test_commands,
             env=sandbox_env,
-            network_enabled=True,
+            network_enabled=network_enabled,
         )
     )
 
@@ -117,7 +155,7 @@ def start_cloud_run(
     _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.IN_PROGRESS)
 
     secrets = _redaction_secrets(sandbox_env)
-    if execution_result.status != "patch_ready":
+    if not _should_create_patch_artifact(execution_result):
         failure_command_results = [
             *execution_result.command_results,
             *execution_result.test_command_results,
@@ -231,6 +269,19 @@ def start_cloud_run(
             "files_changed": artifact.files_changed,
         },
     )
+    if execution_result.status == "failed":
+        _create_cloud_run_event(
+            session,
+            event_clock,
+            task.id,
+            "cloud_run_failed",
+            {
+                "cloud_run_id": cloud_run.id,
+                "local_run_id": local_run.id,
+                "failure_reason": execution_result.failure_reason,
+                "patch_artifact_id": artifact.id,
+            },
+        )
     _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.PATCH_READY)
 
     session.add(local_run)
@@ -260,6 +311,86 @@ def get_cloud_run_read(session: Session, cloud_run_id: str) -> CloudRunRead:
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
     return _cloud_run_read(cloud_run)
+
+
+def _select_profile_commands(
+    profile,
+    data: CloudRunCreate,
+) -> tuple[SandboxCommandSelection, list[SandboxCommandSelection]]:
+    patch_command = _select_command(
+        profile.patch_commands or [],
+        data.patch_command_key,
+        kind="patch",
+    )
+    if data.test_command_keys:
+        test_commands = [
+            _select_command(profile.test_commands or [], key, kind="test")
+            for key in data.test_command_keys
+        ]
+    else:
+        test_commands = [
+            _command_selection(command)
+            for command in (profile.test_commands or [])
+            if command.get("is_default") is True
+        ]
+        if profile.test_commands and len(test_commands) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Sandbox profile requires exactly one default test command",
+            )
+    return patch_command, test_commands
+
+
+def _select_command(
+    commands: list[dict],
+    requested_key: str | None,
+    *,
+    kind: str,
+) -> SandboxCommandSelection:
+    if requested_key is not None:
+        for command in commands:
+            if command.get("key") == requested_key:
+                return _command_selection(command)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown sandbox {kind} command key",
+        )
+
+    defaults = [command for command in commands if command.get("is_default") is True]
+    if kind == "patch" and len(defaults) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Sandbox profile requires exactly one default patch command",
+        )
+    if kind == "test" and len(defaults) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Sandbox profile requires exactly one default test command",
+        )
+    return _command_selection(defaults[0])
+
+
+def _command_selection(command: dict) -> SandboxCommandSelection:
+    return SandboxCommandSelection(
+        key=command["key"],
+        label=command["label"],
+        command=command["command"],
+        timeout_seconds=command.get("timeout_seconds", 300),
+    )
+
+
+def _sandbox_profile_env(allowed_env_vars: list[str]) -> dict[str, str]:
+    return {name: os.environ[name] for name in allowed_env_vars if name in os.environ}
+
+
+def _should_create_patch_artifact(result: SandboxExecutionResult) -> bool:
+    if result.status == "patch_ready":
+        return True
+    return (
+        result.failure_reason == "test_failed"
+        and bool(result.files_changed)
+        and result.diff_text.strip() != ""
+    )
 
 
 def _transition_task_for_cloud_runner(

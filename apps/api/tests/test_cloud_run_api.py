@@ -8,15 +8,18 @@ from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
     CloudRun,
+    GitHubCredential,
     LocalTaskRun,
     LocalTestRun,
     PatchArtifact,
     Project,
     Repository,
+    SandboxProfile,
     Task,
 )
 from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
+    SandboxExecutionRequest,
     SandboxExecutionResult,
 )
 from ai_company_api.services.task_state import TaskStatus
@@ -38,6 +41,13 @@ def create_cloud_task(
     project = Project(name="Cloud project")
     session.add(project)
     session.flush()
+    credential = GitHubCredential(
+        display_name="Cloud runner credential",
+        token_last4="test",
+        encrypted_token="sealed-token",
+    )
+    session.add(credential)
+    session.flush()
     repository = Repository(
         project_id=project.id,
         name="Demo remote",
@@ -47,7 +57,7 @@ def create_cloud_task(
         repo_url="https://github.com/example/demo",
         github_owner="example",
         github_repo="demo",
-        github_credential_id="github_credential_test",
+        github_credential_id=credential.id,
         connection_status=connection_status,
     )
     session.add(repository)
@@ -66,6 +76,55 @@ def create_cloud_task(
     session.refresh(repository)
     session.refresh(task)
     return project, repository, task
+
+
+def create_profile_entity(
+    session: Session,
+    project: Project,
+    repository: Repository,
+    *,
+    docker_image: str = "python:3.11-bookworm",
+    patch_commands: list[dict] | None = None,
+    test_commands: list[dict] | None = None,
+    allowed_env_vars: list[str] | None = None,
+    network_enabled: bool = True,
+    status: str = "active",
+) -> SandboxProfile:
+    profile = SandboxProfile(
+        project_id=project.id,
+        repo_id=repository.id,
+        name="Default docker sandbox",
+        docker_image=docker_image,
+        patch_commands=patch_commands
+        if patch_commands is not None
+        else [
+            {
+                "key": "patch",
+                "label": "Patch",
+                "command": "python patch.py",
+                "timeout_seconds": 120,
+                "is_default": True,
+            }
+        ],
+        test_commands=test_commands
+        if test_commands is not None
+        else [
+            {
+                "key": "test",
+                "label": "Test",
+                "command": "pytest -q",
+                "timeout_seconds": 300,
+                "is_default": True,
+            }
+        ],
+        allowed_env_vars=[] if allowed_env_vars is None else allowed_env_vars,
+        network_enabled=network_enabled,
+        status=status,
+    )
+    session.add(profile)
+    session.commit()
+    session.refresh(profile)
+    return profile
 
 
 def test_cloud_runner_command_payloads_redact_secrets_before_persistence() -> None:
@@ -97,6 +156,363 @@ def test_cloud_runner_command_payloads_redact_secrets_before_persistence() -> No
             "duration_ms": 25,
         }
     ]
+
+
+def test_docker_cloud_run_requires_active_sandbox_profile(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AI_SCDC_CLOUD_RUNNER", "docker_local")
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Docker cloud runs require a sandbox profile"
+
+
+def test_docker_cloud_run_rejects_unknown_patch_command_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "patch_command_key": "missing",
+            "test_command_keys": ["test"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown sandbox patch command key"
+
+
+def test_docker_cloud_run_rejects_unknown_test_command_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "patch_command_key": "patch",
+            "test_command_keys": ["missing"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown sandbox test command key"
+
+
+def test_docker_cloud_run_uses_default_profile_commands(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    captured_requests: list[SandboxExecutionRequest] = []
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, request):
+            captured_requests.append(request)
+            return SandboxExecutionResult(
+                status="patch_ready",
+                runner_kind="docker_local",
+                base_sha="abc123",
+                head_sha="def456",
+                worktree_ref=f"cloud://docker-local/{request.cloud_run_id}",
+                summary="Docker local sandbox produced a patch artifact.",
+                files_changed=["AI_SCDC_CLOUD_RUN.md"],
+                tests_run=["pytest -q"],
+                test_result="passed",
+                risks=[],
+                diff_text="diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n+patch\n",
+                command_results=[],
+                test_command_results=[],
+                failure_reason=None,
+            )
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(
+            session,
+            project,
+            repository,
+            patch_commands=[
+                {
+                    "key": "patch_default",
+                    "label": "Patch default",
+                    "command": "python patch.py",
+                    "timeout_seconds": 120,
+                    "is_default": True,
+                },
+                {
+                    "key": "patch_alt",
+                    "label": "Patch alt",
+                    "command": "python patch-alt.py",
+                    "timeout_seconds": 90,
+                    "is_default": False,
+                },
+            ],
+            test_commands=[
+                {
+                    "key": "unit",
+                    "label": "Unit",
+                    "command": "pytest -q",
+                    "timeout_seconds": 300,
+                    "is_default": True,
+                },
+                {
+                    "key": "lint",
+                    "label": "Lint",
+                    "command": "ruff check .",
+                    "timeout_seconds": 60,
+                    "is_default": False,
+                },
+            ],
+        )
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    )
+
+    assert response.status_code == 201
+    assert captured_requests[0].patch_command is not None
+    assert captured_requests[0].patch_command.key == "patch_default"
+    assert [command.key for command in captured_requests[0].test_commands] == ["unit"]
+    assert response.json()["cloud_run"]["patch_command_key"] == "patch_default"
+    assert response.json()["cloud_run"]["test_command_keys"] == ["unit"]
+
+
+def test_docker_cloud_run_records_docker_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    captured_requests: list[SandboxExecutionRequest] = []
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, request):
+            captured_requests.append(request)
+            return SandboxExecutionResult(
+                status="failed",
+                runner_kind="docker_local",
+                base_sha=None,
+                head_sha=None,
+                worktree_ref=None,
+                summary="",
+                files_changed=[],
+                tests_run=[],
+                test_result="not_run",
+                risks=[],
+                diff_text="",
+                command_results=[
+                    CommandResult(
+                        command="docker version",
+                        exit_code=1,
+                        stdout="",
+                        stderr="docker unavailable",
+                        duration_ms=3,
+                    )
+                ],
+                test_command_results=[],
+                failure_reason="docker_unavailable",
+            )
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(
+            session,
+            project,
+            repository,
+            docker_image="python:3.12-bookworm",
+            network_enabled=False,
+        )
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "patch_command_key": "patch",
+            "test_command_keys": ["test"],
+        },
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["patch_artifact"] is None
+    assert result["cloud_run"]["status"] == "failed"
+    assert result["cloud_run"]["failure_reason"] == "docker_unavailable"
+    assert result["cloud_run"]["sandbox_profile_id"] == profile_id
+    assert result["cloud_run"]["patch_command_key"] == "patch"
+    assert result["cloud_run"]["test_command_keys"] == ["test"]
+    assert captured_requests[0].docker_image == "python:3.12-bookworm"
+    assert captured_requests[0].network_enabled is False
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, result["cloud_run"]["id"])
+        artifacts = session.exec(select(PatchArtifact)).all()
+
+    assert cloud_run is not None
+    assert cloud_run.sandbox_profile_id == profile_id
+    assert cloud_run.patch_command_key == "patch"
+    assert cloud_run.test_command_keys == ["test"]
+    assert artifacts == []
+
+
+def test_docker_cloud_run_allowed_env_vars_whitelist_and_redact_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    captured_requests: list[SandboxExecutionRequest] = []
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, request):
+            captured_requests.append(request)
+            secret = request.env["SANDBOX_TOKEN"]
+            return SandboxExecutionResult(
+                status="failed",
+                runner_kind="docker_local",
+                base_sha=None,
+                head_sha=None,
+                worktree_ref=None,
+                summary="",
+                files_changed=[],
+                tests_run=[],
+                test_result="not_run",
+                risks=[],
+                diff_text="",
+                command_results=[
+                    CommandResult(
+                        command=f"echo {secret}",
+                        exit_code=1,
+                        stdout=f"saw {secret}",
+                        stderr=f"failed {secret}",
+                        duration_ms=3,
+                    )
+                ],
+                test_command_results=[],
+                failure_reason="docker_unavailable",
+            )
+
+    monkeypatch.setenv("SANDBOX_TOKEN", "secret-token-value")
+    monkeypatch.setenv("IGNORED_TOKEN", "ignored-token-value")
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(
+            session,
+            project,
+            repository,
+            allowed_env_vars=["SANDBOX_TOKEN", "MISSING_TOKEN"],
+        )
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    )
+
+    assert response.status_code == 201
+    assert captured_requests[0].env == {"SANDBOX_TOKEN": "secret-token-value"}
+    command_result = response.json()["cloud_run"]["command_results"][0]
+    assert command_result["command"] == "echo [redacted]"
+    assert command_result["stdout"] == "saw [redacted]"
+    assert command_result["stderr"] == "failed [redacted]"
 
 
 def test_start_cloud_run_creates_patch_artifact_and_bridge_local_run(tmp_path: Path) -> None:
@@ -187,9 +603,16 @@ def test_start_cloud_run_persists_executor_test_results(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
 
-    response = client.post(f"/tasks/{task.id}/cloud-runs", json={"repo_id": repository.id})
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    )
 
     assert response.status_code == 201
     result = response.json()
@@ -215,7 +638,7 @@ def test_start_cloud_run_persists_executor_test_results(
     assert test_runs[0].failure_reason is None
 
 
-def test_start_cloud_run_failure_does_not_create_patch_artifact(
+def test_docker_cloud_run_test_failure_keeps_patch_artifact(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -232,16 +655,16 @@ def test_start_cloud_run_failure_does_not_create_patch_artifact(
                 head_sha=None,
                 worktree_ref=None,
                 summary="",
-                files_changed=[],
+                files_changed=["AI_SCDC_CLOUD_RUN.md"],
                 tests_run=["python -V"],
                 test_result="failed",
                 risks=[],
-                diff_text="",
+                diff_text="diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n+patch\n",
                 command_results=[
                     CommandResult(
-                        command="docker version",
+                        command="python patch.py",
                         exit_code=0,
-                        stdout="Docker",
+                        stdout="patched",
                         stderr="",
                         duration_ms=1,
                     )
@@ -266,19 +689,27 @@ def test_start_cloud_run_failure_does_not_create_patch_artifact(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
 
-    response = client.post(f"/tasks/{task.id}/cloud-runs", json={"repo_id": repository.id})
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    )
 
     assert response.status_code == 201
     result = response.json()
-    assert result["patch_artifact"] is None
     assert result["cloud_run"]["status"] == "failed"
     assert result["cloud_run"]["failure_reason"] == "test_failed"
-    assert result["cloud_run"]["patch_artifact_id"] is None
+    assert result["patch_artifact"] is not None
+    assert result["patch_artifact"]["files_changed"] == ["AI_SCDC_CLOUD_RUN.md"]
+    assert result["patch_artifact"]["test_result"] == "failed"
+    assert result["cloud_run"]["patch_artifact_id"] == result["patch_artifact"]["id"]
     assert [item["command"] for item in result["cloud_run"]["command_results"]] == [
-        "docker version",
-        "python -V",
+        "python patch.py",
     ]
 
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
@@ -286,14 +717,15 @@ def test_start_cloud_run_failure_does_not_create_patch_artifact(
         local_run = session.get(LocalTaskRun, result["cloud_run"]["local_run_id"])
         artifacts = session.exec(select(PatchArtifact)).all()
         test_runs = session.exec(select(LocalTestRun)).all()
-        persisted_task = session.get(Task, task.id)
+        persisted_task = session.get(Task, task_id)
 
     assert cloud_run is not None
     assert local_run is not None
     assert persisted_task is not None
-    assert artifacts == []
+    assert len(artifacts) == 1
+    assert artifacts[0].id == result["patch_artifact"]["id"]
     assert len(test_runs) == 1
-    assert test_runs[0].patch_artifact_id is None
+    assert test_runs[0].patch_artifact_id == artifacts[0].id
     assert test_runs[0].status == "failed"
     assert test_runs[0].commands == ["python -V"]
     assert test_runs[0].command_results == [
@@ -306,15 +738,15 @@ def test_start_cloud_run_failure_does_not_create_patch_artifact(
         }
     ]
     assert test_runs[0].failure_reason == "test_failed"
-    assert cloud_run.patch_artifact_id is None
+    assert cloud_run.patch_artifact_id == artifacts[0].id
     assert cloud_run.failure_reason == "test_failed"
-    assert local_run.patch_artifact_id is None
+    assert local_run.patch_artifact_id == artifacts[0].id
     assert local_run.failure_reason == "test_failed"
-    assert persisted_task.status == TaskStatus.FIX_REQUESTED
+    assert persisted_task.status == TaskStatus.PATCH_READY
 
     read_response = client.get(f"/test-runs/{test_runs[0].id}")
     assert read_response.status_code == 200
-    assert read_response.json()["patch_artifact_id"] is None
+    assert read_response.json()["patch_artifact_id"] == artifacts[0].id
 
 
 def test_init_db_allows_cloud_test_run_without_patch_artifact(
