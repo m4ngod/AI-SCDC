@@ -355,6 +355,31 @@ class PatchApprovalResultRead(BaseModel):
     approval: PatchApprovalRead
 
 
+class PullRequestRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    repo_id: str
+    patch_artifact_id: str
+    patch_approval_id: str
+    cloud_run_id: str | None
+    head_branch: str
+    base_branch: str
+    github_pr_number: int
+    github_pr_url: str
+    status: str
+    created_by: str
+    created_at: datetime
+
+
+class PullRequestResultRead(BaseModel):
+    task: TaskRead
+    patch_artifact: PatchArtifactRead
+    approval: PatchApprovalRead
+    pull_request: PullRequestRead
+
+
 class PlannerRunDecisionRead(BaseModel):
     planner_run_id: str
     approval_id: str

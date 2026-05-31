@@ -36,6 +36,8 @@ from ai_company_api.schemas.api import (
     PatchReviewResultRead,
     PatchTestRunResultRead,
     ProjectCreate,
+    PullRequestRead,
+    PullRequestResultRead,
     RepositoryCreate,
     RepositoryRead,
     ResolvedModelRouteRead,
@@ -54,6 +56,11 @@ from ai_company_api.services.github_repository import (
     create_github_repository,
     delete_github_credential,
     list_github_credentials,
+)
+from ai_company_api.services.github_pull_request import (
+    create_pull_request_for_approval,
+    get_pull_request,
+    list_pull_requests_for_patch_artifact,
 )
 from ai_company_api.services.local_runner import (
     get_local_task_run,
@@ -468,6 +475,17 @@ def get_patch_artifact_by_id(
     return get_patch_artifact(session, patch_artifact_id)
 
 
+@router.get(
+    "/patch-artifacts/{patch_artifact_id}/pull-requests",
+    response_model=list[PullRequestRead],
+)
+def get_patch_artifact_pull_requests(
+    patch_artifact_id: str,
+    session: SessionDep,
+) -> list[PullRequestRead]:
+    return list_pull_requests_for_patch_artifact(session, patch_artifact_id)
+
+
 @router.post(
     "/patch-artifacts/{patch_artifact_id}/test-runs",
     status_code=status.HTTP_201_CREATED,
@@ -556,6 +574,20 @@ def get_patch_approval_by_id(
 
 
 @router.post(
+    "/patch-approvals/{approval_id}/pull-requests",
+    response_model=PullRequestResultRead,
+)
+def post_patch_approval_pull_request(
+    approval_id: str,
+    response: Response,
+    session: SessionDep,
+) -> PullRequestResultRead:
+    result, status_code = create_pull_request_for_approval(session, approval_id)
+    response.status_code = status_code
+    return result
+
+
+@router.post(
     "/patch-approvals/{approval_id}/request-human-approval",
     response_model=PatchApprovalResultRead,
 )
@@ -564,6 +596,14 @@ def post_patch_approval_human_approval_request(
     session: SessionDep,
 ) -> PatchApprovalResultRead:
     return request_human_approval(session, approval_id)
+
+
+@router.get("/pull-requests/{pull_request_id}", response_model=PullRequestRead)
+def get_pull_request_by_id(
+    pull_request_id: str,
+    session: SessionDep,
+) -> PullRequestRead:
+    return get_pull_request(session, pull_request_id)
 
 
 @router.get("/test-runs/{test_run_id}", response_model=LocalTestRunRead)

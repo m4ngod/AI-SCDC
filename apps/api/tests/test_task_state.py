@@ -46,6 +46,17 @@ def test_only_human_approval_can_merge_for_system_actor() -> None:
     )
 
 
+def test_human_approval_can_create_pr_for_system_actor() -> None:
+    assert (
+        validate_transition(
+            TaskStatus.HUMAN_APPROVAL,
+            TaskStatus.PR_CREATED,
+            actor_type="system",
+        )
+        == TaskStatus.PR_CREATED
+    )
+
+
 def test_agent_cannot_merge_even_from_human_approval() -> None:
     with pytest.raises(InvalidTaskTransition, match="actor_type=agent"):
         validate_transition(

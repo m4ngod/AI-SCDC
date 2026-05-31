@@ -552,6 +552,32 @@ class PatchApproval(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class PullRequestRecord(SQLModel, table=True):
+    __tablename__ = "pull_request_record"
+    __table_args__ = (
+        UniqueConstraint(
+            "patch_approval_id",
+            name="uq_pull_request_record_patch_approval_id",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: prefixed_id("pull_request"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    task_id: str = Field(index=True, foreign_key="task.id")
+    repo_id: str = Field(index=True, foreign_key="repository.id")
+    patch_artifact_id: str = Field(index=True, foreign_key="patch_artifact.id")
+    patch_approval_id: str = Field(index=True, foreign_key="patch_approval.id")
+    cloud_run_id: str | None = Field(default=None, index=True, foreign_key="cloud_run.id")
+    head_branch: str
+    base_branch: str
+    github_pr_number: int
+    github_pr_url: str
+    status: str = Field(default="created", index=True)
+    created_by: str = "dev_user"
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class DebugAttempt(SQLModel, table=True):
     __tablename__ = "debug_attempt"
 

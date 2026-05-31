@@ -16,6 +16,7 @@ class TaskStatus(StrEnum):
     CI_RUNNING = "CI_RUNNING"
     MERGE_READY = "MERGE_READY"
     HUMAN_APPROVAL = "HUMAN_APPROVAL"
+    PR_CREATED = "PR_CREATED"
     MERGED = "MERGED"
     CLOSED = "CLOSED"
     CANCELLED = "CANCELLED"
@@ -88,8 +89,13 @@ TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.CANCELLED,
     },
     TaskStatus.HUMAN_APPROVAL: {
+        TaskStatus.PR_CREATED,
         TaskStatus.MERGED,
         TaskStatus.CLOSED,
+    },
+    TaskStatus.PR_CREATED: {
+        TaskStatus.CLOSED,
+        TaskStatus.CANCELLED,
     },
     TaskStatus.MERGED: set(),
     TaskStatus.CLOSED: set(),
