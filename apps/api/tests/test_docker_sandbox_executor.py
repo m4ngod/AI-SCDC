@@ -207,6 +207,87 @@ def test_docker_executor_accepts_normal_docker_image(tmp_path: Path) -> None:
     assert set(docker_run_images) == {"python:3.11-bookworm"}
 
 
+def test_docker_executor_separates_git_clone_options_from_repo_url(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        repo_url="-c core.sshCommand=touch /tmp/repo-pwned",
+        test_commands=[],
+        required_tests=[],
+    )
+
+    result = executor.run(request)
+
+    clone_command = runner.calls[1]["args"][-1]
+    assert result.status == "patch_ready"
+    assert clone_command == (
+        "git clone -- '-c core.sshCommand=touch /tmp/repo-pwned' ."
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("base_branch", "-c core.sshCommand=touch /tmp/base-pwned"),
+        ("head_branch", "--orphan=malicious"),
+    ],
+)
+def test_docker_executor_rejects_option_like_git_branch_names(
+    tmp_path: Path,
+    field_name: str,
+    field_value: str,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        **{field_name: field_value},
+    )
+
+    result = executor.run(request)
+
+    assert result.status == "failed"
+    assert result.failure_reason == "invalid_git_reference"
+    assert runner.calls == []
+
+
+def test_docker_executor_excludes_invalid_env_names(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        test_commands=[],
+        required_tests=[],
+        env={
+            **docker_request(tmp_path).env,
+            "VALID_SANDBOX_NAME": "valid",
+            "BAD=NAME": "bad",
+            "BAD\nNAME": "bad",
+        },
+    )
+
+    executor.run(request)
+
+    docker_run_env = runner.calls[1]["env"]
+    docker_run_args = runner.calls[1]["args"]
+    container_env_names = [
+        docker_run_args[index + 1]
+        for index, item in enumerate(docker_run_args[:-1])
+        if item == "-e"
+    ]
+    assert docker_run_env["VALID_SANDBOX_NAME"] == "valid"
+    assert "VALID_SANDBOX_NAME" in container_env_names
+    assert "BAD=NAME" not in docker_run_env
+    assert "BAD\nNAME" not in docker_run_env
+    assert "BAD=NAME" not in container_env_names
+    assert "BAD\nNAME" not in container_env_names
+
+
 def test_redacting_process_runner_removes_token_from_result(
     tmp_path: Path,
 ) -> None:
@@ -393,7 +474,7 @@ def test_docker_executor_quotes_fixed_git_setup_commands(
 
     commands = [call["args"][-1] for call in runner.calls[1:10]]
     assert commands[0] == (
-        "git clone "
+        "git clone -- "
         "'https://github.com/example/demo.git; touch /tmp/repo-pwned' ."
     )
     assert commands[1] == "git checkout 'main; touch /tmp/base-pwned'"

@@ -390,13 +390,24 @@ def test_init_db_allows_cloud_test_run_without_patch_artifact(
     assert columns["patch_artifact_id"]["notnull"] == 0
 
 
-def test_init_db_preserves_local_test_run_foreign_keys_when_patch_artifact_nullable(
-    tmp_path: Path,
-) -> None:
-    database_path = tmp_path / "legacy-local-test-run-fks.db"
-    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+def test_init_db_preserves_local_test_run_fks_when_patch_artifact_nullable() -> None:
+    engine = build_engine("sqlite://")
     with engine.begin() as connection:
         connection.execute(text("PRAGMA foreign_keys=OFF"))
+        connection.execute(text("create table project (id varchar not null primary key)"))
+        connection.execute(text("create table task (id varchar not null primary key)"))
+        connection.execute(
+            text("create table local_task_run (id varchar not null primary key)")
+        )
+        connection.execute(
+            text("create table patch_artifact (id varchar not null primary key)")
+        )
+        connection.execute(text("insert into project (id) values ('project_one')"))
+        connection.execute(text("insert into task (id) values ('task_one')"))
+        connection.execute(
+            text("insert into local_task_run (id) values ('local_run_one')")
+        )
+        connection.execute(text("insert into patch_artifact (id) values ('patch_one')"))
         connection.execute(
             text(
                 """
@@ -505,9 +516,17 @@ def test_init_db_preserves_local_test_run_foreign_keys_when_patch_artifact_nulla
             )
         )
 
+    with engine.connect() as connection:
+        connection = connection.execution_options(isolation_level="AUTOCOMMIT")
+        connection.execute(text("PRAGMA foreign_keys=ON"))
+        assert connection.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
+
     init_db(engine)
 
     with engine.begin() as connection:
+        foreign_keys_enabled = connection.execute(
+            text("PRAGMA foreign_keys")
+        ).scalar_one()
         local_test_run_fks = {
             (row["from"], row["table"], row["to"])
             for row in connection.execute(
@@ -532,7 +551,11 @@ def test_init_db_preserves_local_test_run_foreign_keys_when_patch_artifact_nulla
         patch_review_test_run_id = connection.execute(
             text("SELECT test_run_id FROM patch_review WHERE id='review_legacy'")
         ).scalar_one()
+        foreign_key_check_rows = list(
+            connection.execute(text("PRAGMA foreign_key_check")).mappings()
+        )
 
+    assert foreign_keys_enabled == 1
     assert ("project_id", "project", "id") in local_test_run_fks
     assert ("task_id", "task", "id") in local_test_run_fks
     assert ("local_run_id", "local_task_run", "id") in local_test_run_fks
@@ -545,6 +568,7 @@ def test_init_db_preserves_local_test_run_foreign_keys_when_patch_artifact_nulla
         table != "local_test_run_notnull_legacy"
         for _from, table, _to in local_test_run_fks | patch_review_fks
     )
+    assert foreign_key_check_rows == []
 
 
 def test_list_and_get_cloud_run_routes_return_created_run(tmp_path: Path) -> None:

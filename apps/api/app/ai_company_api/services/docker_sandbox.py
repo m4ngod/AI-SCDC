@@ -1,6 +1,7 @@
 from dataclasses import dataclass, replace
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import tempfile
@@ -29,6 +30,7 @@ _DOCKER_CLI_ENV_DENYLIST = {
     "PATHEXT",
 }
 _DEFAULT_DOCKER_IMAGE = "python:3.11-bookworm"
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 @dataclass(frozen=True)
@@ -212,6 +214,13 @@ class DockerLocalSandboxExecutor:
                 command_results,
                 test_results,
             )
+        if not _valid_git_reference_inputs(request):
+            return _failed_result(
+                "invalid_git_reference",
+                "docker_local",
+                command_results,
+                test_results,
+            )
         request = replace(request, docker_image=docker_image)
 
         self._workspace_root.mkdir(parents=True, exist_ok=True)
@@ -246,7 +255,7 @@ class DockerLocalSandboxExecutor:
                 request.patch_command.timeout_seconds if request.patch_command else 300
             )
             steps = [
-                ("clone", f"git clone {_shell_quote(request.repo_url)} .", 300),
+                ("clone", f"git clone -- {_shell_quote(request.repo_url)} .", 300),
                 ("checkout", f"git checkout {_shell_quote(request.base_branch)}", 60),
                 ("branch", f"git checkout -B {_shell_quote(request.head_branch)}", 60),
                 ("patch", patch_command, patch_timeout),
@@ -389,7 +398,10 @@ def _safe_container_env_names(container_env: dict[str, str]) -> list[str]:
 
 def _is_safe_sandbox_env_name(name: str) -> bool:
     normalized = name.upper()
-    return normalized not in _DOCKER_CLI_ENV_DENYLIST
+    return (
+        bool(_ENV_NAME_RE.fullmatch(name))
+        and normalized not in _DOCKER_CLI_ENV_DENYLIST
+    )
 
 
 def _validated_docker_image(image: str | None) -> str | None:
@@ -399,6 +411,18 @@ def _validated_docker_image(image: str | None) -> str | None:
     if candidate == "" or candidate.startswith("-"):
         return None
     return candidate
+
+
+def _valid_git_reference_inputs(request: SandboxExecutionRequest) -> bool:
+    return (
+        _valid_git_branch_name(request.base_branch)
+        and _valid_git_branch_name(request.head_branch)
+    )
+
+
+def _valid_git_branch_name(branch_name: str) -> bool:
+    candidate = branch_name.strip()
+    return candidate != "" and not candidate.startswith("-")
 
 
 def _shell_quote(value: str) -> str:

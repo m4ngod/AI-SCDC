@@ -119,119 +119,118 @@ def _upgrade_sqlite_local_test_run_nullable_patch_artifact(engine) -> None:
     if engine.dialect.name != "sqlite":
         return
 
-    with engine.begin() as connection:
+    raw_connection = engine.raw_connection()
+    try:
+        raw_connection.rollback()
+        cursor = raw_connection.cursor()
         existing_tables = {
-            row["name"]
-            for row in connection.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table'")
-            ).mappings()
+            row[0]
+            for row in cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
         }
         if "local_test_run" not in existing_tables:
             return
 
         columns = {
-            row["name"]: row
-            for row in connection.execute(
-                text("PRAGMA table_info(local_test_run)")
-            ).mappings()
+            row[1]: row
+            for row in cursor.execute("PRAGMA table_info(local_test_run)").fetchall()
         }
         patch_artifact_column = columns.get("patch_artifact_id")
-        if patch_artifact_column is None or patch_artifact_column["notnull"] == 0:
+        if patch_artifact_column is None or patch_artifact_column[3] == 0:
             return
 
-        legacy_alter_table = connection.execute(
-            text("PRAGMA legacy_alter_table")
-        ).scalar()
-        connection.execute(text("PRAGMA legacy_alter_table=ON"))
+        foreign_keys = cursor.execute("PRAGMA foreign_keys").fetchone()[0]
+        legacy_alter_table = cursor.execute(
+            "PRAGMA legacy_alter_table"
+        ).fetchone()[0]
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        cursor.execute("PRAGMA legacy_alter_table=ON")
         try:
-            connection.execute(
-                text(
-                    "ALTER TABLE local_test_run "
-                    "RENAME TO local_test_run_notnull_legacy"
+            cursor.execute(
+                "ALTER TABLE local_test_run "
+                "RENAME TO local_test_run_notnull_legacy"
+            )
+            cursor.execute(
+                """
+                CREATE TABLE local_test_run (
+                    id VARCHAR NOT NULL PRIMARY KEY,
+                    workspace_id VARCHAR NOT NULL,
+                    project_id VARCHAR NOT NULL,
+                    task_id VARCHAR NOT NULL,
+                    local_run_id VARCHAR NOT NULL,
+                    patch_artifact_id VARCHAR,
+                    status VARCHAR NOT NULL,
+                    commands JSON NOT NULL,
+                    command_results JSON NOT NULL,
+                    failure_reason VARCHAR,
+                    started_at DATETIME NOT NULL,
+                    completed_at DATETIME,
+                    created_at DATETIME NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES project (id),
+                    FOREIGN KEY(task_id) REFERENCES task (id),
+                    FOREIGN KEY(local_run_id) REFERENCES local_task_run (id),
+                    FOREIGN KEY(patch_artifact_id) REFERENCES patch_artifact (id)
                 )
+                """
             )
-            connection.execute(
-                text(
-                    """
-                    CREATE TABLE local_test_run (
-                        id VARCHAR NOT NULL PRIMARY KEY,
-                        workspace_id VARCHAR NOT NULL,
-                        project_id VARCHAR NOT NULL,
-                        task_id VARCHAR NOT NULL,
-                        local_run_id VARCHAR NOT NULL,
-                        patch_artifact_id VARCHAR,
-                        status VARCHAR NOT NULL,
-                        commands JSON NOT NULL,
-                        command_results JSON NOT NULL,
-                        failure_reason VARCHAR,
-                        started_at DATETIME NOT NULL,
-                        completed_at DATETIME,
-                        created_at DATETIME NOT NULL,
-                        FOREIGN KEY(project_id) REFERENCES project (id),
-                        FOREIGN KEY(task_id) REFERENCES task (id),
-                        FOREIGN KEY(local_run_id) REFERENCES local_task_run (id),
-                        FOREIGN KEY(patch_artifact_id) REFERENCES patch_artifact (id)
-                    )
-                    """
+            cursor.execute(
+                """
+                INSERT INTO local_test_run (
+                    id,
+                    workspace_id,
+                    project_id,
+                    task_id,
+                    local_run_id,
+                    patch_artifact_id,
+                    status,
+                    commands,
+                    command_results,
+                    failure_reason,
+                    started_at,
+                    completed_at,
+                    created_at
                 )
+                SELECT
+                    id,
+                    workspace_id,
+                    project_id,
+                    task_id,
+                    local_run_id,
+                    patch_artifact_id,
+                    status,
+                    commands,
+                    command_results,
+                    failure_reason,
+                    started_at,
+                    completed_at,
+                    created_at
+                FROM local_test_run_notnull_legacy
+                """
             )
-            connection.execute(
-                text(
-                    """
-                    INSERT INTO local_test_run (
-                        id,
-                        workspace_id,
-                        project_id,
-                        task_id,
-                        local_run_id,
-                        patch_artifact_id,
-                        status,
-                        commands,
-                        command_results,
-                        failure_reason,
-                        started_at,
-                        completed_at,
-                        created_at
-                    )
-                    SELECT
-                        id,
-                        workspace_id,
-                        project_id,
-                        task_id,
-                        local_run_id,
-                        patch_artifact_id,
-                        status,
-                        commands,
-                        command_results,
-                        failure_reason,
-                        started_at,
-                        completed_at,
-                        created_at
-                    FROM local_test_run_notnull_legacy
-                    """
-                )
-            )
-            connection.execute(text("DROP TABLE local_test_run_notnull_legacy"))
-        finally:
-            connection.execute(
-                text(f"PRAGMA legacy_alter_table={int(legacy_alter_table or 0)}")
-            )
-
-        for column_name in (
-            "workspace_id",
-            "project_id",
-            "task_id",
-            "local_run_id",
-            "patch_artifact_id",
-            "status",
-            "created_at",
-        ):
-            connection.execute(
-                text(
+            cursor.execute("DROP TABLE local_test_run_notnull_legacy")
+            for column_name in (
+                "workspace_id",
+                "project_id",
+                "task_id",
+                "local_run_id",
+                "patch_artifact_id",
+                "status",
+                "created_at",
+            ):
+                cursor.execute(
                     f"CREATE INDEX IF NOT EXISTS ix_local_test_run_{column_name} "
                     f"ON local_test_run ({column_name})"
                 )
-            )
+            raw_connection.commit()
+        except Exception:
+            raw_connection.rollback()
+            raise
+        finally:
+            cursor.execute(f"PRAGMA legacy_alter_table={int(legacy_alter_table or 0)}")
+            cursor.execute(f"PRAGMA foreign_keys={int(foreign_keys or 0)}")
+    finally:
+        raw_connection.close()
 
 
 def _upgrade_sqlite_planner_run_metadata(engine) -> None:
