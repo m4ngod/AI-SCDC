@@ -40,7 +40,7 @@ def start_cloud_run(
     if repository.provider != "github":
         raise HTTPException(status_code=400, detail="Cloud runs require a GitHub repository")
     if repository.connection_status != "active":
-        raise HTTPException(status_code=400, detail="Repository connection is not active")
+        raise HTTPException(status_code=400, detail="GitHub repository is not active")
 
     event_clock = _EventClock()
     head_branch = f"ai-scdc/task-{task.id}"

@@ -276,12 +276,13 @@ def _start_cloud_fake_test_run(
         status="passed",
         command_results=[
             {
-                "command": commands[0] if commands else "cloud fake test",
+                "command": command,
                 "exit_code": 0,
                 "stdout": "cloud fake test passed",
                 "stderr": "",
                 "duration_ms": 0,
             }
+            for command in (commands or ["cloud fake test"])
         ],
         failure_reason=None,
     )
