@@ -317,11 +317,14 @@ This workflow records approval intent only. It does not run `git commit`, `git m
 
 ## Phase 7 GitHub PR Smoke Test
 
-Phase 7 can create a real GitHub pull request after an approved patch reaches `HUMAN_APPROVAL`. Automated tests use the fake GitHub adapter and do not require network access.
+Phase 7 can create a GitHub pull request after an approved patch reaches `HUMAN_APPROVAL`. By default, local/dev mode uses the fake GitHub adapter: the workflow records a `PullRequestRecord` and returns a GitHub-shaped URL, but it does not push a branch or create a remote PR. Automated tests also use this fake adapter and do not require network access.
+
+To run a real local smoke test, start the API with `AI_SCDC_GITHUB_PR_ADAPTER=real` and provide a real GitHub PAT with appropriate permissions for the target repository. Do not paste PATs into docs, commits, logs, or chat.
 
 Start the API:
 
 ```powershell
+$env:AI_SCDC_GITHUB_PR_ADAPTER = "real"
 pnpm dev:api
 ```
 
@@ -429,7 +432,7 @@ Expected task status:
 PR_CREATED
 ```
 
-Do not commit GitHub PATs or paste them into chat. The API returns only credential metadata.
+When the API is not started with `AI_SCDC_GITHUB_PR_ADAPTER=real`, the final `Create PR` request stays in fake adapter mode and no remote GitHub PR is created. The API returns only credential metadata.
 
 Focused verification commands used for Phase 7 and its Phase 6/Phase 5 prerequisite workflow:
 

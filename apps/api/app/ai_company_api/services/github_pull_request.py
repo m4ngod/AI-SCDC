@@ -145,7 +145,14 @@ class FakeGitHubPullRequestAdapter:
         )
 
 
+GITHUB_PR_ADAPTER_ENV = "AI_SCDC_GITHUB_PR_ADAPTER"
 DEFAULT_ADAPTER = FakeGitHubPullRequestAdapter()
+
+
+def _default_pull_request_adapter() -> GitHubPullRequestAdapter | FakeGitHubPullRequestAdapter:
+    if os.getenv(GITHUB_PR_ADAPTER_ENV, "").strip().lower() == "real":
+        return GitHubPullRequestAdapter()
+    return DEFAULT_ADAPTER
 
 
 def create_pull_request_for_approval(
@@ -226,7 +233,7 @@ def create_pull_request_for_approval(
 
     record_id = record.id
     try:
-        created_pr = (adapter or DEFAULT_ADAPTER).create_pull_request(
+        created_pr = (adapter or _default_pull_request_adapter()).create_pull_request(
             owner=repository.github_owner or "",
             repo=repository.github_repo or "",
             repo_url=repository.repo_url,

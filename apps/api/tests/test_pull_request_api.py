@@ -330,6 +330,45 @@ def test_create_pull_request_uses_fake_adapter_and_is_idempotent(
     assert count_events(events, "pull_request_created") == 1
 
 
+def test_create_pull_request_uses_real_adapter_when_env_var_is_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_company_api.services import github_pull_request
+
+    calls: list[dict] = []
+
+    def fake_create_pull_request(self, **kwargs) -> CreatedPullRequest:
+        calls.append(kwargs)
+        return CreatedPullRequest(
+            number=88,
+            url="https://github.com/example/demo/pull/88",
+        )
+
+    monkeypatch.setenv("AI_SCDC_GITHUB_PR_ADAPTER", "real")
+    monkeypatch.setattr(
+        github_pull_request.GitHubPullRequestAdapter,
+        "create_pull_request",
+        fake_create_pull_request,
+    )
+
+    database_path = tmp_path / "app.db"
+    with build_database_session(database_path) as session:
+        _project, _repository, _task, _cloud_run, _artifact, approval = (
+            create_approved_cloud_patch(session)
+        )
+        approval_id = approval.id
+
+        result, status_code = create_pull_request_for_approval(session, approval_id)
+
+    assert status_code == 201
+    assert result.pull_request.github_pr_number == 88
+    assert result.pull_request.github_pr_url == "https://github.com/example/demo/pull/88"
+    assert len(calls) == 1
+    assert calls[0]["owner"] == "example"
+    assert calls[0]["repo"] == "demo"
+
+
 def test_creating_pull_request_record_returns_conflict_without_new_event(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
