@@ -23,6 +23,7 @@ from ai_company_api.models.entities import (
     Task,
 )
 from ai_company_api.services.github_pull_request import (
+    CreatedPullRequest,
     GitHubPullRequestAdapter,
     create_pull_request_for_approval,
 )
@@ -403,6 +404,87 @@ def test_adapter_failure_marks_reserved_record_failed_and_redacts_token(
     assert raw_token not in str(response_error.detail)
     assert records[0].patch_approval_id == approval_id
     assert records[0].status == "failed"
+
+
+def test_finalizing_pull_request_can_recover_without_calling_adapter_again(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_company_api.services import github_pull_request
+
+    class RecordingAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def create_pull_request(self, **_kwargs) -> CreatedPullRequest:
+            self.calls += 1
+            return CreatedPullRequest(
+                number=42,
+                url="https://github.com/example/demo/pull/42",
+            )
+
+    database_path = tmp_path / "app.db"
+    adapter = RecordingAdapter()
+    with build_database_session(database_path) as session:
+        _project, _repository, task, _cloud_run, _artifact, approval = (
+            create_approved_cloud_patch(session)
+        )
+        task_id = task.id
+        approval_id = approval.id
+
+    original_transition = github_pull_request._transition_task_to_pr_created
+
+    def fail_transition_once(session: Session, task: Task) -> None:
+        monkeypatch.setattr(
+            github_pull_request,
+            "_transition_task_to_pr_created",
+            original_transition,
+        )
+        raise RuntimeError("simulated finalization failure")
+
+    monkeypatch.setattr(
+        github_pull_request,
+        "_transition_task_to_pr_created",
+        fail_transition_once,
+    )
+
+    with build_database_session(database_path) as session:
+        with pytest.raises(RuntimeError, match="simulated finalization failure"):
+            create_pull_request_for_approval(
+                session,
+                approval_id,
+                adapter=adapter,
+            )
+
+    with build_database_session(database_path) as session:
+        records = session.exec(select(PullRequestRecord)).all()
+        persisted_task = session.get(Task, task_id)
+
+    assert len(records) == 1
+    assert records[0].status == "finalizing"
+    assert records[0].github_pr_number == 42
+    assert records[0].github_pr_url == "https://github.com/example/demo/pull/42"
+    assert persisted_task is not None
+    assert persisted_task.status == TaskStatus.HUMAN_APPROVAL
+    assert adapter.calls == 1
+
+    with build_database_session(database_path) as session:
+        result, status_code = create_pull_request_for_approval(
+            session,
+            approval_id,
+            adapter=adapter,
+        )
+
+    with build_client(database_path) as client:
+        events = client.get(f"/tasks/{task_id}/events").json()
+
+    assert status_code == 200
+    assert result.task.status == TaskStatus.PR_CREATED
+    assert result.pull_request.github_pr_number == 42
+    assert result.pull_request.github_pr_url == "https://github.com/example/demo/pull/42"
+    assert result.pull_request.status == "created"
+    assert adapter.calls == 1
+    assert count_events(events, "pull_request_created") == 1
 
 
 def test_list_pull_requests_for_patch_artifact_returns_created_pr(

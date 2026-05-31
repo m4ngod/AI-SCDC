@@ -247,43 +247,8 @@ def create_pull_request_for_approval(
             },
         ) from exc
 
-    try:
-        record = session.get(PullRequestRecord, record_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="Pull request not found")
-        task = get_task(session, approval.task_id)
-        record.github_pr_number = created_pr.number
-        record.github_pr_url = created_pr.url
-        record.status = "created"
-        session.add(record)
-        _transition_task_to_pr_created(session, task)
-        create_task_event(
-            session,
-            task.id,
-            "pull_request_created",
-            "system",
-            "github_pull_request",
-            {
-                "pull_request_id": record.id,
-                "patch_approval_id": approval.id,
-                "patch_artifact_id": artifact.id,
-                "github_pr_number": record.github_pr_number,
-                "github_pr_url": record.github_pr_url,
-            },
-        )
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        existing = _existing_pull_request(session, approval.id)
-        if existing is not None:
-            return _handle_existing_pull_request(session, existing)
-        raise HTTPException(
-            status_code=409,
-            detail="Pull request record could not be created because of a uniqueness conflict",
-        ) from exc
-
-    session.refresh(record)
-    return _pull_request_result_read(session, record), 201
+    _persist_pull_request_finalizing(session, record_id, created_pr)
+    return _finalize_pull_request(session, record_id, 201)
 
 
 def list_pull_requests_for_patch_artifact(
@@ -335,10 +300,66 @@ def _handle_existing_pull_request(
             status_code=409,
             detail="Pull request creation previously failed for this patch approval",
         )
+    if record.status == "finalizing":
+        if record.github_pr_number > 0 and record.github_pr_url:
+            return _finalize_pull_request(session, record.id, 200)
+        raise HTTPException(
+            status_code=409,
+            detail="Pull request finalization is missing GitHub metadata",
+        )
     raise HTTPException(
         status_code=409,
         detail=f"Pull request is in unsupported status {record.status}",
     )
+
+
+def _persist_pull_request_finalizing(
+    session: Session,
+    record_id: str,
+    created_pr: CreatedPullRequest,
+) -> None:
+    record = session.get(PullRequestRecord, record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pull request not found")
+    record.github_pr_number = created_pr.number
+    record.github_pr_url = created_pr.url
+    record.status = "finalizing"
+    session.add(record)
+    session.commit()
+
+
+def _finalize_pull_request(
+    session: Session,
+    record_id: str,
+    status_code: int,
+) -> tuple[PullRequestResultRead, int]:
+    record = session.get(PullRequestRecord, record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pull request not found")
+
+    task = get_task(session, record.task_id)
+    if TaskStatus(task.status) != TaskStatus.PR_CREATED:
+        _transition_task_to_pr_created(session, task)
+        create_task_event(
+            session,
+            task.id,
+            "pull_request_created",
+            "system",
+            "github_pull_request",
+            {
+                "pull_request_id": record.id,
+                "patch_approval_id": record.patch_approval_id,
+                "patch_artifact_id": record.patch_artifact_id,
+                "github_pr_number": record.github_pr_number,
+                "github_pr_url": record.github_pr_url,
+            },
+        )
+
+    record.status = "created"
+    session.add(record)
+    session.commit()
+    session.refresh(record)
+    return _pull_request_result_read(session, record), status_code
 
 
 def _latest_cloud_run_for_artifact(
