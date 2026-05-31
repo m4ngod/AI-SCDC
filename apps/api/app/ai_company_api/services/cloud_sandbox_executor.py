@@ -18,21 +18,22 @@ class CommandResult:
     stdout: str
     stderr: str
     duration_ms: int
-    timed_out: bool
+    timed_out: bool = False
 
-    def as_payload(self) -> dict:
+    def as_payload(self, secrets: list[str] | None = None) -> dict:
+        result = self.redacted(secrets or [])
         return {
-            "command": self.command,
-            "exit_code": self.exit_code,
-            "stdout": self.stdout,
-            "stderr": self.stderr,
-            "duration_ms": self.duration_ms,
-            "timed_out": self.timed_out,
+            "command": result.command,
+            "exit_code": result.exit_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "duration_ms": result.duration_ms,
         }
 
     def redacted(self, secrets: list[str]) -> "CommandResult":
         return replace(
             self,
+            command=redact_secrets(self.command, secrets),
             stdout=redact_secrets(self.stdout, secrets),
             stderr=redact_secrets(self.stderr, secrets),
         )
@@ -78,6 +79,8 @@ class SandboxExecutionResult:
     risks: list[str]
     diff_text: str
     command_results: list[CommandResult]
+    test_command_results: list[CommandResult]
+    failure_reason: str | None = None
 
 
 class CloudSandboxExecutor(Protocol):
@@ -104,15 +107,15 @@ class FakeCloudSandboxExecutor:
             risks=[],
             diff_text=_fake_cloud_diff(request),
             command_results=[],
+            test_command_results=[],
+            failure_reason=None,
         )
 
 
 def select_cloud_sandbox_executor() -> CloudSandboxExecutor:
-    runner = os.getenv("AI_SCDC_CLOUD_RUNNER", "fake")
+    runner = os.getenv("AI_SCDC_CLOUD_RUNNER", "fake").strip().lower()
     if runner == "docker_local":
-        module = import_module(
-            "ai_company_api.services.docker_local_sandbox_executor"
-        )
+        module = import_module("ai_company_api.services.docker_sandbox")
         return module.DockerLocalSandboxExecutor()
     if runner == "fake":
         return FakeCloudSandboxExecutor()

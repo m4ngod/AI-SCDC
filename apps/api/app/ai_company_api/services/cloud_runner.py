@@ -17,6 +17,7 @@ from ai_company_api.schemas.api import (
     PatchArtifactRead,
 )
 from ai_company_api.services.cloud_sandbox_executor import (
+    CommandResult,
     SandboxExecutionRequest,
     select_cloud_sandbox_executor,
 )
@@ -63,6 +64,7 @@ def start_cloud_run(
     head_branch = f"ai-scdc/task-{task.id}-{cloud_run.id}"
     cloud_run.head_branch = head_branch
     cloud_run.sandbox_kind = executor.sandbox_kind
+    sandbox_env: dict[str, str] = {}
     execution_result = executor.run(
         SandboxExecutionRequest(
             task_id=task.id,
@@ -77,7 +79,7 @@ def start_cloud_run(
             docker_image=None,
             patch_command=None,
             test_commands=[],
-            env={},
+            env=sandbox_env,
             network_enabled=True,
         )
     )
@@ -132,9 +134,11 @@ def start_cloud_run(
     local_run.updated_at = utc_now()
     cloud_run.status = execution_result.status
     cloud_run.patch_artifact_id = artifact.id
-    cloud_run.command_results = [
-        result.as_payload() for result in execution_result.command_results
-    ]
+    cloud_run.command_results = _command_result_payloads(
+        execution_result.command_results,
+        secrets=_redaction_secrets(sandbox_env),
+    )
+    cloud_run.failure_reason = execution_result.failure_reason
     cloud_run.updated_at = utc_now()
     _create_cloud_run_event(
         session,
@@ -241,6 +245,18 @@ def _create_cloud_run_event(
         payload,
     )
     event.created_at = event_clock.next()
+
+
+def _redaction_secrets(env: dict[str, str]) -> list[str]:
+    return [value for value in env.values() if value]
+
+
+def _command_result_payloads(
+    command_results: list[CommandResult],
+    *,
+    secrets: list[str],
+) -> list[dict]:
+    return [result.as_payload(secrets=secrets) for result in command_results]
 
 
 def _cloud_run_read(cloud_run: CloudRun) -> CloudRunRead:

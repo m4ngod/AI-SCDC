@@ -5,7 +5,15 @@ from sqlmodel import Session
 
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
-from ai_company_api.models.entities import CloudRun, LocalTaskRun, PatchArtifact, Project, Repository, Task
+from ai_company_api.models.entities import (
+    CloudRun,
+    LocalTaskRun,
+    PatchArtifact,
+    Project,
+    Repository,
+    Task,
+)
+from ai_company_api.services.cloud_sandbox_executor import CommandResult
 from ai_company_api.services.task_state import TaskStatus
 
 
@@ -53,6 +61,37 @@ def create_cloud_task(
     session.refresh(repository)
     session.refresh(task)
     return project, repository, task
+
+
+def test_cloud_runner_command_payloads_redact_secrets_before_persistence() -> None:
+    from ai_company_api.services.cloud_runner import _command_result_payloads
+
+    payloads = _command_result_payloads(
+        [
+            CommandResult(
+                command=(
+                    "git clone "
+                    "https://ghp_example1234567890@github.com/example/demo"
+                ),
+                exit_code=1,
+                stdout="seen ghp_example1234567890",
+                stderr="failed ghp_example1234567890",
+                duration_ms=25,
+                timed_out=True,
+            )
+        ],
+        secrets=["ghp_example1234567890"],
+    )
+
+    assert payloads == [
+        {
+            "command": "git clone https://[redacted]@github.com/example/demo",
+            "exit_code": 1,
+            "stdout": "seen [redacted]",
+            "stderr": "failed [redacted]",
+            "duration_ms": 25,
+        }
+    ]
 
 
 def test_start_cloud_run_creates_patch_artifact_and_bridge_local_run(tmp_path: Path) -> None:
