@@ -16,6 +16,10 @@ from ai_company_api.schemas.api import (
     CloudRunResultRead,
     PatchArtifactRead,
 )
+from ai_company_api.services.cloud_sandbox_executor import (
+    SandboxExecutionRequest,
+    select_cloud_sandbox_executor,
+)
 from ai_company_api.services.repository import create_task_event, get_repository, get_task
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
@@ -43,18 +47,41 @@ def start_cloud_run(
         raise HTTPException(status_code=400, detail="GitHub repository is not active")
 
     event_clock = _EventClock()
-    head_branch = f"ai-scdc/task-{task.id}"
+    executor = select_cloud_sandbox_executor()
     cloud_run = CloudRun(
         project_id=task.project_id,
         task_id=task.id,
         repo_id=repository.id,
         base_branch=repository.default_branch,
-        head_branch=head_branch,
+        head_branch="",
         status="queued",
-        sandbox_kind="fake",
+        sandbox_kind=executor.sandbox_kind,
     )
     session.add(cloud_run)
     session.flush()
+
+    head_branch = f"ai-scdc/task-{task.id}-{cloud_run.id}"
+    cloud_run.head_branch = head_branch
+    cloud_run.sandbox_kind = executor.sandbox_kind
+    execution_result = executor.run(
+        SandboxExecutionRequest(
+            task_id=task.id,
+            cloud_run_id=cloud_run.id,
+            title=task.title,
+            description=task.description,
+            repo_url=repository.repo_url,
+            base_branch=repository.default_branch,
+            head_branch=head_branch,
+            allowed_paths=task.allowed_paths or [],
+            required_tests=task.required_tests or [],
+            docker_image=None,
+            patch_command=None,
+            test_commands=[],
+            env={},
+            network_enabled=True,
+        )
+    )
+
     _create_cloud_run_event(
         session,
         event_clock,
@@ -68,8 +95,11 @@ def start_cloud_run(
         task_id=task.id,
         repo_id=repository.id,
         status="running",
-        runner_kind="cloud_fake",
+        runner_kind=execution_result.runner_kind,
         base_branch=repository.default_branch,
+        base_sha=execution_result.base_sha,
+        head_sha=execution_result.head_sha,
+        worktree_path=execution_result.worktree_ref,
     )
     session.add(local_run)
     session.flush()
@@ -79,7 +109,7 @@ def start_cloud_run(
     cloud_run.updated_at = utc_now()
     task.repo_id = repository.id
     task.branch_name = head_branch
-    task.worktree_ref = f"cloud://fake/{cloud_run.id}"
+    task.worktree_ref = execution_result.worktree_ref
     _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.ASSIGNED)
     _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.IN_PROGRESS)
 
@@ -87,21 +117,24 @@ def start_cloud_run(
         project_id=task.project_id,
         task_id=task.id,
         local_run_id=local_run.id,
-        summary="Fake cloud run prepared a deterministic patch artifact.",
-        files_changed=["AI_SCDC_CLOUD_RUN.md"],
-        tests_run=[],
-        test_result="not_run",
-        risks=[],
-        diff_text=_fake_cloud_diff(task, cloud_run),
+        summary=execution_result.summary,
+        files_changed=execution_result.files_changed,
+        tests_run=execution_result.tests_run,
+        test_result=execution_result.test_result,
+        risks=execution_result.risks,
+        diff_text=execution_result.diff_text,
     )
     session.add(artifact)
     session.flush()
 
-    local_run.status = "patch_ready"
+    local_run.status = execution_result.status
     local_run.patch_artifact_id = artifact.id
     local_run.updated_at = utc_now()
-    cloud_run.status = "patch_ready"
+    cloud_run.status = execution_result.status
     cloud_run.patch_artifact_id = artifact.id
+    cloud_run.command_results = [
+        result.as_payload() for result in execution_result.command_results
+    ]
     cloud_run.updated_at = utc_now()
     _create_cloud_run_event(
         session,
@@ -208,20 +241,6 @@ def _create_cloud_run_event(
         payload,
     )
     event.created_at = event_clock.next()
-
-
-def _fake_cloud_diff(task: Task, cloud_run: CloudRun) -> str:
-    return (
-        "diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n"
-        "new file mode 100644\n"
-        "index 0000000..1111111\n"
-        "--- /dev/null\n"
-        "+++ b/AI_SCDC_CLOUD_RUN.md\n"
-        "@@ -0,0 +1,3 @@\n"
-        "+# AI-SCDC Cloud Run\n"
-        f"+Task: {task.title}\n"
-        f"+Cloud run: {cloud_run.id}\n"
-    )
 
 
 def _cloud_run_read(cloud_run: CloudRun) -> CloudRunRead:

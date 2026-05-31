@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, NonNegativeInt, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, SecretStr
 
 from ai_company_api.services.task_state import TaskStatus
 
@@ -283,6 +283,8 @@ class PatchArtifactRead(BaseModel):
 
 
 class CommandResultRead(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     command: str
     exit_code: int | None
     stdout: str

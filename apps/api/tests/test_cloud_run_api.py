@@ -67,7 +67,9 @@ def test_start_cloud_run_creates_patch_artifact_and_bridge_local_run(tmp_path: P
     result = response.json()
     assert result["cloud_run"]["status"] == "patch_ready"
     assert result["cloud_run"]["sandbox_kind"] == "fake"
-    assert result["cloud_run"]["head_branch"].startswith("ai-scdc/task-")
+    assert result["cloud_run"]["head_branch"] == (
+        f"ai-scdc/task-{task.id}-{result['cloud_run']['id']}"
+    )
     assert result["patch_artifact"]["files_changed"] == ["AI_SCDC_CLOUD_RUN.md"]
     assert result["patch_artifact"]["test_result"] == "not_run"
 
@@ -82,9 +84,11 @@ def test_start_cloud_run_creates_patch_artifact_and_bridge_local_run(tmp_path: P
     assert artifact is not None
     assert persisted_task is not None
     assert local_run.runner_kind == "cloud_fake"
+    assert local_run.worktree_path == f"cloud://fake/{cloud_run.id}"
     assert local_run.patch_artifact_id == artifact.id
     assert cloud_run.patch_artifact_id == artifact.id
     assert persisted_task.status == TaskStatus.PATCH_READY
+    assert persisted_task.branch_name == f"ai-scdc/task-{task.id}-{cloud_run.id}"
     assert persisted_task.worktree_ref == f"cloud://fake/{cloud_run.id}"
 
 
