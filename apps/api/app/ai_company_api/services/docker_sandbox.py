@@ -32,13 +32,12 @@ class ProcessResult:
 
     def to_command_result(
         self,
-        command: str | None = None,
+        command: str,
         *,
-        secrets: list[str] | None = None,
+        secrets: list[str],
     ) -> CommandResult:
-        safe_result = self.redacted(secrets or [])
-        safe_command = command if command is not None else " ".join(safe_result.args)
-        safe_command = redact_secrets(safe_command, secrets or [])
+        safe_result = self.redacted(secrets)
+        safe_command = redact_secrets(command, secrets)
         return CommandResult(
             command=safe_command,
             exit_code=safe_result.exit_code,

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from ai_company_api.services.cloud_sandbox_executor import (
     SandboxCommandSelection,
     SandboxExecutionRequest,
@@ -126,7 +128,7 @@ def test_command_result_redacts_explicit_command_and_process_output() -> None:
         duration_ms=5,
     )
 
-    command_result = result.redacted([secret]).to_command_result(
+    command_result = result.to_command_result(
         f"echo {secret}",
         secrets=[secret],
     )
@@ -135,6 +137,19 @@ def test_command_result_redacts_explicit_command_and_process_output() -> None:
     assert secret not in command_result.stdout
     assert secret not in command_result.stderr
     assert command_result.command == "echo [redacted]"
+
+
+def test_command_result_requires_secrets_for_explicit_command() -> None:
+    result = ProcessResult(
+        args=["echo"],
+        exit_code=0,
+        stdout="",
+        stderr="",
+        duration_ms=1,
+    )
+
+    with pytest.raises(TypeError):
+        result.to_command_result("echo ghp_example1234567890")
 
 
 def test_subprocess_runner_returns_result_when_command_is_missing(monkeypatch) -> None:
