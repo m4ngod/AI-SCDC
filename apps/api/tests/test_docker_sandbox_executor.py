@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -71,14 +72,93 @@ def docker_request(tmp_path: Path) -> SandboxExecutionRequest:
     )
 
 
+def docker_success_results(
+    test_results: list[ProcessResult] | None = None,
+) -> list[ProcessResult]:
+    return [
+        ProcessResult(
+            args=["docker", "version"],
+            exit_code=0,
+            stdout="Docker",
+            stderr="",
+            duration_ms=1,
+        ),
+        ProcessResult(
+            args=["docker", "clone"],
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration_ms=1,
+        ),
+        ProcessResult(
+            args=["docker", "checkout"],
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration_ms=1,
+        ),
+        ProcessResult(
+            args=["docker", "branch"],
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration_ms=1,
+        ),
+        ProcessResult(
+            args=["docker", "patch"],
+            exit_code=0,
+            stdout="patched",
+            stderr="",
+            duration_ms=2,
+        ),
+        ProcessResult(
+            args=["docker", "intent-to-add"],
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration_ms=1,
+        ),
+        ProcessResult(
+            args=["docker", "name-only"],
+            exit_code=0,
+            stdout="README.md\n",
+            stderr="",
+            duration_ms=1,
+        ),
+        ProcessResult(
+            args=["docker", "diff"],
+            exit_code=0,
+            stdout="diff --git a/README.md b/README.md\n+Docker patch\n",
+            stderr="",
+            duration_ms=1,
+        ),
+        ProcessResult(
+            args=["docker", "base-sha"],
+            exit_code=0,
+            stdout="abc123\n",
+            stderr="",
+            duration_ms=1,
+        ),
+        ProcessResult(
+            args=["docker", "head-sha"],
+            exit_code=0,
+            stdout="def456\n",
+            stderr="",
+            duration_ms=1,
+        ),
+        *(test_results or []),
+    ]
+
+
 def test_docker_run_args_do_not_mount_host_home_or_docker_socket(
     tmp_path: Path,
 ) -> None:
     runner = RecordingRunner()
     executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(docker_request(tmp_path), docker_image=None)
 
     args = executor.build_docker_run_args(
-        request=docker_request(tmp_path),
+        request=request,
         workspace_path=Path(tmp_path.anchor) / "ai-scdc-test-workspace",
         artifact_path=Path(tmp_path.anchor) / "ai-scdc-test-artifacts",
         command="python -V",
@@ -87,7 +167,7 @@ def test_docker_run_args_do_not_mount_host_home_or_docker_socket(
     joined = " ".join(args).replace("\\", "/")
     home = str(Path.home()).replace("\\", "/")
 
-    assert "python:3.11-slim" in args
+    assert "python:3.11-bookworm" in args
     assert "/var/run/docker.sock" not in joined
     assert home not in joined
     assert "--network" in args
@@ -182,25 +262,17 @@ def test_selects_docker_executor_when_enabled(monkeypatch) -> None:
 
 def test_docker_executor_captures_diff_and_test_result(tmp_path: Path) -> None:
     runner = RecordingRunner(
-        [
-            ProcessResult(args=["docker", "version"], exit_code=0, stdout="Docker", stderr="", duration_ms=1),
-            ProcessResult(args=["docker", "clone"], exit_code=0, stdout="", stderr="", duration_ms=1),
-            ProcessResult(args=["docker", "checkout"], exit_code=0, stdout="", stderr="", duration_ms=1),
-            ProcessResult(args=["docker", "branch"], exit_code=0, stdout="", stderr="", duration_ms=1),
-            ProcessResult(args=["docker", "patch"], exit_code=0, stdout="patched", stderr="", duration_ms=2),
-            ProcessResult(args=["docker", "intent-to-add"], exit_code=0, stdout="", stderr="", duration_ms=1),
-            ProcessResult(args=["docker", "name-only"], exit_code=0, stdout="README.md\n", stderr="", duration_ms=1),
-            ProcessResult(
-                args=["docker", "diff"],
-                exit_code=0,
-                stdout="diff --git a/README.md b/README.md\n+Docker patch\n",
-                stderr="",
-                duration_ms=1,
-            ),
-            ProcessResult(args=["docker", "base-sha"], exit_code=0, stdout="abc123\n", stderr="", duration_ms=1),
-            ProcessResult(args=["docker", "head-sha"], exit_code=0, stdout="def456\n", stderr="", duration_ms=1),
-            ProcessResult(args=["docker", "test"], exit_code=0, stdout="Python 3.11\n", stderr="", duration_ms=3),
-        ]
+        docker_success_results(
+            [
+                ProcessResult(
+                    args=["docker", "test"],
+                    exit_code=0,
+                    stdout="Python 3.11\n",
+                    stderr="",
+                    duration_ms=3,
+                )
+            ]
+        )
     )
     executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
 
@@ -212,7 +284,87 @@ def test_docker_executor_captures_diff_and_test_result(tmp_path: Path) -> None:
     assert result.diff_text.startswith("diff --git a/README.md")
     assert result.base_sha == "abc123"
     assert result.head_sha == "def456"
-    assert result.tests_run == ["python-version"]
+    assert result.tests_run == ["python -V"]
     assert result.test_result == "passed"
     assert result.test_command_results[0].stdout == "Python 3.11\n"
     assert result.failure_reason is None
+
+
+def test_docker_executor_keeps_host_env_for_docker_cli(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AI_SCDC_HOST_ENV_MARKER", "host-value")
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(docker_request(tmp_path), test_commands=[], required_tests=[])
+
+    executor.run(request)
+
+    docker_run_env = runner.calls[1]["env"]
+    assert docker_run_env is not request.env
+    assert docker_run_env["AI_SCDC_HOST_ENV_MARKER"] == "host-value"
+    assert docker_run_env["AI_SCDC_GITHUB_TOKEN"] == "ghp_example1234567890"
+
+
+def test_docker_executor_marks_tests_not_run_when_no_tests_configured(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(docker_request(tmp_path), test_commands=[], required_tests=[])
+
+    result = executor.run(request)
+
+    assert result.status == "patch_ready"
+    assert result.tests_run == []
+    assert result.test_result == "not_run"
+    assert result.test_command_results == []
+
+
+def test_docker_executor_returns_failure_when_changed_file_not_allowed(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        allowed_paths=["docs/**"],
+        test_commands=[],
+        required_tests=[],
+    )
+
+    result = executor.run(request)
+
+    assert result.status == "failed"
+    assert result.failure_reason == "artifact_capture_failed"
+    assert result.files_changed == ["README.md"]
+    assert result.diff_text.startswith("diff --git a/README.md")
+
+
+def test_docker_executor_marks_failed_when_test_command_fails(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(
+        docker_success_results(
+            [
+                ProcessResult(
+                    args=["docker", "test"],
+                    exit_code=1,
+                    stdout="",
+                    stderr="failed",
+                    duration_ms=3,
+                )
+            ]
+        )
+    )
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+
+    result = executor.run(docker_request(tmp_path))
+
+    assert result.status == "failed"
+    assert result.tests_run == ["python -V"]
+    assert result.test_result == "failed"
+    assert result.failure_reason == "test_failed"
+    assert result.files_changed == ["README.md"]
+    assert result.diff_text.startswith("diff --git a/README.md")

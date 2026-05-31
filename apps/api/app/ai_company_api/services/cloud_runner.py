@@ -116,6 +116,49 @@ def start_cloud_run(
     _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.ASSIGNED)
     _transition_task_for_cloud_runner(session, event_clock, task, TaskStatus.IN_PROGRESS)
 
+    secrets = _redaction_secrets(sandbox_env)
+    if execution_result.status != "patch_ready":
+        failure_command_results = [
+            *execution_result.command_results,
+            *execution_result.test_command_results,
+        ]
+        local_run.status = execution_result.status
+        local_run.failure_reason = execution_result.failure_reason
+        local_run.updated_at = utc_now()
+        cloud_run.status = execution_result.status
+        cloud_run.command_results = _command_result_payloads(
+            failure_command_results,
+            secrets=secrets,
+        )
+        cloud_run.failure_reason = execution_result.failure_reason
+        cloud_run.updated_at = utc_now()
+        _create_cloud_run_event(
+            session,
+            event_clock,
+            task.id,
+            "cloud_run_failed",
+            {
+                "cloud_run_id": cloud_run.id,
+                "local_run_id": local_run.id,
+                "failure_reason": execution_result.failure_reason,
+            },
+        )
+        _transition_task_for_cloud_runner(
+            session,
+            event_clock,
+            task,
+            TaskStatus.FIX_REQUESTED,
+        )
+        session.add(local_run)
+        session.add(cloud_run)
+        session.add(task)
+        session.commit()
+        session.refresh(cloud_run)
+        return CloudRunResultRead(
+            cloud_run=_cloud_run_read(cloud_run),
+            patch_artifact=None,
+        )
+
     artifact = PatchArtifact(
         project_id=task.project_id,
         task_id=task.id,
@@ -130,7 +173,6 @@ def start_cloud_run(
     session.add(artifact)
     session.flush()
 
-    secrets = _redaction_secrets(sandbox_env)
     if execution_result.test_command_results:
         test_run = LocalTestRun(
             project_id=task.project_id,

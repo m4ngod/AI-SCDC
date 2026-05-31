@@ -1,4 +1,5 @@
 from dataclasses import dataclass, replace
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -171,7 +172,7 @@ class DockerLocalSandboxExecutor:
             "-w",
             "/workspace/repo",
             *env_args,
-            request.docker_image or "python:3.11-slim",
+            request.docker_image or "python:3.11-bookworm",
             "sh",
             "-lc",
             command,
@@ -182,6 +183,7 @@ class DockerLocalSandboxExecutor:
         test_results: list[CommandResult] = []
         secrets = list(request.env.values())
         runner = RedactingProcessRunner(self._process_runner, secrets)
+        docker_cli_env = _docker_cli_env(request.env)
 
         self._workspace_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
@@ -194,7 +196,11 @@ class DockerLocalSandboxExecutor:
             workspace_path.mkdir(parents=True, exist_ok=True)
             artifact_path.mkdir(parents=True, exist_ok=True)
 
-            docker_version = runner.run(["docker", "version"], timeout_seconds=15)
+            docker_version = runner.run(
+                ["docker", "version"],
+                env=docker_cli_env,
+                timeout_seconds=15,
+            )
             command_results.append(
                 docker_version.to_command_result("docker version", secrets=secrets)
             )
@@ -232,7 +238,7 @@ class DockerLocalSandboxExecutor:
                         command=command,
                         timeout_seconds=timeout_seconds,
                     ),
-                    env=request.env,
+                    env=docker_cli_env,
                     timeout_seconds=timeout_seconds,
                 )
                 captured[label] = process_result
@@ -272,9 +278,22 @@ class DockerLocalSandboxExecutor:
                     test_results,
                 )
 
-            _ensure_files_allowed(files_changed, request.allowed_paths)
+            try:
+                _ensure_files_allowed(files_changed, request.allowed_paths)
+            except DockerSandboxError:
+                return _failed_result(
+                    "artifact_capture_failed",
+                    "docker_local",
+                    command_results,
+                    test_results,
+                    files_changed=files_changed,
+                    diff_text=diff_text,
+                    base_sha=captured["base-sha"].stdout.strip() or None,
+                    head_sha=captured["head-sha"].stdout.strip() or None,
+                    worktree_ref=f"cloud://docker-local/{request.cloud_run_id}",
+                )
 
-            test_status = "passed"
+            test_status = "passed" if request.test_commands else "not_run"
             for command in request.test_commands:
                 process_result = runner.run(
                     self.build_docker_run_args(
@@ -284,7 +303,7 @@ class DockerLocalSandboxExecutor:
                         command=command.command,
                         timeout_seconds=command.timeout_seconds,
                     ),
-                    env=request.env,
+                    env=docker_cli_env,
                     timeout_seconds=command.timeout_seconds,
                 )
                 test_results.append(
@@ -305,7 +324,7 @@ class DockerLocalSandboxExecutor:
                 worktree_ref=f"cloud://docker-local/{request.cloud_run_id}",
                 summary="Docker local sandbox produced a patch artifact.",
                 files_changed=files_changed,
-                tests_run=[command.key for command in request.test_commands],
+                tests_run=[command.command for command in request.test_commands],
                 test_result=test_status,
                 risks=[],
                 diff_text=diff_text,
@@ -323,24 +342,34 @@ def _output_to_text(value: str | bytes | None) -> str:
     return value
 
 
+def _docker_cli_env(container_env: dict[str, str]) -> dict[str, str]:
+    return {**os.environ, **container_env}
+
+
 def _failed_result(
     failure_reason: str,
     runner_kind: str,
     command_results: list[CommandResult],
     test_results: list[CommandResult],
+    *,
+    base_sha: str | None = None,
+    head_sha: str | None = None,
+    worktree_ref: str | None = None,
+    files_changed: list[str] | None = None,
+    diff_text: str = "",
 ) -> SandboxExecutionResult:
     return SandboxExecutionResult(
         status="failed",
         runner_kind=runner_kind,
-        base_sha=None,
-        head_sha=None,
-        worktree_ref=None,
+        base_sha=base_sha,
+        head_sha=head_sha,
+        worktree_ref=worktree_ref,
         summary="",
-        files_changed=[],
+        files_changed=files_changed or [],
         tests_run=[],
         test_result="not_run",
         risks=[],
-        diff_text="",
+        diff_text=diff_text,
         command_results=command_results,
         test_command_results=test_results,
         failure_reason=failure_reason,

@@ -153,7 +153,7 @@ def test_start_cloud_run_persists_executor_test_results(
                 worktree_ref=f"cloud://docker-local/{request.cloud_run_id}",
                 summary="Docker local sandbox produced a patch artifact.",
                 files_changed=["AI_SCDC_CLOUD_RUN.md"],
-                tests_run=["python-version"],
+                tests_run=["python -V"],
                 test_result="passed",
                 risks=[],
                 diff_text="diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n+patch\n",
@@ -201,7 +201,7 @@ def test_start_cloud_run_persists_executor_test_results(
 
     assert len(test_runs) == 1
     assert test_runs[0].status == "passed"
-    assert test_runs[0].commands == ["python-version"]
+    assert test_runs[0].commands == ["python -V"]
     assert test_runs[0].command_results == [
         {
             "command": "python -V",
@@ -212,6 +212,91 @@ def test_start_cloud_run_persists_executor_test_results(
         }
     ]
     assert test_runs[0].failure_reason is None
+
+
+def test_start_cloud_run_failure_does_not_create_patch_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FailedDockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, _request):
+            return SandboxExecutionResult(
+                status="failed",
+                runner_kind="docker_local",
+                base_sha=None,
+                head_sha=None,
+                worktree_ref=None,
+                summary="",
+                files_changed=[],
+                tests_run=["python -V"],
+                test_result="failed",
+                risks=[],
+                diff_text="",
+                command_results=[
+                    CommandResult(
+                        command="docker version",
+                        exit_code=0,
+                        stdout="Docker",
+                        stderr="",
+                        duration_ms=1,
+                    )
+                ],
+                test_command_results=[
+                    CommandResult(
+                        command="python -V",
+                        exit_code=1,
+                        stdout="",
+                        stderr="failed",
+                        duration_ms=3,
+                    )
+                ],
+                failure_reason="test_failed",
+            )
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FailedDockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    response = client.post(f"/tasks/{task.id}/cloud-runs", json={"repo_id": repository.id})
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["patch_artifact"] is None
+    assert result["cloud_run"]["status"] == "failed"
+    assert result["cloud_run"]["failure_reason"] == "test_failed"
+    assert result["cloud_run"]["patch_artifact_id"] is None
+    assert [item["command"] for item in result["cloud_run"]["command_results"]] == [
+        "docker version",
+        "python -V",
+    ]
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, result["cloud_run"]["id"])
+        local_run = session.get(LocalTaskRun, result["cloud_run"]["local_run_id"])
+        artifacts = session.exec(select(PatchArtifact)).all()
+        test_runs = session.exec(select(LocalTestRun)).all()
+        persisted_task = session.get(Task, task.id)
+
+    assert cloud_run is not None
+    assert local_run is not None
+    assert persisted_task is not None
+    assert artifacts == []
+    assert test_runs == []
+    assert cloud_run.patch_artifact_id is None
+    assert cloud_run.failure_reason == "test_failed"
+    assert local_run.patch_artifact_id is None
+    assert local_run.failure_reason == "test_failed"
+    assert persisted_task.status == TaskStatus.FIX_REQUESTED
 
 
 def test_list_and_get_cloud_run_routes_return_created_run(tmp_path: Path) -> None:
