@@ -1,5 +1,10 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import type { ConsoleApiClient, PlannerRunDraft, TaskCard } from "./api/client";
+import type {
+  ConsoleApiClient,
+  PlannerRunDraft,
+  SandboxProfileInput,
+  TaskCard
+} from "./api/client";
 import { createConfiguredApiClient } from "./api/client";
 import { GoalInput } from "./components/GoalInput";
 import { PlannerDraftPanel } from "./components/PlannerDraftPanel";
@@ -20,6 +25,31 @@ type GitHubSetupInput = {
 };
 
 const defaultApiClient = createConfiguredApiClient();
+
+const defaultDockerSandboxProfile: SandboxProfileInput = {
+  name: "Default Docker profile",
+  docker_image: "python:3.11-bookworm",
+  patch_commands: [
+    {
+      key: "write-note",
+      label: "Write note",
+      command: "python scripts/write_note.py",
+      timeout_seconds: 300,
+      is_default: true
+    }
+  ],
+  test_commands: [
+    {
+      key: "python-version",
+      label: "Python version",
+      command: "python -V",
+      timeout_seconds: 300,
+      is_default: true
+    }
+  ],
+  allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+  network_enabled: true
+};
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -60,6 +90,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   });
   const [githubSetupStatus, setGithubSetupStatus] = useState<string | null>(null);
   const [githubSetupError, setGithubSetupError] = useState<string | null>(null);
+  const [sandboxProfileId, setSandboxProfileId] = useState<string | null>(null);
+  const [sandboxProfileStatus, setSandboxProfileStatus] = useState<string | null>(null);
   const [isConnectingGitHubRepo, setIsConnectingGitHubRepo] = useState(false);
   const [runningCloudTaskId, setRunningCloudTaskId] = useState<string | null>(null);
   const [creatingPullRequestTaskId, setCreatingPullRequestTaskId] = useState<string | null>(null);
@@ -196,11 +228,13 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     try {
       setGithubSetupStatus(null);
       setGithubSetupError(null);
+      setSandboxProfileId(null);
+      setSandboxProfileStatus(null);
       const credential = await apiClient.createGitHubCredential({
         display_name: "Dev GitHub",
         token: input.token
       });
-      await apiClient.createGitHubRepository({
+      const repository = await apiClient.createGitHubRepository({
         name: `${input.github_owner}/${input.github_repo}`,
         repo_url: input.repo_url,
         github_owner: input.github_owner,
@@ -208,6 +242,15 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         default_branch: input.default_branch,
         github_credential_id: credential.id
       });
+      if (!repository.project_id) {
+        throw new Error("GitHub repository response did not include project id");
+      }
+      const sandboxProfile = await apiClient.createSandboxProfile(
+        repository.project_id,
+        defaultDockerSandboxProfile
+      );
+      setSandboxProfileId(sandboxProfile.id);
+      setSandboxProfileStatus(`Sandbox profile ready: ${sandboxProfile.docker_image}`);
       setGithubSetupStatus("GitHub repo connected");
       setGithubSetupInput((currentInput) => ({ ...currentInput, token: "" }));
     } catch (error) {
@@ -234,7 +277,13 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       return nextErrors;
     });
     try {
-      const result = await apiClient.startCloudRun(taskId);
+      const result = sandboxProfileId
+        ? await apiClient.startCloudRun(taskId, {
+            sandbox_profile_id: sandboxProfileId,
+            patch_command_key: "write-note",
+            test_command_keys: ["python-version"]
+          })
+        : await apiClient.startCloudRun(taskId);
       setTasks((currentTasks) =>
         currentTasks.map((task) =>
           task.id === taskId
@@ -512,6 +561,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
             {isConnectingGitHubRepo ? "Connecting GitHub repo" : "Connect GitHub repo"}
           </button>
           {githubSetupStatus ? <p>{githubSetupStatus}</p> : null}
+          {sandboxProfileStatus ? <p>{sandboxProfileStatus}</p> : null}
           {githubSetupError ? (
             <p className="github-setup-error" role="alert">
               {githubSetupError}

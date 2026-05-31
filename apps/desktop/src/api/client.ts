@@ -21,6 +21,7 @@ export type TaskCard = {
 
 export type RepositoryCard = {
   id: string;
+  project_id?: string;
   name: string;
   local_path: string;
   default_branch: string;
@@ -56,6 +57,43 @@ export type GitHubRepositoryInput = {
   github_repo: string;
   default_branch?: string;
   github_credential_id: string;
+};
+
+export type SandboxCommandCard = {
+  key: string;
+  label: string;
+  command: string;
+  timeout_seconds: number;
+  is_default: boolean;
+};
+
+export type SandboxProfileCard = {
+  id: string;
+  workspace_id?: string;
+  project_id?: string;
+  name: string;
+  docker_image: string;
+  patch_commands: SandboxCommandCard[];
+  test_commands: SandboxCommandCard[];
+  allowed_env_vars: string[];
+  network_enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type SandboxProfileInput = {
+  name: string;
+  docker_image: string;
+  patch_commands: SandboxCommandCard[];
+  test_commands: SandboxCommandCard[];
+  allowed_env_vars: string[];
+  network_enabled: boolean;
+};
+
+export type CloudRunInput = {
+  sandbox_profile_id?: string;
+  patch_command_key?: string;
+  test_command_keys?: string[];
 };
 
 export type LocalTaskRunCard = {
@@ -94,7 +132,7 @@ export type LocalTestRunCard = {
   project_id?: string;
   task_id: string;
   local_run_id: string;
-  patch_artifact_id: string;
+  patch_artifact_id: string | null;
   status: string;
   commands: string[];
   command_results: CommandResultCard[];
@@ -157,7 +195,11 @@ export type CloudRunCard = {
   base_branch?: string;
   head_branch: string;
   status: string;
-  sandbox_kind?: string;
+  sandbox_kind?: string | null;
+  sandbox_profile_id?: string | null;
+  patch_command_key?: string | null;
+  test_command_keys?: string[];
+  command_results?: CommandResultCard[];
   patch_artifact_id?: string | null;
   failure_reason?: string | null;
   created_at?: string;
@@ -262,7 +304,12 @@ export type ConsoleApiClient = {
   createGitHubCredential: (input: GitHubCredentialInput) => Promise<GitHubCredentialCard>;
   listGitHubCredentials: () => Promise<GitHubCredentialCard[]>;
   createGitHubRepository: (input: GitHubRepositoryInput) => Promise<RepositoryCard>;
-  startCloudRun: (taskId: string) => Promise<CloudRunResult>;
+  createSandboxProfile: (
+    projectId: string,
+    input: SandboxProfileInput
+  ) => Promise<SandboxProfileCard>;
+  listSandboxProfiles: (projectId: string) => Promise<SandboxProfileCard[]>;
+  startCloudRun: (taskId: string, input?: CloudRunInput) => Promise<CloudRunResult>;
   createPullRequest: (approvalId: string) => Promise<PullRequestResult>;
   startLocalRun: (taskId: string) => Promise<LocalRunResult>;
   runPatchTests: (patchArtifactId: string) => Promise<PatchTestRunResult>;
@@ -290,6 +337,8 @@ type ApiTask = {
 type ApiRepository = RepositoryCard;
 
 type ApiGitHubCredential = GitHubCredentialCard;
+
+type ApiSandboxProfile = SandboxProfileCard;
 
 type ApiLocalTaskRun = LocalTaskRunCard;
 
@@ -408,6 +457,8 @@ function fakePatchArtifactId(taskId: string) {
 function fakeLocalRunId(taskId: string) {
   return `local_run_${taskId}`;
 }
+
+const fakeSandboxProfilesByProject = new Map<string, SandboxProfileCard[]>();
 
 function fakeTaskFromPatchArtifact(patchArtifactId: string) {
   const demoTask = demoTasks.find((item) => item.patch_artifact?.id === patchArtifactId);
@@ -535,6 +586,7 @@ export const fakeApiClient: ConsoleApiClient = {
   async createGitHubRepository(input: GitHubRepositoryInput) {
     return {
       id: "repo_github_demo",
+      project_id: input.project_id ?? "project_demo",
       name: input.name ?? `${input.github_owner}/${input.github_repo}`,
       local_path: "",
       default_branch: input.default_branch ?? "main",
@@ -547,9 +599,25 @@ export const fakeApiClient: ConsoleApiClient = {
       connection_status: "connected"
     };
   },
-  async startCloudRun(taskId: string) {
+  async createSandboxProfile(projectId: string, input: SandboxProfileInput) {
+    const profiles = fakeSandboxProfilesByProject.get(projectId) ?? [];
+    const profile: SandboxProfileCard = {
+      id: `sandbox_profile_${projectId}_${profiles.length + 1}`,
+      project_id: projectId,
+      ...input,
+      created_at: "2026-05-29T00:00:00Z",
+      updated_at: "2026-05-29T00:00:00Z"
+    };
+    fakeSandboxProfilesByProject.set(projectId, [...profiles, profile]);
+    return profile;
+  },
+  async listSandboxProfiles(projectId: string) {
+    return [...(fakeSandboxProfilesByProject.get(projectId) ?? [])];
+  },
+  async startCloudRun(taskId: string, input: CloudRunInput = {}) {
     const cloudRunId = `cloud_run_${taskId}`;
     const patchArtifactId = `patch_cloud_${taskId}`;
+    const usesSandboxProfile = Boolean(input.sandbox_profile_id);
     return {
       cloud_run: {
         id: cloudRunId,
@@ -561,7 +629,11 @@ export const fakeApiClient: ConsoleApiClient = {
         base_branch: "main",
         head_branch: `ai-scdc/${taskId}`,
         status: "patch_ready",
-        sandbox_kind: "fake",
+        sandbox_kind: usesSandboxProfile ? "docker_local" : "fake",
+        sandbox_profile_id: input.sandbox_profile_id ?? null,
+        patch_command_key: input.patch_command_key ?? null,
+        test_command_keys: input.test_command_keys ?? [],
+        command_results: [],
         patch_artifact_id: patchArtifactId,
         failure_reason: null,
         created_at: "2026-05-29T00:00:00Z",
@@ -910,6 +982,22 @@ function mapLocalTestRunCard(testRun: ApiLocalTestRun): LocalTestRunCard {
   };
 }
 
+function mapSandboxProfileCard(profile: ApiSandboxProfile): SandboxProfileCard {
+  return {
+    id: profile.id,
+    workspace_id: profile.workspace_id,
+    project_id: profile.project_id,
+    name: profile.name,
+    docker_image: profile.docker_image,
+    patch_commands: profile.patch_commands,
+    test_commands: profile.test_commands,
+    allowed_env_vars: profile.allowed_env_vars,
+    network_enabled: profile.network_enabled,
+    created_at: profile.created_at,
+    updated_at: profile.updated_at
+  };
+}
+
 function mapPatchReviewCard(review: ApiPatchReview): PatchReviewCard {
   return {
     id: review.id,
@@ -971,6 +1059,10 @@ function mapCloudRunCard(cloudRun: ApiCloudRun): CloudRunCard {
     head_branch: cloudRun.head_branch,
     status: cloudRun.status,
     sandbox_kind: cloudRun.sandbox_kind,
+    sandbox_profile_id: cloudRun.sandbox_profile_id,
+    patch_command_key: cloudRun.patch_command_key,
+    test_command_keys: cloudRun.test_command_keys,
+    command_results: cloudRun.command_results,
     patch_artifact_id: cloudRun.patch_artifact_id,
     failure_reason: cloudRun.failure_reason,
     created_at: cloudRun.created_at,
@@ -1275,7 +1367,32 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         `POST /projects/${projectId}/github-repositories`
       );
     },
-    async startCloudRun(taskId: string) {
+    async createSandboxProfile(projectId: string, input: SandboxProfileInput) {
+      const response = await fetch(
+        apiUrl(options.baseUrl, `/projects/${projectId}/sandbox-profiles`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input)
+        }
+      );
+      const profile = await readJsonResponse<ApiSandboxProfile>(
+        response,
+        `POST /projects/${projectId}/sandbox-profiles`
+      );
+      return mapSandboxProfileCard(profile);
+    },
+    async listSandboxProfiles(projectId: string) {
+      const response = await fetch(
+        apiUrl(options.baseUrl, `/projects/${projectId}/sandbox-profiles`)
+      );
+      const profiles = await readJsonResponse<ApiSandboxProfile[]>(
+        response,
+        `GET /projects/${projectId}/sandbox-profiles`
+      );
+      return profiles.map(mapSandboxProfileCard);
+    },
+    async startCloudRun(taskId: string, input: CloudRunInput = {}) {
       const projectId = await getProjectId();
       const repositoriesResponse = await fetch(
         apiUrl(options.baseUrl, `/projects/${projectId}/repositories`)
@@ -1295,7 +1412,7 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
       const response = await fetch(apiUrl(options.baseUrl, `/tasks/${taskId}/cloud-runs`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_id: repository.id })
+        body: JSON.stringify({ repo_id: repository.id, ...input })
       });
       const result = await readJsonResponse<ApiCloudRunResult>(
         response,

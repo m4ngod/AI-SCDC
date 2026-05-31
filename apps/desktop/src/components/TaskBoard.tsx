@@ -152,7 +152,14 @@ export function TaskBoard({
                   <div>
                     <dt>Cloud run</dt>
                     <dd>
-                      {task.cloud_run.status} on <span>{task.cloud_run.head_branch}</span>
+                      <span>{`${task.cloud_run.status} via ${
+                        task.cloud_run.sandbox_kind ?? "fake"
+                      } on ${task.cloud_run.head_branch}`}</span>
+                      {task.cloud_run.failure_reason ? (
+                        <span className="task-inline-error">
+                          {task.cloud_run.failure_reason}
+                        </span>
+                      ) : null}
                     </dd>
                   </div>
                 ) : null}

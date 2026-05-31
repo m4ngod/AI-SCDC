@@ -262,6 +262,7 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
     listGitHubCredentials: vi.fn().mockResolvedValue([]),
     createGitHubRepository: vi.fn().mockResolvedValue({
       id: "repo_github_test",
+      project_id: "project_demo",
       name: "example/demo",
       local_path: "",
       default_branch: "main",
@@ -273,6 +274,33 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
       github_credential_id: "github_credential_test",
       connection_status: "connected"
     }),
+    createSandboxProfile: vi.fn().mockResolvedValue({
+      id: "sandbox_profile_test",
+      project_id: "project_demo",
+      name: "Default Docker profile",
+      docker_image: "python:3.11-bookworm",
+      patch_commands: [
+        {
+          key: "write-note",
+          label: "Write note",
+          command: "python scripts/write_note.py",
+          timeout_seconds: 300,
+          is_default: true
+        }
+      ],
+      test_commands: [
+        {
+          key: "python-version",
+          label: "Python version",
+          command: "python -V",
+          timeout_seconds: 300,
+          is_default: true
+        }
+      ],
+      allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+      network_enabled: true
+    }),
+    listSandboxProfiles: vi.fn().mockResolvedValue([]),
     startCloudRun: vi.fn().mockResolvedValue({
       cloud_run: {
         id: "cloud_run_test",
@@ -972,6 +1000,7 @@ describe("App", () => {
     const createGitHubRepository =
       vi.fn<ConsoleApiClient["createGitHubRepository"]>().mockResolvedValue({
         id: "repo_github_test",
+        project_id: "project_demo",
         name: "example/demo",
         local_path: "",
         default_branch: "main",
@@ -983,7 +1012,22 @@ describe("App", () => {
         github_credential_id: "github_credential_test",
         connection_status: "connected"
       });
-    const apiClient = createMockApiClient({ createGitHubCredential, createGitHubRepository });
+    const createSandboxProfile =
+      vi.fn<ConsoleApiClient["createSandboxProfile"]>().mockResolvedValue({
+        id: "sandbox_profile_test",
+        project_id: "project_demo",
+        name: "Default Docker profile",
+        docker_image: "python:3.11-bookworm",
+        patch_commands: [],
+        test_commands: [],
+        allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+        network_enabled: true
+      });
+    const apiClient = createMockApiClient({
+      createGitHubCredential,
+      createGitHubRepository,
+      createSandboxProfile
+    });
 
     render(<App apiClient={apiClient} />);
 
@@ -1002,7 +1046,34 @@ describe("App", () => {
       default_branch: "main",
       github_credential_id: "github_credential_test"
     });
+    expect(createSandboxProfile).toHaveBeenCalledWith("project_demo", {
+      name: "Default Docker profile",
+      docker_image: "python:3.11-bookworm",
+      patch_commands: [
+        {
+          key: "write-note",
+          label: "Write note",
+          command: "python scripts/write_note.py",
+          timeout_seconds: 300,
+          is_default: true
+        }
+      ],
+      test_commands: [
+        {
+          key: "python-version",
+          label: "Python version",
+          command: "python -V",
+          timeout_seconds: 300,
+          is_default: true
+        }
+      ],
+      allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+      network_enabled: true
+    });
     expect(await screen.findByText("GitHub repo connected")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Sandbox profile ready: python:3.11-bookworm")
+    ).toBeInTheDocument();
   });
 
   it("clears the github token after successful setup", async () => {
@@ -1029,6 +1100,7 @@ describe("App", () => {
     const createGitHubRepository =
       vi.fn<ConsoleApiClient["createGitHubRepository"]>().mockResolvedValue({
         id: "repo_github_test",
+        project_id: "project_demo",
         name: "example/demo",
         local_path: "",
         default_branch: "main",
@@ -1087,7 +1159,83 @@ describe("App", () => {
 
     expect(startCloudRun).toHaveBeenCalledWith("task_cloud");
     expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
-    expect(within(board).getByText("ai-scdc/task-cloud")).toBeInTheDocument();
+    expect(
+      within(board).getByText("patch_ready via fake on ai-scdc/task-cloud")
+    ).toBeInTheDocument();
+  });
+
+  it("runs a cloud task with sandbox profile keys after GitHub setup", async () => {
+    const user = userEvent.setup();
+    const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({
+      cloud_run: {
+        ...cloudRunFixture(),
+        sandbox_kind: "docker_local",
+        sandbox_profile_id: "sandbox_profile_test",
+        patch_command_key: "write-note",
+        test_command_keys: ["python-version"],
+        command_results: []
+      },
+      patch_artifact: cloudPatchArtifactFixture()
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi
+        .fn()
+        .mockResolvedValue([{ ...taskCardFixture("Profiled cloud task"), id: "task_cloud" }]),
+      startCloudRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    await user.type(screen.getByLabelText("GitHub token"), "ghp_test_token_1234");
+    await user.click(screen.getByRole("button", { name: "Connect GitHub repo" }));
+    expect(
+      await screen.findByText("Sandbox profile ready: python:3.11-bookworm")
+    ).toBeInTheDocument();
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run cloud" }));
+
+    expect(startCloudRun).toHaveBeenCalledWith("task_cloud", {
+      sandbox_profile_id: "sandbox_profile_test",
+      patch_command_key: "write-note",
+      test_command_keys: ["python-version"]
+    });
+    expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
+  });
+
+  it("renders docker cloud run metadata and failure reason", async () => {
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([
+        {
+          ...taskCardFixture("Failed docker cloud task"),
+          id: "task_cloud_failed",
+          status: "CREATED",
+          cloud_run: {
+            ...cloudRunFixture(),
+            id: "cloud_run_failed",
+            task_id: "task_cloud_failed",
+            status: "failed",
+            sandbox_kind: "docker_local",
+            head_branch: "ai-scdc/task-cloud-failed-with-a-long-branch-name",
+            failure_reason: "Docker image pull failed because authentication expired"
+          }
+        }
+      ])
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    expect(
+      await within(board).findByText(
+        "failed via docker_local on ai-scdc/task-cloud-failed-with-a-long-branch-name"
+      )
+    ).toBeInTheDocument();
+    expect(
+      within(board).getByText("Docker image pull failed because authentication expired")
+    ).toBeInTheDocument();
   });
 
   it("disables cloud run while local run is pending", async () => {

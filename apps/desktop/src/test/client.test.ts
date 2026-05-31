@@ -167,6 +167,51 @@ describe("desktop API clients", () => {
     });
   });
 
+  it("fake client creates sandbox profiles and starts profiled docker cloud runs", async () => {
+    const profile = await fakeApiClient.createSandboxProfile("project_demo", {
+      name: "Default Docker profile",
+      docker_image: "python:3.11-bookworm",
+      patch_commands: [
+        {
+          key: "write-note",
+          label: "Write note",
+          command: "python scripts/write_note.py",
+          timeout_seconds: 300,
+          is_default: true
+        }
+      ],
+      test_commands: [
+        {
+          key: "python-version",
+          label: "Python version",
+          command: "python -V",
+          timeout_seconds: 300,
+          is_default: true
+        }
+      ],
+      allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+      network_enabled: true
+    });
+
+    await expect(fakeApiClient.listSandboxProfiles("project_demo")).resolves.toEqual([
+      profile
+    ]);
+
+    const cloud = await fakeApiClient.startCloudRun("task_demo_created", {
+      sandbox_profile_id: profile.id,
+      patch_command_key: "write-note",
+      test_command_keys: ["python-version"]
+    });
+
+    expect(cloud.cloud_run).toMatchObject({
+      sandbox_kind: "docker_local",
+      sandbox_profile_id: profile.id,
+      patch_command_key: "write-note",
+      test_command_keys: ["python-version"],
+      command_results: []
+    });
+  });
+
   it("fake client runs cloud workflow and creates pull requests", async () => {
     const cloud = await fakeApiClient.startCloudRun("task_demo_created");
 
@@ -729,9 +774,58 @@ describe("desktop API clients", () => {
     });
   });
 
-  it("HTTP client starts cloud runs and creates pull requests", async () => {
+  it("HTTP client creates sandbox profiles and starts profiled cloud runs", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            id: "sandbox_profile_api",
+            project_id: "project_demo",
+            name: "Default Docker profile",
+            docker_image: "python:3.11-bookworm",
+            patch_commands: [
+              {
+                key: "write-note",
+                label: "Write note",
+                command: "python scripts/write_note.py",
+                timeout_seconds: 300,
+                is_default: true
+              }
+            ],
+            test_commands: [
+              {
+                key: "python-version",
+                label: "Python version",
+                command: "python -V",
+                timeout_seconds: 300,
+                is_default: true
+              }
+            ],
+            allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+            network_enabled: true,
+            created_at: "2026-05-30T01:30:00Z",
+            updated_at: "2026-05-30T01:30:00Z"
+          },
+          { status: 201 }
+        )
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "sandbox_profile_api",
+            project_id: "project_demo",
+            name: "Default Docker profile",
+            docker_image: "python:3.11-bookworm",
+            patch_commands: [],
+            test_commands: [],
+            allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+            network_enabled: true,
+            created_at: "2026-05-30T01:30:00Z",
+            updated_at: "2026-05-30T01:30:00Z"
+          }
+        ])
+      )
       .mockResolvedValueOnce(
         jsonResponse([
           {
@@ -758,6 +852,11 @@ describe("desktop API clients", () => {
               repo_id: "repo_github_api",
               status: "patch_ready",
               head_branch: "codex/task-api",
+              sandbox_kind: "docker_local",
+              sandbox_profile_id: "sandbox_profile_api",
+              patch_command_key: "write-note",
+              test_command_keys: ["python-version"],
+              command_results: [],
               patch_artifact_id: "patch_cloud_api",
               failure_reason: null,
               created_at: "2026-05-30T02:00:00Z"
@@ -813,30 +912,108 @@ describe("desktop API clients", () => {
       baseUrl: "http://127.0.0.1:8000/",
       projectId: "project_demo"
     });
-    const cloud = await client.startCloudRun("task_api");
+    const profile = await client.createSandboxProfile("project_demo", {
+      name: "Default Docker profile",
+      docker_image: "python:3.11-bookworm",
+      patch_commands: [
+        {
+          key: "write-note",
+          label: "Write note",
+          command: "python scripts/write_note.py",
+          timeout_seconds: 300,
+          is_default: true
+        }
+      ],
+      test_commands: [
+        {
+          key: "python-version",
+          label: "Python version",
+          command: "python -V",
+          timeout_seconds: 300,
+          is_default: true
+        }
+      ],
+      allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+      network_enabled: true
+    });
+    const profiles = await client.listSandboxProfiles("project_demo");
+    const cloud = await client.startCloudRun("task_api", {
+      sandbox_profile_id: profile.id,
+      patch_command_key: "write-note",
+      test_command_keys: ["python-version"]
+    });
     const pullRequest = await client.createPullRequest("patch_approval_api");
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "http://127.0.0.1:8000/projects/project_demo/repositories"
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "http://127.0.0.1:8000/tasks/task_api/cloud-runs",
+      "http://127.0.0.1:8000/projects/project_demo/sandbox-profiles",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ repo_id: "repo_github_api" })
+        body: JSON.stringify({
+          name: "Default Docker profile",
+          docker_image: "python:3.11-bookworm",
+          patch_commands: [
+            {
+              key: "write-note",
+              label: "Write note",
+              command: "python scripts/write_note.py",
+              timeout_seconds: 300,
+              is_default: true
+            }
+          ],
+          test_commands: [
+            {
+              key: "python-version",
+              label: "Python version",
+              command: "python -V",
+              timeout_seconds: 300,
+              is_default: true
+            }
+          ],
+          allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+          network_enabled: true
+        })
       })
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:8000/projects/project_demo/sandbox-profiles"
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
       3,
+      "http://127.0.0.1:8000/projects/project_demo/repositories"
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "http://127.0.0.1:8000/tasks/task_api/cloud-runs",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          repo_id: "repo_github_api",
+          sandbox_profile_id: "sandbox_profile_api",
+          patch_command_key: "write-note",
+          test_command_keys: ["python-version"]
+        })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
       "http://127.0.0.1:8000/patch-approvals/patch_approval_api/pull-requests",
       expect.objectContaining({ method: "POST" })
     );
+    expect(profiles[0]).toMatchObject({
+      id: "sandbox_profile_api",
+      docker_image: "python:3.11-bookworm"
+    });
     expect(cloud).toMatchObject({
       cloud_run: {
         id: "cloud_run_api",
         head_branch: "codex/task-api",
+        sandbox_kind: "docker_local",
+        sandbox_profile_id: "sandbox_profile_api",
+        patch_command_key: "write-note",
+        test_command_keys: ["python-version"],
+        command_results: [],
         patch_artifact_id: "patch_cloud_api"
       }
     });

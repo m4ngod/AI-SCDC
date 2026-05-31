@@ -300,6 +300,16 @@ dd {
 .task-patch-meta dd {
   margin: 2px 0 0;
   overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.task-inline-error {
+  display: block;
+  margin-top: 3px;
+  color: #9d2d20;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .task-diff-preview {
