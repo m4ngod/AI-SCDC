@@ -4,10 +4,12 @@ from ai_company_api.services.cloud_sandbox_executor import (
     SandboxCommandSelection,
     SandboxExecutionRequest,
 )
+from ai_company_api.services import docker_sandbox
 from ai_company_api.services.docker_sandbox import (
     DockerLocalSandboxExecutor,
     ProcessResult,
     RedactingProcessRunner,
+    SubprocessRunner,
 )
 
 
@@ -75,28 +77,31 @@ def test_docker_run_args_do_not_mount_host_home_or_docker_socket(
 
     args = executor.build_docker_run_args(
         request=docker_request(tmp_path),
-        workspace_path=tmp_path / "workspace",
-        artifact_path=tmp_path / "artifacts",
+        workspace_path=Path(tmp_path.anchor) / "ai-scdc-test-workspace",
+        artifact_path=Path(tmp_path.anchor) / "ai-scdc-test-artifacts",
         command="python -V",
         timeout_seconds=30,
     )
-    joined = " ".join(args)
+    joined = " ".join(args).replace("\\", "/")
+    home = str(Path.home()).replace("\\", "/")
 
     assert "python:3.11-slim" in args
     assert "/var/run/docker.sock" not in joined
-    assert str(Path.home()) not in joined
+    assert home not in joined
     assert "--network" in args
     assert "bridge" in args
     assert "-v" in args
 
 
-def test_redacting_process_runner_removes_token_from_output(tmp_path: Path) -> None:
+def test_redacting_process_runner_removes_token_from_result(
+    tmp_path: Path,
+) -> None:
     base_runner = RecordingRunner(
         [
             ProcessResult(
-                args=["git"],
+                args=["git", "ghp_example1234567890"],
                 exit_code=1,
-                stdout="",
+                stdout="out ghp_example1234567890",
                 stderr="bad ghp_example1234567890",
                 duration_ms=5,
             )
@@ -106,7 +111,46 @@ def test_redacting_process_runner_removes_token_from_output(tmp_path: Path) -> N
 
     result = runner.run(["git", "clone"], timeout_seconds=1)
 
+    assert result.args == ["git", "[redacted]"]
+    assert result.stdout == "out [redacted]"
     assert result.stderr == "bad [redacted]"
+
+
+def test_command_result_redacts_explicit_command_and_process_output() -> None:
+    secret = "ghp_example1234567890"
+    result = ProcessResult(
+        args=["echo", secret],
+        exit_code=1,
+        stdout=f"stdout {secret}",
+        stderr=f"stderr {secret}",
+        duration_ms=5,
+    )
+
+    command_result = result.redacted([secret]).to_command_result(
+        f"echo {secret}",
+        secrets=[secret],
+    )
+
+    assert secret not in command_result.command
+    assert secret not in command_result.stdout
+    assert secret not in command_result.stderr
+    assert command_result.command == "echo [redacted]"
+
+
+def test_subprocess_runner_returns_result_when_command_is_missing(monkeypatch) -> None:
+    def raise_missing(*args, **kwargs):
+        raise FileNotFoundError("missing docker")
+
+    monkeypatch.setattr(docker_sandbox.subprocess, "run", raise_missing)
+
+    result = SubprocessRunner().run(["docker", "version"], timeout_seconds=1)
+
+    assert result.args == ["docker", "version"]
+    assert result.exit_code == 127
+    assert result.stdout == ""
+    assert "missing docker" in result.stderr
+    assert result.duration_ms >= 0
+    assert result.timed_out is False
 
 
 def test_selects_docker_executor_when_enabled(monkeypatch) -> None:

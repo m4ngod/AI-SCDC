@@ -52,7 +52,7 @@ class ProcessResult:
 class ProcessRunner(Protocol):
     def run(
         self,
-        args: Sequence[object],
+        args: Sequence[str | Path],
         *,
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
@@ -64,7 +64,7 @@ class ProcessRunner(Protocol):
 class SubprocessRunner:
     def run(
         self,
-        args: Sequence[object],
+        args: Sequence[str | Path],
         *,
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
@@ -98,6 +98,14 @@ class SubprocessRunner:
                 duration_ms=int((time.monotonic() - started) * 1000),
                 timed_out=True,
             )
+        except OSError as exc:
+            return ProcessResult(
+                args=command_args,
+                exit_code=127,
+                stdout="",
+                stderr=f"failed to start process: {exc}",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
 
 
 class RedactingProcessRunner:
@@ -107,7 +115,7 @@ class RedactingProcessRunner:
 
     def run(
         self,
-        args: Sequence[object],
+        args: Sequence[str | Path],
         *,
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
