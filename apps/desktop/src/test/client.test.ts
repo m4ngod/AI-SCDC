@@ -449,24 +449,36 @@ describe("desktop API clients", () => {
         jsonResponse([
           {
             id: "pull_request_old",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
             task_id: "task_api",
+            repo_id: "repo_github_api",
             patch_artifact_id: "patch_cloud_api",
-            approval_id: "patch_approval_old",
-            status: "created",
-            url: "https://github.com/example/demo/pull/1",
-            number: 1,
+            patch_approval_id: "patch_approval_old",
+            cloud_run_id: "cloud_run_old",
             head_branch: "codex/task-api-old",
+            base_branch: "main",
+            github_pr_number: 1,
+            github_pr_url: "https://github.com/example/demo/pull/1",
+            status: "created",
+            created_by: "dev_user",
             created_at: "2026-05-29T02:30:00Z"
           },
           {
             id: "pull_request_api",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
             task_id: "task_api",
+            repo_id: "repo_github_api",
             patch_artifact_id: "patch_cloud_api",
-            approval_id: "patch_approval_api",
-            status: "created",
-            url: "https://github.com/example/demo/pull/2",
-            number: 2,
+            patch_approval_id: "patch_approval_api",
+            cloud_run_id: "cloud_run_api",
             head_branch: "codex/task-api",
+            base_branch: "main",
+            github_pr_number: 2,
+            github_pr_url: "https://github.com/example/demo/pull/2",
+            status: "created",
+            created_by: "dev_user",
             created_at: "2026-05-29T02:40:00Z"
           }
         ])
@@ -531,6 +543,102 @@ describe("desktop API clients", () => {
         url: "https://github.com/example/demo/pull/2"
       }
     });
+    expect(tasks[0].worktree_ref).toBeUndefined();
+  });
+
+  it("HTTP client falls back to local workflow hydration when no usable cloud run exists", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "task_local_api",
+            title: "Approve local patch",
+            status: "MERGE_READY",
+            role_required: "backend",
+            updated_at: "2026-05-29T03:30:00Z"
+          }
+        ])
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "local_run_api",
+            task_id: "task_local_api",
+            repo_id: "repo_local_api",
+            status: "patch_ready",
+            base_branch: "main",
+            worktree_path: "T:/repo/.worktrees/task_local_api-local_run_api",
+            patch_artifact_id: "patch_local_api",
+            failure_reason: null
+          }
+        ])
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "cloud_run_unusable",
+            task_id: "task_local_api",
+            repo_id: "repo_github_api",
+            status: "running",
+            head_branch: "codex/task-local-api",
+            patch_artifact_id: null,
+            failure_reason: null,
+            created_at: "2026-05-29T03:25:00Z"
+          }
+        ])
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: "patch_local_api",
+          task_id: "task_local_api",
+          local_run_id: "local_run_api",
+          summary: "Prepared local runner patch.",
+          files_changed: ["README.md"],
+          tests_run: ["python -V"],
+          test_result: "passed",
+          risks: [],
+          diff_text: "diff --git a/README.md b/README.md\n+local approval",
+          created_at: "2026-05-29T03:00:00Z"
+        })
+      )
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+    const tasks = await client.listTasks();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/tasks/task_local_api/local-runs"
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/tasks/task_local_api/cloud-runs"
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/patch-artifacts/patch_local_api"
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/patch-artifacts/patch_local_api/pull-requests"
+    );
+    expect(tasks[0]).toMatchObject({
+      id: "task_local_api",
+      status: "MERGE_READY",
+      repo_id: "repo_local_api",
+      branch_name: "main",
+      worktree_ref: "T:/repo/.worktrees/task_local_api-local_run_api",
+      patch_artifact: {
+        id: "patch_local_api",
+        diff_text: "diff --git a/README.md b/README.md\n+local approval"
+      }
+    });
+    expect(tasks[0].cloud_run).toBeUndefined();
+    expect(tasks[0].pull_request).toBeUndefined();
   });
 
   it("HTTP client creates GitHub credentials and repositories", async () => {
@@ -680,13 +788,19 @@ describe("desktop API clients", () => {
             },
             pull_request: {
               id: "pull_request_api",
+              workspace_id: "workspace_api",
+              project_id: "project_demo",
               task_id: "task_api",
+              repo_id: "repo_github_api",
               patch_artifact_id: "patch_cloud_api",
-              approval_id: "patch_approval_api",
-              status: "created",
-              url: "https://github.com/example/demo/pull/7",
-              number: 7,
+              patch_approval_id: "patch_approval_api",
+              cloud_run_id: "cloud_run_api",
               head_branch: "codex/task-api",
+              base_branch: "main",
+              github_pr_number: 7,
+              github_pr_url: "https://github.com/example/demo/pull/7",
+              status: "created",
+              created_by: "dev_user",
               created_at: "2026-05-30T02:10:00Z"
             }
           },

@@ -311,9 +311,22 @@ type ApiPatchApproval = PatchApprovalCard;
 
 type ApiDebugAttempt = DebugAttemptCard;
 
-type ApiPullRequest = PullRequestCard & {
-  github_pr_url?: string;
-  github_pr_number?: number;
+type ApiPullRequest = {
+  id: string;
+  workspace_id?: string;
+  project_id?: string;
+  task_id: string;
+  repo_id: string;
+  patch_artifact_id: string;
+  patch_approval_id: string;
+  cloud_run_id: string | null;
+  head_branch: string;
+  base_branch: string;
+  github_pr_number: number;
+  github_pr_url: string;
+  status: string;
+  created_by: string;
+  created_at: string;
 };
 
 type ApiPatchTestRunResult = {
@@ -966,8 +979,6 @@ function mapCloudRunCard(cloudRun: ApiCloudRun): CloudRunCard {
 }
 
 function mapPullRequestCard(pullRequest: ApiPullRequest): PullRequestCard {
-  const url = pullRequest.url ?? pullRequest.github_pr_url ?? "";
-  const number = pullRequest.number ?? pullRequest.github_pr_number;
   return {
     id: pullRequest.id,
     workspace_id: pullRequest.workspace_id,
@@ -976,14 +987,14 @@ function mapPullRequestCard(pullRequest: ApiPullRequest): PullRequestCard {
     repo_id: pullRequest.repo_id,
     patch_artifact_id: pullRequest.patch_artifact_id,
     patch_approval_id: pullRequest.patch_approval_id,
-    approval_id: pullRequest.approval_id ?? pullRequest.patch_approval_id,
+    approval_id: pullRequest.patch_approval_id,
     cloud_run_id: pullRequest.cloud_run_id,
     head_branch: pullRequest.head_branch,
     base_branch: pullRequest.base_branch,
-    github_pr_number: pullRequest.github_pr_number ?? pullRequest.number,
-    number,
-    github_pr_url: pullRequest.github_pr_url ?? pullRequest.url,
-    url,
+    github_pr_number: pullRequest.github_pr_number,
+    number: pullRequest.github_pr_number,
+    github_pr_url: pullRequest.github_pr_url,
+    url: pullRequest.github_pr_url,
     status: pullRequest.status,
     created_by: pullRequest.created_by,
     created_at: pullRequest.created_at
@@ -1104,17 +1115,23 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
     ]);
     const localRun = [...localRuns].reverse().find((item) => item.patch_artifact_id);
     const cloudRun = [...cloudRuns].reverse().find((item) => item.patch_artifact_id);
-    const patchArtifactId = cloudRun?.patch_artifact_id ?? localRun?.patch_artifact_id;
-    if (!patchArtifactId) {
+    const cloudPatchArtifactId = cloudRun?.patch_artifact_id;
+    const localPatchArtifactId = localRun?.patch_artifact_id;
+    const selectedRun = cloudPatchArtifactId
+      ? { source: "cloud" as const, run: cloudRun, patchArtifactId: cloudPatchArtifactId }
+      : localPatchArtifactId
+      ? { source: "local" as const, run: localRun, patchArtifactId: localPatchArtifactId }
+      : undefined;
+    if (!selectedRun) {
       return taskCard;
     }
 
     const artifactResponse = await fetch(
-      apiUrl(options.baseUrl, `/patch-artifacts/${patchArtifactId}`)
+      apiUrl(options.baseUrl, `/patch-artifacts/${selectedRun.patchArtifactId}`)
     );
     const artifact = await readJsonResponse<ApiPatchArtifact>(
       artifactResponse,
-      `GET /patch-artifacts/${patchArtifactId}`
+      `GET /patch-artifacts/${selectedRun.patchArtifactId}`
     );
     const [testRuns, reviews, approvals, pullRequests] = await Promise.all([
       listJson<ApiLocalTestRun>(
@@ -1141,14 +1158,19 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
 
     return {
       ...taskCard,
-      repo_id: taskCard.repo_id ?? cloudRun?.repo_id ?? localRun?.repo_id,
-      branch_name: taskCard.branch_name ?? cloudRun?.head_branch ?? localRun?.base_branch,
-      worktree_ref: taskCard.worktree_ref ?? localRun?.worktree_path,
+      repo_id: selectedRun.run.repo_id,
+      branch_name:
+        selectedRun.source === "cloud"
+          ? selectedRun.run.head_branch
+          : selectedRun.run.base_branch,
+      worktree_ref:
+        selectedRun.source === "local" ? selectedRun.run.worktree_path : undefined,
       patch_artifact: mapPatchArtifactCard(artifact),
       test_run: latestTestRun ? mapLocalTestRunCard(latestTestRun) : undefined,
       patch_review: latestReview ? mapPatchReviewCard(latestReview) : undefined,
       patch_approval: latestApproval ? mapPatchApprovalCard(latestApproval) : undefined,
-      cloud_run: cloudRun ? mapCloudRunCard(cloudRun) : undefined,
+      cloud_run:
+        selectedRun.source === "cloud" ? mapCloudRunCard(selectedRun.run) : undefined,
       pull_request: latestPullRequest ? mapPullRequestCard(latestPullRequest) : undefined
     };
   }
