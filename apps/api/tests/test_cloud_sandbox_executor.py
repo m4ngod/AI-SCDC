@@ -5,6 +5,7 @@ from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
     FakeCloudSandboxExecutor,
     SandboxExecutionRequest,
+    repo_url_redaction_secrets,
     redact_secrets,
     select_cloud_sandbox_executor,
 )
@@ -48,6 +49,24 @@ def test_redact_secrets_replaces_every_secret_value() -> None:
     assert redact_secrets(text, ["ghp_example1234567890"]) == (
         "token [redacted] and short [redacted]"
     )
+
+
+def test_repo_url_redaction_secrets_include_raw_and_decoded_userinfo() -> None:
+    secrets = repo_url_redaction_secrets(
+        "https://user:sec%40ret@github.com/example/demo"
+    )
+    text = (
+        "clone https://user:sec%40ret@github.com/example/demo "
+        "raw=sec%40ret decoded=sec@ret user=user segment=user:sec%40ret@"
+    )
+
+    redacted = redact_secrets(text, secrets)
+
+    assert "sec%40ret" not in redacted
+    assert "sec@ret" not in redacted
+    assert "user" not in redacted
+    assert "user:sec%40ret@" not in redacted
+    assert redacted.count("[redacted]") >= 4
 
 
 def test_command_result_defaults_timed_out_to_false() -> None:

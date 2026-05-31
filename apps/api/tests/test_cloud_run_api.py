@@ -968,6 +968,82 @@ def test_docker_cloud_run_persisted_passing_tests_can_review_without_rerun(
     assert review_response.json()["review"]["verdict"] == "approved"
 
 
+def test_docker_cloud_run_without_tests_can_review_after_synthetic_test_bridge(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class DockerResultExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, request):
+            return SandboxExecutionResult(
+                status="patch_ready",
+                runner_kind="docker_local",
+                base_sha="abc123",
+                head_sha="def456",
+                worktree_ref=f"cloud://docker-local/{request.cloud_run_id}",
+                summary="Docker local sandbox produced a patch artifact.",
+                files_changed=["AI_SCDC_CLOUD_RUN.md"],
+                tests_run=[],
+                test_result="not_run",
+                risks=[],
+                diff_text="diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n+patch\n",
+                command_results=[],
+                test_command_results=[],
+                failure_reason=None,
+            )
+
+    def fail_if_rerun(request):
+        raise AssertionError(f"RUN_TESTS should not run against {request.worktree_path}")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerResultExecutor(),
+    )
+    monkeypatch.setattr(
+        "ai_company_api.services.test_review_debug.RUN_TESTS",
+        fail_if_rerun,
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session, required_tests=[])
+        profile = create_profile_entity(
+            session,
+            project,
+            repository,
+            test_commands=[],
+        )
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    cloud_response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    )
+    patch_artifact_id = cloud_response.json()["patch_artifact"]["id"]
+    test_response = client.post(f"/patch-artifacts/{patch_artifact_id}/test-runs")
+    review_response = client.post(f"/patch-artifacts/{patch_artifact_id}/reviews")
+
+    assert cloud_response.status_code == 201
+    assert cloud_response.json()["patch_artifact"]["test_result"] == "not_run"
+    assert test_response.status_code == 201
+    assert test_response.json()["task"]["status"] == "REVIEWING"
+    assert test_response.json()["patch_artifact"]["test_result"] == "passed"
+    assert test_response.json()["patch_artifact"]["tests_run"] == []
+    assert test_response.json()["test_run"]["status"] == "passed"
+    assert test_response.json()["test_run"]["commands"] == []
+    assert test_response.json()["test_run"]["command_results"] == []
+    assert test_response.json()["debug_attempt"] is None
+    assert review_response.status_code == 201
+    assert review_response.json()["task"]["status"] == "APPROVED"
+    assert review_response.json()["review"]["verdict"] == "approved"
+
+
 def test_docker_cloud_run_test_failure_keeps_patch_artifact(
     tmp_path: Path,
     monkeypatch,

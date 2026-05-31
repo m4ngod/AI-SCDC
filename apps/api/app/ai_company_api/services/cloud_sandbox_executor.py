@@ -21,12 +21,12 @@ def repo_url_redaction_secrets(repo_url: str) -> list[str]:
         return []
 
     userinfo = parsed.netloc.rsplit("@", 1)[0]
-    secrets = [repo_url, f"{userinfo}@"]
+    secrets = [repo_url, userinfo, f"{userinfo}@"]
     if parsed.username:
-        secrets.append(unquote(parsed.username))
+        secrets.extend([parsed.username, unquote(parsed.username)])
     if parsed.password:
-        secrets.append(unquote(parsed.password))
-    return [secret for secret in secrets if secret]
+        secrets.extend([parsed.password, unquote(parsed.password)])
+    return list(dict.fromkeys(secret for secret in secrets if secret))
 
 
 @dataclass(frozen=True)
