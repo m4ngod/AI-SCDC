@@ -295,16 +295,74 @@ def test_docker_executor_keeps_host_env_for_docker_cli(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("AI_SCDC_HOST_ENV_MARKER", "host-value")
+    monkeypatch.setenv("PATH", "host-path")
+    monkeypatch.setenv("DOCKER_HOST", "host-docker")
+    monkeypatch.setenv("DOCKER_CONFIG", "host-docker-config")
+    monkeypatch.setenv("HTTP_PROXY", "http://host-proxy")
     runner = RecordingRunner(docker_success_results())
     executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
-    request = replace(docker_request(tmp_path), test_commands=[], required_tests=[])
+    request = replace(
+        docker_request(tmp_path),
+        test_commands=[],
+        required_tests=[],
+        env={
+            **docker_request(tmp_path).env,
+            "AI_SCDC_SAFE_SANDBOX_VAR": "sandbox-value",
+            "PATH": "sandbox-path",
+            "DOCKER_HOST": "sandbox-docker",
+            "DOCKER_CONFIG": "sandbox-docker-config",
+            "HTTP_PROXY": "http://sandbox-proxy",
+        },
+    )
 
     executor.run(request)
 
     docker_run_env = runner.calls[1]["env"]
+    docker_run_args = runner.calls[1]["args"]
+    container_env_names = [
+        docker_run_args[index + 1]
+        for index, item in enumerate(docker_run_args[:-1])
+        if item == "-e"
+    ]
     assert docker_run_env is not request.env
     assert docker_run_env["AI_SCDC_HOST_ENV_MARKER"] == "host-value"
     assert docker_run_env["AI_SCDC_GITHUB_TOKEN"] == "ghp_example1234567890"
+    assert docker_run_env["AI_SCDC_SAFE_SANDBOX_VAR"] == "sandbox-value"
+    assert docker_run_env["PATH"] == "host-path"
+    assert docker_run_env["DOCKER_HOST"] == "host-docker"
+    assert docker_run_env["DOCKER_CONFIG"] == "host-docker-config"
+    assert docker_run_env["HTTP_PROXY"] == "http://host-proxy"
+    assert "AI_SCDC_SAFE_SANDBOX_VAR" in container_env_names
+    assert "PATH" not in container_env_names
+    assert "DOCKER_HOST" not in container_env_names
+    assert "DOCKER_CONFIG" not in container_env_names
+    assert "HTTP_PROXY" not in container_env_names
+
+
+def test_docker_executor_quotes_fixed_git_setup_commands(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        repo_url="https://github.com/example/demo.git; touch /tmp/repo-pwned",
+        base_branch="main; touch /tmp/base-pwned",
+        head_branch="feature/$(touch /tmp/head-pwned)",
+        test_commands=[],
+        required_tests=[],
+    )
+
+    executor.run(request)
+
+    commands = [call["args"][-1] for call in runner.calls[1:10]]
+    assert commands[0] == (
+        "git clone "
+        "'https://github.com/example/demo.git; touch /tmp/repo-pwned' ."
+    )
+    assert commands[1] == "git checkout 'main; touch /tmp/base-pwned'"
+    assert commands[2] == "git checkout -B 'feature/$(touch /tmp/head-pwned)'"
+    assert commands[7] == "git rev-parse 'origin/main; touch /tmp/base-pwned'"
 
 
 def test_docker_executor_marks_tests_not_run_when_no_tests_configured(

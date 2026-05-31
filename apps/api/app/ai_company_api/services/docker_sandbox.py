@@ -1,6 +1,7 @@
 from dataclasses import dataclass, replace
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import time
@@ -12,6 +13,21 @@ from ai_company_api.services.cloud_sandbox_executor import (
     SandboxExecutionResult,
     redact_secrets,
 )
+
+
+_DOCKER_CLI_ENV_DENYLIST = {
+    "ALL_PROXY",
+    "DOCKER_CERT_PATH",
+    "DOCKER_CONFIG",
+    "DOCKER_CONTEXT",
+    "DOCKER_HOST",
+    "DOCKER_TLS_VERIFY",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "PATH",
+    "PATHEXT",
+}
 
 
 @dataclass(frozen=True)
@@ -157,7 +173,7 @@ class DockerLocalSandboxExecutor:
             ["--network", "bridge"] if request.network_enabled else ["--network", "none"]
         )
         env_args: list[str] = []
-        for name in sorted(request.env):
+        for name in _safe_container_env_names(request.env):
             env_args.extend(["-e", name])
 
         return [
@@ -217,14 +233,18 @@ class DockerLocalSandboxExecutor:
                 request.patch_command.timeout_seconds if request.patch_command else 300
             )
             steps = [
-                ("clone", f"git clone {request.repo_url} .", 300),
-                ("checkout", f"git checkout {request.base_branch}", 60),
-                ("branch", f"git checkout -B {request.head_branch}", 60),
+                ("clone", f"git clone {_shell_quote(request.repo_url)} .", 300),
+                ("checkout", f"git checkout {_shell_quote(request.base_branch)}", 60),
+                ("branch", f"git checkout -B {_shell_quote(request.head_branch)}", 60),
                 ("patch", patch_command, patch_timeout),
                 ("intent-to-add", "git add -N .", 60),
                 ("name-only", "git diff --name-only", 60),
                 ("diff", "git diff --no-ext-diff", 60),
-                ("base-sha", f"git rev-parse origin/{request.base_branch}", 60),
+                (
+                    "base-sha",
+                    f"git rev-parse {_shell_quote(f'origin/{request.base_branch}')}",
+                    60,
+                ),
                 ("head-sha", "git rev-parse HEAD", 60),
             ]
 
@@ -343,7 +363,28 @@ def _output_to_text(value: str | bytes | None) -> str:
 
 
 def _docker_cli_env(container_env: dict[str, str]) -> dict[str, str]:
-    return {**os.environ, **container_env}
+    host_env = dict(os.environ)
+    host_names = {name.upper() for name in host_env}
+    for name, value in container_env.items():
+        if _is_safe_sandbox_env_name(name, host_names):
+            host_env[name] = value
+    return host_env
+
+
+def _safe_container_env_names(container_env: dict[str, str]) -> list[str]:
+    host_names = {name.upper() for name in os.environ}
+    return sorted(
+        name for name in container_env if _is_safe_sandbox_env_name(name, host_names)
+    )
+
+
+def _is_safe_sandbox_env_name(name: str, host_names: set[str]) -> bool:
+    normalized = name.upper()
+    return normalized not in _DOCKER_CLI_ENV_DENYLIST and normalized not in host_names
+
+
+def _shell_quote(value: str) -> str:
+    return shlex.quote(value)
 
 
 def _failed_result(
