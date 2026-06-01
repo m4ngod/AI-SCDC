@@ -227,6 +227,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
 
     setIsConnectingGitHubRepo(true);
     let createdCredentialId: string | null = null;
+    let createdRepositoryId: string | null = null;
     try {
       setGithubSetupStatus(null);
       setGithubSetupError(null);
@@ -246,6 +247,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         default_branch: input.default_branch,
         github_credential_id: credential.id
       });
+      createdRepositoryId = repository.id;
       if (!repository.project_id) {
         throw new Error("GitHub repository response did not include project id");
       }
@@ -262,6 +264,13 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       setGithubSetupStatus("GitHub repo connected");
       setGithubSetupInput((currentInput) => ({ ...currentInput, token: "" }));
     } catch (error) {
+      if (createdRepositoryId) {
+        try {
+          await apiClient.deleteRepository(createdRepositoryId);
+        } catch {
+          // Preserve the setup error; cleanup failure is still visible in server logs.
+        }
+      }
       if (createdCredentialId) {
         try {
           await apiClient.deleteGitHubCredential(createdCredentialId);

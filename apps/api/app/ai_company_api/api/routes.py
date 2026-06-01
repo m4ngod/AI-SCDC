@@ -104,6 +104,7 @@ from ai_company_api.services.repository import (
     create_project,
     create_repository,
     create_task,
+    delete_repository,
     get_planner_run_read,
     get_repository_read,
     get_task,
@@ -168,6 +169,11 @@ def post_project_repository(
 @router.get("/repositories/{repo_id}", response_model=RepositoryRead)
 def get_repository_by_id(repo_id: str, session: SessionDep) -> RepositoryRead:
     return get_repository_read(session, repo_id)
+
+
+@router.delete("/repositories/{repo_id}", response_model=RepositoryRead)
+def delete_repository_by_id(repo_id: str, session: SessionDep) -> RepositoryRead:
+    return delete_repository(session, repo_id)
 
 
 @router.get("/github-credentials", response_model=list[GitHubCredentialRead])

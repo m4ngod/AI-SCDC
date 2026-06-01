@@ -26,7 +26,10 @@ from ai_company_api.services.cloud_sandbox_executor import (
     repo_url_redaction_secrets,
     select_cloud_sandbox_executor,
 )
-from ai_company_api.services.github_repository import get_active_github_credential
+from ai_company_api.services.github_repository import (
+    get_active_github_credential,
+    validate_github_repository_url,
+)
 from ai_company_api.services.repository import create_task_event, get_repository, get_task
 from ai_company_api.services.sandbox_profiles import validate_sandbox_profile_for_repo
 from ai_company_api.services.secret_vault import DevSecretVault
@@ -74,6 +77,11 @@ def start_cloud_run(
             )
         if repository.github_credential_id is None:
             raise HTTPException(status_code=404, detail="GitHub credential not found")
+        validate_github_repository_url(
+            repository.repo_url,
+            owner=repository.github_owner or "",
+            repo=repository.github_repo or "",
+        )
         credential = get_active_github_credential(session, repository.github_credential_id)
         github_token = DevSecretVault().open(credential.encrypted_token)
         profile = validate_sandbox_profile_for_repo(
@@ -115,6 +123,8 @@ def start_cloud_run(
             title=task.title,
             description=task.description,
             repo_url=repository.repo_url,
+            github_owner=repository.github_owner,
+            github_repo=repository.github_repo,
             base_branch=repository.default_branch,
             head_branch=head_branch,
             allowed_paths=task.allowed_paths or [],

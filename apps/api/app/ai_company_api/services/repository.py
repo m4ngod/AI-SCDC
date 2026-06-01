@@ -158,6 +158,17 @@ def get_repository_read(session: Session, repo_id: str) -> RepositoryRead:
     return _repository_read(get_repository(session, repo_id))
 
 
+def delete_repository(session: Session, repo_id: str) -> RepositoryRead:
+    repository = get_repository(session, repo_id)
+    repository.status = "deleted"
+    repository.connection_status = "inactive"
+    repository.updated_at = utc_now()
+    session.add(repository)
+    session.commit()
+    session.refresh(repository)
+    return _repository_read(repository)
+
+
 def create_conversation(
     session: Session,
     project_id: str,

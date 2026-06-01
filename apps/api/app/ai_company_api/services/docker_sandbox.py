@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import time
 from typing import Protocol, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
@@ -255,6 +255,8 @@ class DockerLocalSandboxExecutor:
             )
         if request.github_token and not _is_safe_authenticated_github_url(
             request.repo_url,
+            expected_owner=request.github_owner,
+            expected_repo=request.github_repo,
         ):
             return _failed_result(
                 "invalid_github_repository_url",
@@ -592,7 +594,18 @@ def _valid_git_branch_name(branch_name: str) -> bool:
     return candidate != "" and not candidate.startswith("-")
 
 
-def _is_safe_authenticated_github_url(repo_url: str) -> bool:
+def _is_safe_authenticated_github_url(
+    repo_url: str,
+    *,
+    expected_owner: str | None,
+    expected_repo: str | None,
+) -> bool:
+    if not expected_owner or not expected_repo:
+        return False
+    if not _is_single_github_path_segment(expected_owner):
+        return False
+    if not _is_single_github_path_segment(expected_repo):
+        return False
     try:
         parsed = urlsplit(repo_url)
     except ValueError:
@@ -604,9 +617,30 @@ def _is_safe_authenticated_github_url(repo_url: str) -> bool:
     path_parts = [part for part in parsed.path.split("/") if part]
     if len(path_parts) != 2 or path_parts[0] == "" or path_parts[1] == "":
         return False
+    if not _is_single_github_path_segment(path_parts[0]):
+        return False
+    if not _is_single_github_path_segment(path_parts[1]):
+        return False
+    owner = unquote(path_parts[0])
+    repo = unquote(path_parts[1])
+    if owner != expected_owner:
+        return False
+    if repo not in {expected_repo, f"{expected_repo}.git"}:
+        return False
     if parsed.query or parsed.fragment:
         return False
     return True
+
+
+def _is_single_github_path_segment(value: str) -> bool:
+    decoded = unquote(value)
+    return (
+        value.strip() != ""
+        and "/" not in value
+        and "\\" not in value
+        and "/" not in decoded
+        and "\\" not in decoded
+    )
 
 
 def _shell_quote(value: str) -> str:

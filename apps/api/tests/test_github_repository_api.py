@@ -123,6 +123,35 @@ def test_register_github_repository_persists_provider_metadata(tmp_path: Path) -
         assert persisted.provider == "github"
 
 
+def test_repository_delete_marks_repository_inactive(tmp_path: Path) -> None:
+    with build_client(tmp_path / "app.db") as client:
+        project = client.post("/projects", json={"name": "GitHub project"}).json()
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "Dev GitHub", "token": "ghp_example1234567890"},
+        ).json()
+        repository = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Demo remote",
+                "repo_url": "https://github.com/example/demo",
+                "github_owner": "example",
+                "github_repo": "demo",
+                "default_branch": "main",
+                "github_credential_id": credential["id"],
+            },
+        ).json()
+
+        response = client.delete(f"/repositories/{repository['id']}")
+        list_response = client.get(f"/projects/{project['id']}/repositories")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "deleted"
+    assert response.json()["connection_status"] == "inactive"
+    assert list_response.json()[0]["status"] == "deleted"
+    assert list_response.json()[0]["connection_status"] == "inactive"
+
+
 def test_register_github_repository_normalizes_github_url(tmp_path: Path) -> None:
     with build_client(tmp_path / "app.db") as client:
         project = client.post("/projects", json={"name": "GitHub project"}).json()

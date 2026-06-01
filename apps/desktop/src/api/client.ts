@@ -310,6 +310,7 @@ export type ConsoleApiClient = {
   deleteGitHubCredential: (credentialId: string) => Promise<GitHubCredentialCard>;
   listGitHubCredentials: () => Promise<GitHubCredentialCard[]>;
   createGitHubRepository: (input: GitHubRepositoryInput) => Promise<RepositoryCard>;
+  deleteRepository: (repoId: string) => Promise<RepositoryCard>;
   createSandboxProfile: (
     projectId: string,
     input: SandboxProfileInput
@@ -613,7 +614,23 @@ export const fakeApiClient: ConsoleApiClient = {
       github_owner: input.github_owner,
       github_repo: input.github_repo,
       github_credential_id: input.github_credential_id,
-      connection_status: "connected"
+      connection_status: "active"
+    };
+  },
+  async deleteRepository(repoId: string) {
+    return {
+      id: repoId,
+      project_id: "project_demo",
+      name: "Deleted repository",
+      local_path: "",
+      default_branch: "main",
+      status: "deleted",
+      provider: "github",
+      repo_url: "https://github.com/example/demo",
+      github_owner: "example",
+      github_repo: "demo",
+      github_credential_id: "github_credential_demo",
+      connection_status: "inactive"
     };
   },
   async createSandboxProfile(projectId: string, input: SandboxProfileInput) {
@@ -1397,6 +1414,12 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         `POST /projects/${projectId}/github-repositories`
       );
     },
+    async deleteRepository(repoId: string) {
+      const response = await fetch(apiUrl(options.baseUrl, `/repositories/${repoId}`), {
+        method: "DELETE"
+      });
+      return readJsonResponse<ApiRepository>(response, `DELETE /repositories/${repoId}`);
+    },
     async createSandboxProfile(projectId: string, input: SandboxProfileInput) {
       const response = await fetch(
         apiUrl(options.baseUrl, `/projects/${projectId}/sandbox-profiles`),
@@ -1433,12 +1456,14 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
           repositoriesResponse,
           `GET /projects/${projectId}/repositories`
         );
-        const repository =
-          repositories.find((item) => item.provider === "github" && item.status === "active") ??
-          repositories.find((item) => item.provider === "github") ??
-          repositories[0];
+        const repository = repositories.find(
+          (item) =>
+            item.provider === "github" &&
+            item.status === "active" &&
+            item.connection_status === "active"
+        );
         if (!repository) {
-          throw new Error("No repository registered for project");
+          throw new Error("No active GitHub repository registered for project");
         }
         repoId = repository.id;
       }

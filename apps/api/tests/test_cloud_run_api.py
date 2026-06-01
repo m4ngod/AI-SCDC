@@ -763,7 +763,7 @@ def test_docker_cloud_run_allowed_env_vars_whitelist_and_redact_results(
     assert command_result["stderr"] == "failed [redacted]"
 
 
-def test_docker_cloud_run_redacts_credentials_embedded_in_repo_url(
+def test_docker_cloud_run_rejects_credentials_embedded_in_repo_url_before_executor(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -772,31 +772,8 @@ def test_docker_cloud_run_redacts_credentials_embedded_in_repo_url(
     class DockerExecutor:
         sandbox_kind = "docker_local"
 
-        def run(self, request):
-            return SandboxExecutionResult(
-                status="failed",
-                runner_kind="docker_local",
-                base_sha=None,
-                head_sha=None,
-                worktree_ref=None,
-                summary="",
-                files_changed=[],
-                tests_run=[],
-                test_result="not_run",
-                risks=[],
-                diff_text="",
-                command_results=[
-                    CommandResult(
-                        command=f"git clone -- {request.repo_url} .",
-                        exit_code=1,
-                        stdout=f"cloning {request.repo_url}",
-                        stderr=f"fatal: could not read {request.repo_url}",
-                        duration_ms=3,
-                    )
-                ],
-                test_command_results=[],
-                failure_reason="repo_checkout_failed",
-            )
+        def run(self, _request):
+            raise AssertionError("executor should not run for userinfo repo URL")
 
     monkeypatch.setattr(
         cloud_runner,
@@ -820,19 +797,85 @@ def test_docker_cloud_run_redacts_credentials_embedded_in_repo_url(
         json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
 
-    assert response.status_code == 201
-    result = response.json()
-    command_result = result["cloud_run"]["command_results"][0]
-    assert "secret-token" not in str(command_result)
-    assert "user:secret-token@" not in str(command_result)
-    assert "[redacted]" in command_result["command"]
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub repository URL must not include credentials"
 
+
+def test_docker_cloud_run_rejects_tampered_github_url_before_executor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run for tampered repo metadata")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        cloud_run = session.get(CloudRun, result["cloud_run"]["id"])
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        repository.repo_url = "https://github.com/example/other"
+        session.add(repository)
+        session.commit()
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
 
-    assert cloud_run is not None
-    assert "secret-token" not in str(cloud_run.command_results)
-    assert "user:secret-token@" not in str(cloud_run.command_results)
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub repository URL must match owner/repo"
+
+
+def test_docker_cloud_run_rejects_encoded_slash_repo_metadata_before_executor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run for encoded slash repo")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        repository.repo_url = "https://github.com/example/demo%2Fsecret"
+        repository.github_repo = "demo%2Fsecret"
+        session.add(repository)
+        session.commit()
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub owner and repo must be single path segments"
 
 
 def test_start_cloud_run_creates_patch_artifact_and_bridge_local_run(tmp_path: Path) -> None:

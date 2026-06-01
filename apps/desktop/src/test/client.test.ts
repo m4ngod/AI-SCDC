@@ -717,10 +717,25 @@ describe("desktop API clients", () => {
             github_owner: "example",
             github_repo: "demo",
             github_credential_id: "github_credential_api",
-            connection_status: "connected"
+            connection_status: "active"
           },
           { status: 201 }
         )
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: "repo_github_api",
+          name: "example/demo",
+          local_path: "",
+          default_branch: "main",
+          status: "deleted",
+          provider: "github",
+          repo_url: "https://github.com/example/demo",
+          github_owner: "example",
+          github_repo: "demo",
+          github_credential_id: "github_credential_api",
+          connection_status: "inactive"
+        })
       );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -740,6 +755,7 @@ describe("desktop API clients", () => {
       github_repo: "demo",
       default_branch: "main"
     });
+    const deletedRepository = await client.deleteRepository(repository.id);
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -768,12 +784,22 @@ describe("desktop API clients", () => {
         })
       })
     );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "http://127.0.0.1:8000/repositories/repo_github_api",
+      expect.objectContaining({ method: "DELETE" })
+    );
     expect(repository).toMatchObject({
       id: "repo_github_api",
       provider: "github",
       github_owner: "example",
       github_repo: "demo",
-      connection_status: "connected"
+      connection_status: "active"
+    });
+    expect(deletedRepository).toMatchObject({
+      id: "repo_github_api",
+      status: "deleted",
+      connection_status: "inactive"
     });
   });
 
@@ -1028,13 +1054,13 @@ describe("desktop API clients", () => {
             name: "example/inactive",
             local_path: "",
             default_branch: "main",
-            status: "inactive",
+            status: "active",
             provider: "github",
             repo_url: "https://github.com/example/inactive",
             github_owner: "example",
             github_repo: "inactive",
             github_credential_id: "github_credential_api",
-            connection_status: "connected"
+            connection_status: "inactive"
           },
           {
             id: "repo_selected_api",
@@ -1047,7 +1073,7 @@ describe("desktop API clients", () => {
             github_owner: "example",
             github_repo: "selected",
             github_credential_id: "github_credential_api",
-            connection_status: "connected"
+            connection_status: "active"
           }
         ])
       )

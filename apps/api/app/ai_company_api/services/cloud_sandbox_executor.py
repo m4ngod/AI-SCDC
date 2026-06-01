@@ -82,6 +82,8 @@ class SandboxExecutionRequest:
     test_commands: list[SandboxCommandSelection]
     env: dict[str, str]
     network_enabled: bool
+    github_owner: str | None = None
+    github_repo: str | None = None
     github_token: str | None = None
 
 

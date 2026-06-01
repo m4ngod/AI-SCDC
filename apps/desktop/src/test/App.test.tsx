@@ -281,7 +281,21 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
       github_owner: "example",
       github_repo: "demo",
       github_credential_id: "github_credential_test",
-      connection_status: "connected"
+      connection_status: "active"
+    }),
+    deleteRepository: vi.fn().mockResolvedValue({
+      id: "repo_github_test",
+      project_id: "project_demo",
+      name: "example/demo",
+      local_path: "",
+      default_branch: "main",
+      status: "deleted",
+      provider: "github",
+      repo_url: "https://github.com/example/demo",
+      github_owner: "example",
+      github_repo: "demo",
+      github_credential_id: "github_credential_test",
+      connection_status: "inactive"
     }),
     createSandboxProfile: vi.fn().mockResolvedValue({
       id: "sandbox_profile_test",
@@ -1021,7 +1035,7 @@ describe("App", () => {
         github_owner: "example",
         github_repo: "demo",
         github_credential_id: "github_credential_test",
-        connection_status: "connected"
+        connection_status: "active"
       });
     const createSandboxProfile =
       vi.fn<ConsoleApiClient["createSandboxProfile"]>().mockResolvedValue({
@@ -1124,7 +1138,7 @@ describe("App", () => {
         github_owner: "example",
         github_repo: "demo",
         github_credential_id: "github_credential_test",
-        connection_status: "connected"
+        connection_status: "active"
       });
     const apiClient = createMockApiClient({ createGitHubCredential, createGitHubRepository });
 
@@ -1174,6 +1188,51 @@ describe("App", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Invalid GitHub URL");
     expect(deleteGitHubCredential).toHaveBeenCalledWith("github_credential_test");
+  });
+
+  it("deletes a created github repository and credential when sandbox profile setup fails", async () => {
+    const user = userEvent.setup();
+    const deleteRepository = vi.fn<ConsoleApiClient["deleteRepository"]>().mockResolvedValue({
+      id: "repo_github_test",
+      project_id: "project_demo",
+      name: "example/demo",
+      local_path: "",
+      default_branch: "main",
+      status: "deleted",
+      provider: "github",
+      repo_url: "https://github.com/example/demo",
+      github_owner: "example",
+      github_repo: "demo",
+      github_credential_id: "github_credential_test",
+      connection_status: "inactive"
+    });
+    const deleteGitHubCredential =
+      vi.fn<ConsoleApiClient["deleteGitHubCredential"]>().mockResolvedValue({
+        id: "github_credential_test",
+        workspace_id: "workspace_test",
+        display_name: "Example GitHub",
+        token_last4: "1234",
+        status: "deleted",
+        created_at: "2026-05-29T00:00:00Z",
+        updated_at: "2026-05-29T00:00:00Z"
+      });
+    const apiClient = createMockApiClient({
+      createSandboxProfile: vi.fn().mockRejectedValue(new Error("Invalid sandbox profile")),
+      deleteRepository,
+      deleteGitHubCredential
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    await user.type(screen.getByLabelText("GitHub token"), "ghp_test_token_1234");
+    await user.click(screen.getByRole("button", { name: "Connect GitHub repo" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid sandbox profile");
+    expect(deleteRepository).toHaveBeenCalledWith("repo_github_test");
+    expect(deleteGitHubCredential).toHaveBeenCalledWith("github_credential_test");
+    expect(deleteRepository.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteGitHubCredential.mock.invocationCallOrder[0]
+    );
   });
 
   it("runs a cloud task and renders cloud branch metadata", async () => {

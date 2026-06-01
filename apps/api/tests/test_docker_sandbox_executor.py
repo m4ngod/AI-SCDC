@@ -56,6 +56,8 @@ def docker_request(tmp_path: Path) -> SandboxExecutionRequest:
         title="Docker task",
         description="",
         repo_url="https://github.com/example/demo",
+        github_owner="example",
+        github_repo="demo",
         base_branch="main",
         head_branch="ai-scdc/task-task_1-cloud_run_1",
         allowed_paths=["README.md"],
@@ -324,6 +326,43 @@ def test_docker_executor_rejects_authenticated_clone_for_userinfo_url(
     request = replace(
         docker_request(tmp_path),
         repo_url="https://user:secret@github.com/example/demo",
+        github_token="ghp_private_clone_token1234",
+    )
+
+    result = executor.run(request)
+
+    assert result.status == "failed"
+    assert result.failure_reason == "invalid_github_repository_url"
+    assert runner.calls == []
+
+
+def test_docker_executor_rejects_authenticated_clone_for_mismatched_github_repo(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        repo_url="https://github.com/example/other",
+        github_token="ghp_private_clone_token1234",
+    )
+
+    result = executor.run(request)
+
+    assert result.status == "failed"
+    assert result.failure_reason == "invalid_github_repository_url"
+    assert runner.calls == []
+
+
+def test_docker_executor_rejects_authenticated_clone_for_encoded_slash_repo(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        repo_url="https://github.com/example/demo%2Fsecret",
+        github_repo="demo%2Fsecret",
         github_token="ghp_private_clone_token1234",
     )
 
