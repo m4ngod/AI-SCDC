@@ -350,7 +350,9 @@ class DockerLocalSandboxExecutor:
                     process_result.to_command_result(command, secrets=secrets)
                 )
                 if process_result.exit_code != 0 or process_result.timed_out:
-                    if label == "clone" and _is_docker_image_failure(process_result):
+                    if label == "clone" and _is_docker_run_start_failure(
+                        process_result
+                    ):
                         failure_reason = "docker_unavailable"
                     else:
                         failure_reason = {
@@ -597,20 +599,24 @@ def _is_safe_docker_env_value(value: str) -> bool:
     return "\n" not in value and "\r" not in value
 
 
-def _is_docker_image_failure(process_result: ProcessResult) -> bool:
+def _is_docker_run_start_failure(process_result: ProcessResult) -> bool:
     if process_result.exit_code != 125:
         return False
     output = f"{process_result.stdout}\n{process_result.stderr}".lower()
-    return any(
-        marker in output
-        for marker in [
-            "unable to find image",
-            "pull access denied",
-            "manifest unknown",
-            "no such image",
-            "not found: manifest",
-        ]
-    )
+    if output.startswith("docker:") or "error response from daemon" in output:
+        return True
+    return any(marker in output for marker in _DOCKER_IMAGE_FAILURE_MARKERS)
+
+
+_DOCKER_IMAGE_FAILURE_MARKERS = [
+    "unable to find image",
+    "pull access denied",
+    "manifest unknown",
+    "no such image",
+    "not found: manifest",
+    "context deadline exceeded",
+    "client.timeout exceeded",
+]
 
 
 def _validated_docker_image(image: str | None) -> str | None:

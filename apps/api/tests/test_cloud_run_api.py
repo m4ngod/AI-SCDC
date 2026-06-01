@@ -634,6 +634,69 @@ def test_docker_cloud_run_started_state_is_committed_before_executor_runs(
     assert observed["event_type"] == "cloud_run_started"
 
 
+def test_docker_cloud_run_executor_exception_marks_persisted_run_failed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, _request):
+            raise RuntimeError("raw secret detail should not be exposed")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    init_db(build_engine(database_url))
+    client = TestClient(
+        create_app(database_url=database_url),
+        raise_server_exceptions=False,
+    )
+    with Session(build_engine(database_url)) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["patch_artifact"] is None
+    assert result["cloud_run"]["status"] == "failed"
+    assert result["cloud_run"]["failure_reason"] == "executor_failed"
+    assert "raw secret detail" not in str(result)
+
+    with Session(build_engine(database_url)) as session:
+        cloud_run = session.get(CloudRun, result["cloud_run"]["id"])
+        local_run = session.get(LocalTaskRun, result["cloud_run"]["local_run_id"])
+        failed_event = session.exec(
+            select(TaskEvent).where(
+                TaskEvent.task_id == task_id,
+                TaskEvent.event_type == "cloud_run_failed",
+            )
+        ).first()
+
+    assert cloud_run is not None
+    assert cloud_run.status == "failed"
+    assert cloud_run.failure_reason == "executor_failed"
+    assert local_run is not None
+    assert local_run.status == "failed"
+    assert local_run.failure_reason == "executor_failed"
+    assert failed_event is not None
+    assert failed_event.payload["failure_reason"] == "executor_failed"
+
+
 def test_docker_cloud_run_can_retry_after_setup_failure(
     tmp_path: Path,
     monkeypatch,

@@ -144,27 +144,30 @@ def start_cloud_run(
     session.refresh(cloud_run)
     session.refresh(local_run)
 
-    execution_result = executor.run(
-        SandboxExecutionRequest(
-            task_id=task.id,
-            cloud_run_id=cloud_run.id,
-            title=task.title,
-            description=task.description,
-            repo_url=repository.repo_url,
-            github_owner=repository.github_owner,
-            github_repo=repository.github_repo,
-            base_branch=repository.default_branch,
-            head_branch=head_branch,
-            allowed_paths=task.allowed_paths or [],
-            required_tests=task.required_tests or [],
-            docker_image=docker_image,
-            patch_command=patch_command,
-            test_commands=test_commands,
-            env=sandbox_env,
-            network_enabled=network_enabled,
-            github_token=github_token,
+    try:
+        execution_result = executor.run(
+            SandboxExecutionRequest(
+                task_id=task.id,
+                cloud_run_id=cloud_run.id,
+                title=task.title,
+                description=task.description,
+                repo_url=repository.repo_url,
+                github_owner=repository.github_owner,
+                github_repo=repository.github_repo,
+                base_branch=repository.default_branch,
+                head_branch=head_branch,
+                allowed_paths=task.allowed_paths or [],
+                required_tests=task.required_tests or [],
+                docker_image=docker_image,
+                patch_command=patch_command,
+                test_commands=test_commands,
+                env=sandbox_env,
+                network_enabled=network_enabled,
+                github_token=github_token,
+            )
         )
-    )
+    except Exception:
+        execution_result = _executor_exception_result(executor.sandbox_kind)
 
     local_run.runner_kind = execution_result.runner_kind
     local_run.base_sha = execution_result.base_sha
@@ -404,6 +407,33 @@ def _should_create_patch_artifact(result: SandboxExecutionResult) -> bool:
         result.failure_reason == "test_failed"
         and bool(result.files_changed)
         and result.diff_text.strip() != ""
+    )
+
+
+def _executor_exception_result(runner_kind: str) -> SandboxExecutionResult:
+    return SandboxExecutionResult(
+        status="failed",
+        runner_kind=runner_kind,
+        base_sha=None,
+        head_sha=None,
+        worktree_ref=None,
+        summary="",
+        files_changed=[],
+        tests_run=[],
+        test_result="not_run",
+        risks=[],
+        diff_text="",
+        command_results=[
+            CommandResult(
+                command=f"{runner_kind} executor",
+                exit_code=1,
+                stdout="",
+                stderr="Executor failed before returning a result.",
+                duration_ms=0,
+            )
+        ],
+        test_command_results=[],
+        failure_reason="executor_failed",
     )
 
 

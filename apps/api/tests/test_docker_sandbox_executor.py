@@ -445,6 +445,39 @@ def test_docker_executor_maps_image_pull_failure_to_docker_unavailable(
     assert result.failure_reason == "docker_unavailable"
 
 
+def test_docker_executor_maps_docker_run_start_failure_to_docker_unavailable(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(
+        [
+            ProcessResult(
+                args=["docker", "version"],
+                exit_code=0,
+                stdout="Docker",
+                stderr="",
+                duration_ms=1,
+            ),
+            ProcessResult(
+                args=["docker", "clone"],
+                exit_code=125,
+                stdout="",
+                stderr=(
+                    "docker: Error response from daemon: invalid mount config for "
+                    "type \"bind\""
+                ),
+                duration_ms=1,
+            ),
+        ]
+    )
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(docker_request(tmp_path), test_commands=[], required_tests=[])
+
+    result = executor.run(request)
+
+    assert result.status == "failed"
+    assert result.failure_reason == "docker_unavailable"
+
+
 def test_docker_executor_rejects_authenticated_clone_for_mismatched_github_repo(
     tmp_path: Path,
 ) -> None:
