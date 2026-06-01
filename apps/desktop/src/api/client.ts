@@ -307,6 +307,7 @@ export type ConsoleApiClient = {
   approvePlannerRun: (plannerRunId: string) => Promise<PlannerRunDecision>;
   rejectPlannerRun: (plannerRunId: string, reason?: string) => Promise<PlannerRunDecision>;
   createGitHubCredential: (input: GitHubCredentialInput) => Promise<GitHubCredentialCard>;
+  deleteGitHubCredential: (credentialId: string) => Promise<GitHubCredentialCard>;
   listGitHubCredentials: () => Promise<GitHubCredentialCard[]>;
   createGitHubRepository: (input: GitHubRepositoryInput) => Promise<RepositoryCard>;
   createSandboxProfile: (
@@ -571,6 +572,17 @@ export const fakeApiClient: ConsoleApiClient = {
       display_name: input.display_name,
       token_last4: input.token.slice(-4),
       status: "active",
+      created_at: "2026-05-29T00:00:00Z",
+      updated_at: "2026-05-29T00:00:00Z"
+    };
+  },
+  async deleteGitHubCredential(credentialId: string) {
+    return {
+      id: credentialId,
+      workspace_id: "workspace_demo",
+      display_name: "Deleted GitHub",
+      token_last4: "7890",
+      status: "deleted",
       created_at: "2026-05-29T00:00:00Z",
       updated_at: "2026-05-29T00:00:00Z"
     };
@@ -1347,6 +1359,15 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         body: JSON.stringify(input)
       });
       return readJsonResponse<ApiGitHubCredential>(response, "POST /github-credentials");
+    },
+    async deleteGitHubCredential(credentialId: string) {
+      const response = await fetch(apiUrl(options.baseUrl, `/github-credentials/${credentialId}`), {
+        method: "DELETE"
+      });
+      return readJsonResponse<ApiGitHubCredential>(
+        response,
+        `DELETE /github-credentials/${credentialId}`
+      );
     },
     async listGitHubCredentials() {
       const response = await fetch(apiUrl(options.baseUrl, "/github-credentials"));

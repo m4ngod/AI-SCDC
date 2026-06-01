@@ -219,6 +219,54 @@ def test_register_github_repository_rejects_owner_repo_mismatch(tmp_path: Path) 
     assert response.json()["detail"] == "GitHub repository URL must match owner/repo"
 
 
+def test_register_github_repository_rejects_multisegment_owner(tmp_path: Path) -> None:
+    with build_client(tmp_path / "app.db") as client:
+        project = client.post("/projects", json={"name": "GitHub project"}).json()
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "Dev GitHub", "token": "ghp_example1234567890"},
+        ).json()
+
+        response = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Demo remote",
+                "repo_url": "https://github.com/example/team/demo",
+                "github_owner": "example/team",
+                "github_repo": "demo",
+                "default_branch": "main",
+                "github_credential_id": credential["id"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub owner and repo must be single path segments"
+
+
+def test_register_github_repository_rejects_encoded_slash_repo(tmp_path: Path) -> None:
+    with build_client(tmp_path / "app.db") as client:
+        project = client.post("/projects", json={"name": "GitHub project"}).json()
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "Dev GitHub", "token": "ghp_example1234567890"},
+        ).json()
+
+        response = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Demo remote",
+                "repo_url": "https://github.com/example/demo%2Fsecret",
+                "github_owner": "example",
+                "github_repo": "demo%2Fsecret",
+                "default_branch": "main",
+                "github_credential_id": credential["id"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub owner and repo must be single path segments"
+
+
 def test_request_sessions_do_not_initialize_database_per_request(
     tmp_path: Path,
     monkeypatch,

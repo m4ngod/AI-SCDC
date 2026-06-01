@@ -1,4 +1,4 @@
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from fastapi import HTTPException
 from sqlmodel import Session, select
@@ -121,6 +121,11 @@ def create_github_repository(
 
 
 def validate_github_repository_url(repo_url: str, *, owner: str, repo: str) -> str:
+    if not _is_single_github_path_segment(owner) or not _is_single_github_path_segment(repo):
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub owner and repo must be single path segments",
+        )
     try:
         parsed = urlsplit(repo_url)
     except ValueError as exc:
@@ -140,13 +145,27 @@ def validate_github_repository_url(repo_url: str, *, owner: str, repo: str) -> s
             detail="GitHub repository URL must match owner/repo",
         )
 
-    expected_paths = {
-        f"/{owner}/{repo}",
-        f"/{owner}/{repo}.git",
-    }
-    if parsed.path not in expected_paths or parsed.query or parsed.fragment:
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if (
+        len(path_parts) != 2
+        or path_parts[0] != owner
+        or path_parts[1] not in {repo, f"{repo}.git"}
+        or parsed.query
+        or parsed.fragment
+    ):
         raise HTTPException(
             status_code=400,
             detail="GitHub repository URL must match owner/repo",
         )
     return repo_url
+
+
+def _is_single_github_path_segment(value: str) -> bool:
+    decoded = unquote(value)
+    return (
+        value.strip() != ""
+        and "/" not in value
+        and "\\" not in value
+        and "/" not in decoded
+        and "\\" not in decoded
+    )

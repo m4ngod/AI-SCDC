@@ -259,6 +259,15 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
       created_at: "2026-05-29T00:00:00Z",
       updated_at: "2026-05-29T00:00:00Z"
     }),
+    deleteGitHubCredential: vi.fn().mockResolvedValue({
+      id: "github_credential_test",
+      workspace_id: "workspace_test",
+      display_name: "Example GitHub",
+      token_last4: "7890",
+      status: "deleted",
+      created_at: "2026-05-29T00:00:00Z",
+      updated_at: "2026-05-29T00:00:00Z"
+    }),
     listGitHubCredentials: vi.fn().mockResolvedValue([]),
     createGitHubRepository: vi.fn().mockResolvedValue({
       id: "repo_github_test",
@@ -1139,6 +1148,32 @@ describe("App", () => {
       updated_at: "2026-05-29T00:00:00Z"
     });
     expect(await screen.findByText("GitHub repo connected")).toBeInTheDocument();
+  });
+
+  it("deletes a created github credential when repository setup fails", async () => {
+    const user = userEvent.setup();
+    const deleteGitHubCredential =
+      vi.fn<ConsoleApiClient["deleteGitHubCredential"]>().mockResolvedValue({
+        id: "github_credential_test",
+        workspace_id: "workspace_test",
+        display_name: "Example GitHub",
+        token_last4: "1234",
+        status: "deleted",
+        created_at: "2026-05-29T00:00:00Z",
+        updated_at: "2026-05-29T00:00:00Z"
+      });
+    const apiClient = createMockApiClient({
+      createGitHubRepository: vi.fn().mockRejectedValue(new Error("Invalid GitHub URL")),
+      deleteGitHubCredential
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    await user.type(screen.getByLabelText("GitHub token"), "ghp_test_token_1234");
+    await user.click(screen.getByRole("button", { name: "Connect GitHub repo" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid GitHub URL");
+    expect(deleteGitHubCredential).toHaveBeenCalledWith("github_credential_test");
   });
 
   it("runs a cloud task and renders cloud branch metadata", async () => {

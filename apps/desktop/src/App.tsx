@@ -226,6 +226,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     }
 
     setIsConnectingGitHubRepo(true);
+    let createdCredentialId: string | null = null;
     try {
       setGithubSetupStatus(null);
       setGithubSetupError(null);
@@ -236,6 +237,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         display_name: "Dev GitHub",
         token: input.token
       });
+      createdCredentialId = credential.id;
       const repository = await apiClient.createGitHubRepository({
         name: `${input.github_owner}/${input.github_repo}`,
         repo_url: input.repo_url,
@@ -260,6 +262,13 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       setGithubSetupStatus("GitHub repo connected");
       setGithubSetupInput((currentInput) => ({ ...currentInput, token: "" }));
     } catch (error) {
+      if (createdCredentialId) {
+        try {
+          await apiClient.deleteGitHubCredential(createdCredentialId);
+        } catch {
+          // Preserve the setup error; cleanup failure is still visible in server logs.
+        }
+      }
       setGithubSetupError(errorMessage(error, "Failed to connect GitHub repo"));
     } finally {
       setIsConnectingGitHubRepo(false);
