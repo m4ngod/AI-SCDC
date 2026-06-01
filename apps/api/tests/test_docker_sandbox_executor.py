@@ -478,6 +478,54 @@ def test_docker_executor_maps_docker_run_start_failure_to_docker_unavailable(
     assert result.failure_reason == "docker_unavailable"
 
 
+def test_docker_executor_maps_patch_container_start_failure_to_docker_unavailable(
+    tmp_path: Path,
+) -> None:
+    results = docker_success_results()
+    results[4] = ProcessResult(
+        args=["docker", "patch"],
+        exit_code=125,
+        stdout="",
+        stderr="docker: Error response from daemon: failed to create shim task",
+        duration_ms=1,
+    )
+    runner = RecordingRunner(results)
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(docker_request(tmp_path), test_commands=[], required_tests=[])
+
+    result = executor.run(request)
+
+    assert result.status == "failed"
+    assert result.failure_reason == "docker_unavailable"
+    assert result.files_changed == []
+
+
+def test_docker_executor_maps_test_container_start_failure_to_docker_unavailable(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(
+        docker_success_results(
+            test_results=[
+                ProcessResult(
+                    args=["docker", "test-python-version"],
+                    exit_code=125,
+                    stdout="",
+                    stderr="docker: Error response from daemon: runtime failed to start",
+                    duration_ms=1,
+                )
+            ]
+        )
+    )
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+
+    result = executor.run(docker_request(tmp_path))
+
+    assert result.status == "failed"
+    assert result.failure_reason == "docker_unavailable"
+    assert result.files_changed == []
+    assert result.test_result == "not_run"
+
+
 def test_docker_executor_rejects_authenticated_clone_for_mismatched_github_repo(
     tmp_path: Path,
 ) -> None:

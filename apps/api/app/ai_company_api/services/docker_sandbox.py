@@ -350,9 +350,7 @@ class DockerLocalSandboxExecutor:
                     process_result.to_command_result(command, secrets=secrets)
                 )
                 if process_result.exit_code != 0 or process_result.timed_out:
-                    if label == "clone" and _is_docker_run_start_failure(
-                        process_result
-                    ):
+                    if _is_docker_run_start_failure(process_result):
                         failure_reason = "docker_unavailable"
                     else:
                         failure_reason = {
@@ -422,6 +420,13 @@ class DockerLocalSandboxExecutor:
                     )
                 )
                 if process_result.exit_code != 0 or process_result.timed_out:
+                    if _is_docker_run_start_failure(process_result):
+                        return _failed_result(
+                            "docker_unavailable",
+                            "docker_local",
+                            command_results,
+                            test_results,
+                        )
                     test_status = "failed"
 
             failure_reason = "test_failed" if test_status == "failed" else None
