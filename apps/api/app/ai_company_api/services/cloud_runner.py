@@ -82,8 +82,6 @@ def start_cloud_run(
             owner=repository.github_owner or "",
             repo=repository.github_repo or "",
         )
-        credential = get_active_github_credential(session, repository.github_credential_id)
-        github_token = DevSecretVault().open(credential.encrypted_token)
         profile = validate_sandbox_profile_for_repo(
             session,
             data.sandbox_profile_id,
@@ -97,6 +95,8 @@ def start_cloud_run(
         docker_image = profile.docker_image
         sandbox_env = _sandbox_profile_env(profile.allowed_env_vars or [])
         network_enabled = profile.network_enabled
+        credential = get_active_github_credential(session, repository.github_credential_id)
+        github_token = DevSecretVault().open(credential.encrypted_token)
 
     cloud_run = CloudRun(
         project_id=task.project_id,
@@ -116,6 +116,34 @@ def start_cloud_run(
     head_branch = f"ai-scdc/task-{task.id}-{cloud_run.id}"
     cloud_run.head_branch = head_branch
     cloud_run.sandbox_kind = executor.sandbox_kind
+
+    local_run = LocalTaskRun(
+        project_id=task.project_id,
+        task_id=task.id,
+        repo_id=repository.id,
+        status="running",
+        runner_kind=executor.sandbox_kind,
+        base_branch=repository.default_branch,
+    )
+    session.add(local_run)
+    session.flush()
+
+    cloud_run.status = "running"
+    cloud_run.local_run_id = local_run.id
+    cloud_run.updated_at = utc_now()
+    _create_cloud_run_event(
+        session,
+        event_clock,
+        task.id,
+        "cloud_run_started",
+        {"cloud_run_id": cloud_run.id, "repo_id": repository.id},
+    )
+    session.add(local_run)
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    session.refresh(local_run)
+
     execution_result = executor.run(
         SandboxExecutionRequest(
             task_id=task.id,
@@ -138,31 +166,10 @@ def start_cloud_run(
         )
     )
 
-    _create_cloud_run_event(
-        session,
-        event_clock,
-        task.id,
-        "cloud_run_started",
-        {"cloud_run_id": cloud_run.id, "repo_id": repository.id},
-    )
-
-    local_run = LocalTaskRun(
-        project_id=task.project_id,
-        task_id=task.id,
-        repo_id=repository.id,
-        status="running",
-        runner_kind=execution_result.runner_kind,
-        base_branch=repository.default_branch,
-        base_sha=execution_result.base_sha,
-        head_sha=execution_result.head_sha,
-        worktree_path=execution_result.worktree_ref,
-    )
-    session.add(local_run)
-    session.flush()
-
-    cloud_run.status = "running"
-    cloud_run.local_run_id = local_run.id
-    cloud_run.updated_at = utc_now()
+    local_run.runner_kind = execution_result.runner_kind
+    local_run.base_sha = execution_result.base_sha
+    local_run.head_sha = execution_result.head_sha
+    local_run.worktree_path = execution_result.worktree_ref
 
     secrets = _redaction_secrets(sandbox_env, repository.repo_url, github_token)
     if not _should_create_patch_artifact(execution_result):

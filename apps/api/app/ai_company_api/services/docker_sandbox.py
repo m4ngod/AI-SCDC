@@ -276,6 +276,7 @@ class DockerLocalSandboxExecutor:
             workspace_path = root / "workspace"
             artifact_path = root / "artifacts"
             workspace_path.mkdir(parents=True, exist_ok=True)
+            (workspace_path / "repo").mkdir(parents=True, exist_ok=True)
             artifact_path.mkdir(parents=True, exist_ok=True)
             env_file_path = _write_docker_env_file(
                 artifact_path / "container.env",
@@ -349,17 +350,20 @@ class DockerLocalSandboxExecutor:
                     process_result.to_command_result(command, secrets=secrets)
                 )
                 if process_result.exit_code != 0 or process_result.timed_out:
-                    failure_reason = {
-                        "clone": "repo_checkout_failed",
-                        "checkout": "repo_checkout_failed",
-                        "branch": "repo_checkout_failed",
-                        "patch": "patch_command_failed",
-                        "intent-to-add": "artifact_capture_failed",
-                        "name-only": "artifact_capture_failed",
-                        "diff": "artifact_capture_failed",
-                        "base-sha": "artifact_capture_failed",
-                        "head-sha": "artifact_capture_failed",
-                    }[label]
+                    if label == "clone" and _is_docker_image_failure(process_result):
+                        failure_reason = "docker_unavailable"
+                    else:
+                        failure_reason = {
+                            "clone": "repo_checkout_failed",
+                            "checkout": "repo_checkout_failed",
+                            "branch": "repo_checkout_failed",
+                            "patch": "patch_command_failed",
+                            "intent-to-add": "artifact_capture_failed",
+                            "name-only": "artifact_capture_failed",
+                            "diff": "artifact_capture_failed",
+                            "base-sha": "artifact_capture_failed",
+                            "head-sha": "artifact_capture_failed",
+                        }[label]
                     return _failed_result(
                         failure_reason,
                         "docker_local",
@@ -591,6 +595,22 @@ def is_safe_sandbox_env_name(name: str) -> bool:
 
 def _is_safe_docker_env_value(value: str) -> bool:
     return "\n" not in value and "\r" not in value
+
+
+def _is_docker_image_failure(process_result: ProcessResult) -> bool:
+    if process_result.exit_code != 125:
+        return False
+    output = f"{process_result.stdout}\n{process_result.stderr}".lower()
+    return any(
+        marker in output
+        for marker in [
+            "unable to find image",
+            "pull access denied",
+            "manifest unknown",
+            "no such image",
+            "not found: manifest",
+        ]
+    )
 
 
 def _validated_docker_image(image: str | None) -> str | None:

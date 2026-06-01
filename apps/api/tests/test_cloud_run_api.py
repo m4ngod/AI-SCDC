@@ -8,6 +8,7 @@ from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
     CloudRun,
+    TaskEvent,
     GitHubCredential,
     LocalTaskRun,
     LocalTestRun,
@@ -242,6 +243,44 @@ def test_docker_cloud_run_requires_active_sandbox_profile(
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Docker cloud runs require a sandbox profile"
+
+
+def test_docker_cloud_run_validates_profile_before_opening_github_token(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class VaultShouldNotOpen:
+        def open(self, _encrypted_secret: str) -> str:
+            raise AssertionError("vault should not open token before profile validation")
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    monkeypatch.setattr(cloud_runner, "DevSecretVault", VaultShouldNotOpen)
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": "sandbox_profile_missing"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Sandbox profile not found"
 
 
 def test_docker_cloud_run_rejects_unknown_patch_command_key(
@@ -511,6 +550,88 @@ def test_docker_cloud_run_records_docker_unavailable(
     assert task_after_failure.status == TaskStatus.CREATED
     assert task_after_failure.branch_name is None
     assert task_after_failure.worktree_ref is None
+
+
+def test_docker_cloud_run_started_state_is_committed_before_executor_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    observed: dict[str, str | None] = {}
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, request):
+            with Session(engine) as observer:
+                cloud_run = observer.get(CloudRun, request.cloud_run_id)
+                observed["cloud_run_status"] = cloud_run.status if cloud_run else None
+                observed["local_run_id"] = cloud_run.local_run_id if cloud_run else None
+                local_run = (
+                    observer.get(LocalTaskRun, cloud_run.local_run_id)
+                    if cloud_run and cloud_run.local_run_id
+                    else None
+                )
+                observed["local_run_status"] = local_run.status if local_run else None
+                event = observer.exec(
+                    select(TaskEvent).where(
+                        TaskEvent.task_id == request.task_id,
+                        TaskEvent.event_type == "cloud_run_started",
+                    )
+                ).first()
+                observed["event_type"] = event.event_type if event else None
+            return SandboxExecutionResult(
+                status="failed",
+                runner_kind="docker_local",
+                base_sha=None,
+                head_sha=None,
+                worktree_ref=None,
+                summary="",
+                files_changed=[],
+                tests_run=[],
+                test_result="not_run",
+                risks=[],
+                diff_text="",
+                command_results=[
+                    CommandResult(
+                        command="docker version",
+                        exit_code=1,
+                        stdout="",
+                        stderr="docker unavailable",
+                        duration_ms=3,
+                    )
+                ],
+                test_command_results=[],
+                failure_reason="docker_unavailable",
+            )
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    client = build_client(database_path)
+    with Session(engine) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    )
+
+    assert response.status_code == 201
+    assert observed["cloud_run_status"] == "running"
+    assert observed["local_run_id"] is not None
+    assert observed["local_run_status"] == "running"
+    assert observed["event_type"] == "cloud_run_started"
 
 
 def test_docker_cloud_run_can_retry_after_setup_failure(

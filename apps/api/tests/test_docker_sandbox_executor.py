@@ -21,6 +21,7 @@ class RecordingRunner:
         self.calls: list[dict] = []
         self.results = results or []
         self.env_file_snapshots: list[tuple[str, str]] = []
+        self.workspace_repo_exists: list[bool] = []
 
     def run(self, args, *, cwd=None, env=None, timeout_seconds=30):
         command_args = [str(item) for item in args]
@@ -38,6 +39,11 @@ class RecordingRunner:
                 self.env_file_snapshots.append(
                     (command_args[index + 1], path.read_text(encoding="utf-8"))
                 )
+        for index, item in enumerate(command_args[:-1]):
+            if item == "-v" and command_args[index + 1].endswith(":/workspace"):
+                host_path = command_args[index + 1].removesuffix(":/workspace")
+                self.workspace_repo_exists.append((Path(host_path) / "repo").is_dir())
+                break
         if self.results:
             return self.results.pop(0)
         return ProcessResult(
@@ -252,6 +258,20 @@ def test_docker_executor_rejects_option_like_docker_image(tmp_path: Path) -> Non
     assert runner.calls == []
 
 
+def test_docker_executor_creates_host_repo_dir_before_container_workdir(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(docker_request(tmp_path), test_commands=[], required_tests=[])
+
+    result = executor.run(request)
+
+    assert result.status == "patch_ready"
+    assert runner.workspace_repo_exists
+    assert all(runner.workspace_repo_exists)
+
+
 def test_docker_executor_accepts_normal_docker_image(tmp_path: Path) -> None:
     runner = RecordingRunner(docker_success_results())
     executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
@@ -385,6 +405,44 @@ def test_docker_executor_rejects_authenticated_clone_for_userinfo_url(
     assert result.status == "failed"
     assert result.failure_reason == "invalid_github_repository_url"
     assert runner.calls == []
+
+
+def test_docker_executor_maps_image_pull_failure_to_docker_unavailable(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(
+        [
+            ProcessResult(
+                args=["docker", "version"],
+                exit_code=0,
+                stdout="Docker",
+                stderr="",
+                duration_ms=1,
+            ),
+            ProcessResult(
+                args=["docker", "clone"],
+                exit_code=125,
+                stdout="",
+                stderr=(
+                    "Unable to find image 'private.example/missing:latest' locally\n"
+                    "pull access denied for private.example/missing"
+                ),
+                duration_ms=1,
+            ),
+        ]
+    )
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        docker_image="private.example/missing:latest",
+        test_commands=[],
+        required_tests=[],
+    )
+
+    result = executor.run(request)
+
+    assert result.status == "failed"
+    assert result.failure_reason == "docker_unavailable"
 
 
 def test_docker_executor_rejects_authenticated_clone_for_mismatched_github_repo(
