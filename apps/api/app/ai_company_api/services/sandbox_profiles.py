@@ -7,7 +7,10 @@ from ai_company_api.schemas.api import (
     SandboxProfileCreate,
     SandboxProfileRead,
 )
-from ai_company_api.services.docker_sandbox import validate_docker_image
+from ai_company_api.services.docker_sandbox import (
+    is_safe_sandbox_env_name,
+    validate_docker_image,
+)
 from ai_company_api.services.repository import get_project, get_repository
 
 
@@ -32,6 +35,7 @@ def create_sandbox_profile(
     docker_image = validate_docker_image(data.docker_image)
     if docker_image is None:
         raise HTTPException(status_code=400, detail="Invalid Docker image")
+    allowed_env_vars = _validated_allowed_env_vars(data.allowed_env_vars)
 
     profile = SandboxProfile(
         workspace_id=project.workspace_id,
@@ -41,7 +45,7 @@ def create_sandbox_profile(
         docker_image=docker_image,
         patch_commands=[command.model_dump() for command in data.patch_commands],
         test_commands=[command.model_dump() for command in data.test_commands],
-        allowed_env_vars=list(data.allowed_env_vars),
+        allowed_env_vars=allowed_env_vars,
         network_enabled=data.network_enabled,
     )
     session.add(profile)
@@ -125,6 +129,16 @@ def _validate_unique_command_keys(commands: list[SandboxCommand]) -> None:
             status_code=400,
             detail="Sandbox command keys must be unique",
         )
+
+
+def _validated_allowed_env_vars(names: list[str]) -> list[str]:
+    deduped = list(dict.fromkeys(names))
+    if any(not is_safe_sandbox_env_name(name) for name in deduped):
+        raise HTTPException(
+            status_code=400,
+            detail="Sandbox profile allowed env vars are invalid",
+        )
+    return deduped
 
 
 def _sandbox_profile_read(profile: SandboxProfile) -> SandboxProfileRead:

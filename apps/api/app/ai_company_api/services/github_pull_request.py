@@ -26,7 +26,10 @@ from ai_company_api.schemas.api import (
     PullRequestResultRead,
     TaskRead,
 )
-from ai_company_api.services.github_repository import get_active_github_credential
+from ai_company_api.services.github_repository import (
+    get_active_github_credential,
+    validate_github_repository_url,
+)
 from ai_company_api.services.repository import create_task_event, get_task
 from ai_company_api.services.secret_vault import DevSecretVault, SecretVault
 from ai_company_api.services.task_state import (
@@ -405,6 +408,11 @@ def _get_github_repository(session: Session, repo_id: str) -> Repository:
         raise HTTPException(status_code=400, detail="GitHub repository is not active")
     if not repository.github_owner or not repository.github_repo:
         raise HTTPException(status_code=400, detail="GitHub repository metadata is incomplete")
+    validate_github_repository_url(
+        repository.repo_url,
+        owner=repository.github_owner,
+        repo=repository.github_repo,
+    )
     return repository
 
 

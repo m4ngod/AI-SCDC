@@ -139,6 +139,51 @@ def test_create_and_list_sandbox_profile(tmp_path: Path) -> None:
         assert persisted.patch_commands[0]["key"] == "write-note"
 
 
+def test_sandbox_profile_deduplicates_allowed_env_vars(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        init_db(session.get_bind())
+        project, repository = create_github_repo(session)
+
+    payload = profile_payload(repository.id)
+    payload["allowed_env_vars"] = [
+        "SANDBOX_TOKEN",
+        "SANDBOX_TOKEN",
+        "AI_SCDC_SAFE_VAR",
+    ]
+
+    with build_client(database_path) as client:
+        response = client.post(
+            f"/projects/{project.id}/sandbox-profiles",
+            json=payload,
+        )
+
+    assert response.status_code == 201
+    assert response.json()["allowed_env_vars"] == [
+        "SANDBOX_TOKEN",
+        "AI_SCDC_SAFE_VAR",
+    ]
+
+
+def test_sandbox_profile_rejects_unsafe_allowed_env_var_names(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        init_db(session.get_bind())
+        project, repository = create_github_repo(session)
+
+    payload = profile_payload(repository.id)
+    payload["allowed_env_vars"] = ["SANDBOX_TOKEN", "PATH", "BAD=NAME"]
+
+    with build_client(database_path) as client:
+        response = client.post(
+            f"/projects/{project.id}/sandbox-profiles",
+            json=payload,
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Sandbox profile allowed env vars are invalid"
+
+
 def test_sandbox_profile_rejects_non_github_repo(tmp_path: Path) -> None:
     repo_path = create_git_repo(tmp_path)
 

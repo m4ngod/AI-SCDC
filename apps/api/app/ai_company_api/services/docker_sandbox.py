@@ -6,7 +6,7 @@ import shlex
 import subprocess
 import tempfile
 import time
-from typing import Protocol, Sequence
+from typing import Callable, Protocol, Sequence
 from urllib.parse import unquote, urlsplit
 
 from ai_company_api.services.cloud_sandbox_executor import (
@@ -214,6 +214,7 @@ class DockerLocalSandboxExecutor:
             "--name",
             safe_container_name,
             *network_args,
+            *_docker_user_args(),
             "-v",
             f"{workspace_path.as_posix()}:/workspace",
             "-v",
@@ -487,6 +488,29 @@ def _docker_cli_env() -> dict[str, str]:
     }
 
 
+def _docker_user_args(
+    *,
+    platform_name: str | None = None,
+    getuid: Callable[[], int] | None = None,
+    getgid: Callable[[], int] | None = None,
+) -> list[str]:
+    platform = os.name if platform_name is None else platform_name
+    if platform != "posix":
+        return []
+
+    getuid = getuid or getattr(os, "getuid", None)
+    getgid = getgid or getattr(os, "getgid", None)
+    if getuid is None or getgid is None:
+        return []
+
+    try:
+        uid = getuid()
+        gid = getgid()
+    except OSError:
+        return []
+    return ["--user", f"{uid}:{gid}"]
+
+
 def _safe_container_env_names(container_env: dict[str, str]) -> list[str]:
     return sorted(name for name in container_env if _is_safe_sandbox_env_name(name))
 
@@ -559,6 +583,10 @@ def _is_safe_sandbox_env_name(name: str) -> bool:
         bool(_ENV_NAME_RE.fullmatch(name))
         and normalized not in _DOCKER_CLI_ENV_DENYLIST
     )
+
+
+def is_safe_sandbox_env_name(name: str) -> bool:
+    return _is_safe_sandbox_env_name(name)
 
 
 def _is_safe_docker_env_value(value: str) -> bool:

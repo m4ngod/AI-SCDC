@@ -186,6 +186,57 @@ def test_docker_run_args_do_not_mount_host_home_or_docker_socket(
     assert "--name" in args
 
 
+def test_docker_run_args_use_host_user_on_posix_bind_mounts(
+    tmp_path: Path,
+) -> None:
+    def getuid() -> int:
+        return 1001
+
+    def getgid() -> int:
+        return 1002
+
+    user_args = docker_sandbox._docker_user_args(
+        platform_name="posix",
+        getuid=getuid,
+        getgid=getgid,
+    )
+
+    assert user_args == ["--user", "1001:1002"]
+
+
+def test_docker_run_args_omit_host_user_on_windows_bind_mounts() -> None:
+    user_args = docker_sandbox._docker_user_args(
+        platform_name="nt",
+        getuid=lambda: 1001,
+        getgid=lambda: 1002,
+    )
+
+    assert user_args == []
+
+
+def test_docker_run_args_include_host_user_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        docker_sandbox,
+        "_docker_user_args",
+        lambda: ["--user", "1001:1002"],
+    )
+    executor = DockerLocalSandboxExecutor(workspace_root=tmp_path)
+
+    args = executor.build_docker_run_args(
+        request=docker_request(tmp_path),
+        workspace_path=Path(tmp_path.anchor) / "ai-scdc-test-workspace",
+        artifact_path=Path(tmp_path.anchor) / "ai-scdc-test-artifacts",
+        command="python -V",
+        timeout_seconds=30,
+    )
+
+    assert "--user" in args
+    assert args[args.index("--user") + 1] == "1001:1002"
+
+
 def test_docker_executor_rejects_option_like_docker_image(tmp_path: Path) -> None:
     runner = RecordingRunner(docker_success_results())
     executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)

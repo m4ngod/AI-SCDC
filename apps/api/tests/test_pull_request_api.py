@@ -370,6 +370,45 @@ def test_create_pull_request_uses_real_adapter_when_env_var_is_set(
     assert calls[0]["repo"] == "demo"
 
 
+def test_create_pull_request_rejects_tampered_repo_url_before_opening_token(
+    tmp_path: Path,
+) -> None:
+    class RaisingVault:
+        def seal(self, _secret_value: str):
+            raise AssertionError("seal should not be called")
+
+        def open(self, _encrypted_secret: str) -> str:
+            raise AssertionError("vault should not open token for tampered repo URL")
+
+    class FailingAdapter:
+        def create_pull_request(self, **_kwargs):
+            raise AssertionError("adapter should not be called for tampered repo URL")
+
+    database_path = tmp_path / "app.db"
+    with build_database_session(database_path) as session:
+        _project, repository, _task, _cloud_run, _artifact, approval = (
+            create_approved_cloud_patch(session)
+        )
+        repository.repo_url = "https://github.com/example/other"
+        session.add(repository)
+        session.commit()
+        approval_id = approval.id
+
+        with pytest.raises(HTTPException) as exc_info:
+            create_pull_request_for_approval(
+                session,
+                approval_id,
+                adapter=FailingAdapter(),
+                vault=RaisingVault(),
+            )
+
+        records = session.exec(select(PullRequestRecord)).all()
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "GitHub repository URL must match owner/repo"
+    assert records == []
+
+
 def test_creating_pull_request_record_returns_conflict_without_new_event(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
