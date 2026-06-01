@@ -295,6 +295,254 @@ def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(
     assert "ghp_cloud_runner_secret1234" not in str(result)
 
 
+def test_process_next_queued_fake_cloud_run_creates_patch_artifact(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued_response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    )
+    queued = queued_response.json()["cloud_run"]
+
+    response = client.post(
+        "/cloud-run-worker/process-next",
+        params={"worker_id": "local-test-worker"},
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    cloud_run = result["cloud_run"]
+    assert cloud_run["id"] == queued["id"]
+    assert cloud_run["status"] == "patch_ready"
+    assert cloud_run["worker_id"] == "local-test-worker"
+    assert cloud_run["claimed_at"] is not None
+    assert cloud_run["completed_at"] is not None
+    assert result["patch_artifact"]["files_changed"] == ["AI_SCDC_CLOUD_RUN.md"]
+    assert cloud_run["patch_artifact_id"] == result["patch_artifact"]["id"]
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        local_run = session.get(LocalTaskRun, cloud_run["local_run_id"])
+        task_after_process = session.get(Task, task_id)
+        log_events = [
+            entry.event
+            for entry in session.exec(
+                select(CloudRunLogEntry)
+                .where(CloudRunLogEntry.cloud_run_id == queued["id"])
+                .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+            ).all()
+        ]
+
+    assert local_run is not None
+    assert task_after_process is not None
+    assert local_run.status == "patch_ready"
+    assert task_after_process.status == TaskStatus.PATCH_READY
+    assert log_events == ["queued", "claimed", "started", "patch_ready", "completed"]
+
+
+def test_process_next_returns_no_content_when_queue_is_empty(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+
+    response = client.post("/cloud-run-worker/process-next")
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+
+def test_process_specific_docker_cloud_run_preserves_artifact_semantics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    captured_requests: list[SandboxExecutionRequest] = []
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, request):
+            captured_requests.append(request)
+            return SandboxExecutionResult(
+                status="patch_ready",
+                runner_kind="docker_local",
+                base_sha="abc123",
+                head_sha="def456",
+                worktree_ref=f"cloud://docker-local/{request.cloud_run_id}",
+                summary="Docker local sandbox produced a patch artifact.",
+                files_changed=["AI_SCDC_CLOUD_RUN.md"],
+                tests_run=["pytest -q"],
+                test_result="passed",
+                risks=[],
+                diff_text="diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n+patch\n",
+                command_results=[],
+                test_command_results=[],
+                failure_reason=None,
+            )
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "patch_command_key": "patch",
+            "test_command_keys": ["test"],
+        },
+    ).json()["cloud_run"]
+
+    response = client.post(
+        f"/cloud-runs/{queued['id']}/process",
+        params={"worker_id": "docker-test-worker"},
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    cloud_run = result["cloud_run"]
+    assert cloud_run["id"] == queued["id"]
+    assert cloud_run["status"] == "patch_ready"
+    assert cloud_run["sandbox_kind"] == "docker_local"
+    assert cloud_run["worker_id"] == "docker-test-worker"
+    assert cloud_run["patch_artifact_id"] == result["patch_artifact"]["id"]
+    assert captured_requests[0].patch_command is not None
+    assert captured_requests[0].patch_command.key == "patch"
+    assert [command.key for command in captured_requests[0].test_commands] == ["test"]
+    assert getattr(captured_requests[0], "github_token", None) == "ghp_cloud_runner_secret1234"
+
+
+def test_processing_non_queued_cloud_run_returns_conflict(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    first = client.post(f"/cloud-runs/{queued['id']}/process")
+    second = client.post(f"/cloud-runs/{queued['id']}/process")
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Cloud run is not queued"
+
+
+def test_processing_claim_conflict_returns_conflict_without_execution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run after claim conflict")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    monkeypatch.setattr(cloud_runner, "_claim_cloud_run", lambda *args, **kwargs: False)
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    response = client.post(f"/cloud-runs/{queued['id']}/process")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Cloud run is not queued"
+
+
+def test_processing_docker_preflight_failure_marks_run_failed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class DockerExecutorShouldNotRun:
+        sandbox_kind = "docker_local"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run when profile is invalid")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutorShouldNotRun(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    ).json()["cloud_run"]
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        profile = session.get(SandboxProfile, profile_id)
+        assert profile is not None
+        profile.status = "deleted"
+        session.add(profile)
+        session.commit()
+
+    response = client.post(f"/cloud-runs/{queued['id']}/process")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["patch_artifact"] is None
+    assert result["cloud_run"]["status"] == "failed"
+    assert result["cloud_run"]["failure_reason"] == "cloud_run_preflight_failed"
+    assert result["cloud_run"]["completed_at"] is not None
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        persisted = session.get(CloudRun, queued["id"])
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+
+    assert persisted is not None
+    assert local_run is not None
+    assert persisted.status == "failed"
+    assert local_run.status == "failed"
+
+
 def test_docker_cloud_run_redacts_github_token_from_persisted_results(
     tmp_path: Path,
     monkeypatch,

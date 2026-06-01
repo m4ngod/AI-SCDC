@@ -51,6 +51,8 @@ from ai_company_api.schemas.api import (
 from ai_company_api.services.cloud_runner import (
     get_cloud_run_read,
     list_cloud_runs,
+    process_cloud_run,
+    process_next_cloud_run,
     start_cloud_run,
 )
 from ai_company_api.services.github_repository import (
@@ -481,6 +483,30 @@ def get_cloud_run_by_id(
     session: SessionDep,
 ) -> CloudRunRead:
     return get_cloud_run_read(session, cloud_run_id)
+
+
+@router.post(
+    "/cloud-run-worker/process-next",
+    response_model=CloudRunResultRead,
+    responses={status.HTTP_204_NO_CONTENT: {"description": "No queued cloud runs"}},
+)
+def post_cloud_run_worker_process_next(
+    session: SessionDep,
+    worker_id: str = "local-worker",
+) -> CloudRunResultRead | Response:
+    result = process_next_cloud_run(session, worker_id=worker_id)
+    if result is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return result
+
+
+@router.post("/cloud-runs/{cloud_run_id}/process", response_model=CloudRunResultRead)
+def post_cloud_run_process(
+    cloud_run_id: str,
+    session: SessionDep,
+    worker_id: str = "local-worker",
+) -> CloudRunResultRead:
+    return process_cloud_run(session, cloud_run_id=cloud_run_id, worker_id=worker_id)
 
 
 @router.post(

@@ -2,7 +2,8 @@ from datetime import datetime, timedelta
 import os
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from ai_company_api.models.entities import (
@@ -81,6 +82,7 @@ def _append_cloud_run_log(
     message: str,
     level: str = "info",
     payload: dict[str, Any] | None = None,
+    created_at: datetime | None = None,
 ) -> CloudRunLogEntry:
     entry = CloudRunLogEntry(
         cloud_run_id=cloud_run.id,
@@ -89,6 +91,7 @@ def _append_cloud_run_log(
         message=message,
         level=level,
         payload=redact_sensitive_values(payload) if payload else None,
+        created_at=created_at or utc_now(),
     )
     session.add(entry)
     return entry
@@ -201,36 +204,174 @@ def enqueue_cloud_run(
     )
 
 
-def _execute_cloud_run_sync(
+def process_next_cloud_run(
     session: Session,
-    task_id: str,
-    data: CloudRunCreate,
-) -> CloudRunResultRead:
-    task = get_task(session, task_id)
-    repository = get_repository(session, data.repo_id)
-    if repository.project_id != task.project_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Repository does not belong to task project",
-        )
-    if repository.provider != "github":
-        raise HTTPException(status_code=400, detail="Cloud runs require a GitHub repository")
-    if repository.connection_status != "active":
-        raise HTTPException(status_code=400, detail="GitHub repository is not active")
+    *,
+    worker_id: str = "local-worker",
+) -> CloudRunResultRead | None:
+    cloud_run = session.exec(
+        select(CloudRun)
+        .where(CloudRun.status == "queued")
+        .order_by(CloudRun.created_at, CloudRun.id)
+    ).first()
+    if cloud_run is None:
+        return None
+    return process_cloud_run(session, cloud_run_id=cloud_run.id, worker_id=worker_id)
 
+
+def process_cloud_run(
+    session: Session,
+    *,
+    cloud_run_id: str,
+    worker_id: str = "local-worker",
+) -> CloudRunResultRead:
+    cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    if cloud_run.status != "queued":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cloud run is not queued",
+        )
+
+    local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
+    now = utc_now()
+    if not _claim_cloud_run(session, cloud_run_id=cloud_run.id, worker_id=worker_id, now=now):
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cloud run is not queued",
+        )
+    session.refresh(cloud_run)
+    local_run.status = "running"
+    local_run.updated_at = now
+    log_clock = _EventClock()
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="claimed",
+        message="Cloud run claimed by local worker.",
+        payload={"worker_id": worker_id},
+        created_at=log_clock.next(),
+    )
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="started",
+        message="Cloud run execution started.",
+        payload={"worker_id": worker_id},
+        created_at=log_clock.next(),
+    )
     event_clock = _EventClock()
+    _create_cloud_run_event(
+        session,
+        event_clock,
+        cloud_run.task_id,
+        "cloud_run_started",
+        {"cloud_run_id": cloud_run.id, "repo_id": cloud_run.repo_id},
+    )
+    session.add(local_run)
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    session.refresh(local_run)
+    try:
+        return _execute_claimed_cloud_run(session, cloud_run=cloud_run)
+    except HTTPException as exc:
+        return _mark_claimed_cloud_run_failed(
+            session,
+            cloud_run=cloud_run,
+            local_run=local_run,
+            failure_reason="cloud_run_preflight_failed",
+            message=str(exc.detail),
+        )
+
+
+def _claim_cloud_run(
+    session: Session,
+    *,
+    cloud_run_id: str,
+    worker_id: str,
+    now: datetime,
+) -> bool:
+    result = session.exec(
+        update(CloudRun)
+        .where(CloudRun.id == cloud_run_id, CloudRun.status == "queued")
+        .values(
+            status="running",
+            worker_id=worker_id,
+            claimed_at=now,
+            updated_at=now,
+        )
+    )
+    return result.rowcount == 1
+
+
+def _mark_claimed_cloud_run_failed(
+    session: Session,
+    *,
+    cloud_run: CloudRun,
+    local_run: LocalTaskRun,
+    failure_reason: str,
+    message: str,
+) -> CloudRunResultRead:
+    completed_at = utc_now()
+    local_run.status = "failed"
+    local_run.failure_reason = failure_reason
+    local_run.updated_at = completed_at
+    cloud_run.status = "failed"
+    cloud_run.failure_reason = failure_reason
+    cloud_run.command_results = [
+        {
+            "command": "cloud run preflight",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": message,
+            "duration_ms": 0,
+            "timed_out": False,
+        }
+    ]
+    cloud_run.completed_at = completed_at
+    cloud_run.updated_at = completed_at
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="failed",
+        message="Cloud run preflight failed.",
+        level="error",
+        payload={"failure_reason": failure_reason, "message": message},
+    )
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="completed",
+        message="Cloud run processing completed.",
+        payload={"status": "failed"},
+    )
+    session.add(local_run)
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    return CloudRunResultRead(cloud_run=_cloud_run_read(cloud_run), patch_artifact=None)
+
+
+def _execute_claimed_cloud_run(
+    session: Session,
+    *,
+    cloud_run: CloudRun,
+) -> CloudRunResultRead:
+    task = get_task(session, cloud_run.task_id)
+    repository = get_repository(session, cloud_run.repo_id)
+    local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
+    event_clock = _EventClock()
+    log_clock = _EventClock()
     executor = select_cloud_sandbox_executor()
-    sandbox_profile_id: str | None = None
-    patch_command_key: str | None = None
-    test_command_keys: list[str] = []
     docker_image: str | None = None
     patch_command: SandboxCommandSelection | None = None
     test_commands: list[SandboxCommandSelection] = []
     sandbox_env: dict[str, str] = {}
     network_enabled = True
     github_token: str | None = None
-    if executor.sandbox_kind == "docker_local":
-        if data.sandbox_profile_id is None:
+    if cloud_run.sandbox_kind == "docker_local":
+        if cloud_run.sandbox_profile_id is None:
             raise HTTPException(
                 status_code=400,
                 detail="Docker cloud runs require a sandbox profile",
@@ -244,65 +385,24 @@ def _execute_cloud_run_sync(
         )
         profile = validate_sandbox_profile_for_repo(
             session,
-            data.sandbox_profile_id,
+            cloud_run.sandbox_profile_id,
             project_id=task.project_id,
             repo_id=repository.id,
         )
-        patch_command, test_commands = _select_profile_commands(profile, data)
-        sandbox_profile_id = profile.id
-        patch_command_key = patch_command.key
-        test_command_keys = [command.key for command in test_commands]
+        patch_command, test_commands = _select_profile_commands(
+            profile,
+            CloudRunCreate(
+                repo_id=repository.id,
+                sandbox_profile_id=cloud_run.sandbox_profile_id,
+                patch_command_key=cloud_run.patch_command_key,
+                test_command_keys=cloud_run.test_command_keys or [],
+            ),
+        )
         docker_image = profile.docker_image
         sandbox_env = _sandbox_profile_env(profile.allowed_env_vars or [])
         network_enabled = profile.network_enabled
         credential = get_active_github_credential(session, repository.github_credential_id)
         github_token = DevSecretVault().open(credential.encrypted_token)
-
-    cloud_run = CloudRun(
-        project_id=task.project_id,
-        task_id=task.id,
-        repo_id=repository.id,
-        base_branch=repository.default_branch,
-        head_branch="",
-        status="queued",
-        sandbox_kind=executor.sandbox_kind,
-        sandbox_profile_id=sandbox_profile_id,
-        patch_command_key=patch_command_key,
-        test_command_keys=test_command_keys,
-    )
-    session.add(cloud_run)
-    session.flush()
-
-    head_branch = f"ai-scdc/task-{task.id}-{cloud_run.id}"
-    cloud_run.head_branch = head_branch
-    cloud_run.sandbox_kind = executor.sandbox_kind
-
-    local_run = LocalTaskRun(
-        project_id=task.project_id,
-        task_id=task.id,
-        repo_id=repository.id,
-        status="running",
-        runner_kind=executor.sandbox_kind,
-        base_branch=repository.default_branch,
-    )
-    session.add(local_run)
-    session.flush()
-
-    cloud_run.status = "running"
-    cloud_run.local_run_id = local_run.id
-    cloud_run.updated_at = utc_now()
-    _create_cloud_run_event(
-        session,
-        event_clock,
-        task.id,
-        "cloud_run_started",
-        {"cloud_run_id": cloud_run.id, "repo_id": repository.id},
-    )
-    session.add(local_run)
-    session.add(cloud_run)
-    session.commit()
-    session.refresh(cloud_run)
-    session.refresh(local_run)
 
     try:
         execution_result = executor.run(
@@ -314,8 +414,8 @@ def _execute_cloud_run_sync(
                 repo_url=repository.repo_url,
                 github_owner=repository.github_owner,
                 github_repo=repository.github_repo,
-                base_branch=repository.default_branch,
-                head_branch=head_branch,
+                base_branch=cloud_run.base_branch or repository.default_branch,
+                head_branch=cloud_run.head_branch,
                 allowed_paths=task.allowed_paths or [],
                 required_tests=task.required_tests or [],
                 docker_image=docker_image,
@@ -327,7 +427,7 @@ def _execute_cloud_run_sync(
             )
         )
     except Exception:
-        execution_result = _executor_exception_result(executor.sandbox_kind)
+        execution_result = _executor_exception_result(cloud_run.sandbox_kind)
 
     local_run.runner_kind = execution_result.runner_kind
     local_run.base_sha = execution_result.base_sha
@@ -366,7 +466,9 @@ def _execute_cloud_run_sync(
             secrets=secrets,
         )
         cloud_run.failure_reason = execution_result.failure_reason
-        cloud_run.updated_at = utc_now()
+        completed_at = utc_now()
+        cloud_run.completed_at = completed_at
+        cloud_run.updated_at = completed_at
         _create_cloud_run_event(
             session,
             event_clock,
@@ -377,6 +479,23 @@ def _execute_cloud_run_sync(
                 "local_run_id": local_run.id,
                 "failure_reason": execution_result.failure_reason,
             },
+        )
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="failed",
+            message="Cloud run failed.",
+            level="error",
+            payload={"failure_reason": execution_result.failure_reason},
+            created_at=log_clock.next(),
+        )
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="completed",
+            message="Cloud run processing completed.",
+            payload={"status": execution_result.status},
+            created_at=log_clock.next(),
         )
         session.add(local_run)
         session.add(cloud_run)
@@ -430,7 +549,9 @@ def _execute_cloud_run_sync(
         secrets=secrets,
     )
     cloud_run.failure_reason = execution_result.failure_reason
-    cloud_run.updated_at = utc_now()
+    completed_at = utc_now()
+    cloud_run.completed_at = completed_at
+    cloud_run.updated_at = completed_at
     _create_cloud_run_event(
         session,
         event_clock,
@@ -456,8 +577,31 @@ def _execute_cloud_run_sync(
                 "patch_artifact_id": artifact.id,
             },
         )
+    terminal_event = "patch_ready" if execution_result.status == "patch_ready" else "failed"
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event=terminal_event,
+        message="Cloud run produced a patch artifact."
+        if terminal_event == "patch_ready"
+        else "Cloud run failed after producing a patch artifact.",
+        level="info" if terminal_event == "patch_ready" else "error",
+        payload={
+            "patch_artifact_id": artifact.id,
+            "failure_reason": execution_result.failure_reason,
+        },
+        created_at=log_clock.next(),
+    )
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="completed",
+        message="Cloud run processing completed.",
+        payload={"status": execution_result.status},
+        created_at=log_clock.next(),
+    )
     task.repo_id = repository.id
-    task.branch_name = head_branch
+    task.branch_name = cloud_run.head_branch
     task.worktree_ref = execution_result.worktree_ref
     _transition_task_to_patch_ready(session, event_clock, task)
 
@@ -483,10 +627,27 @@ def list_cloud_runs(session: Session, task_id: str) -> list[CloudRunRead]:
     return [_cloud_run_read(cloud_run) for cloud_run in session.exec(statement).all()]
 
 
-def get_cloud_run_read(session: Session, cloud_run_id: str) -> CloudRunRead:
+def _get_cloud_run_or_404(session: Session, cloud_run_id: str) -> CloudRun:
     cloud_run = session.get(CloudRun, cloud_run_id)
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
+    return cloud_run
+
+
+def _get_cloud_run_local_run_or_404(
+    session: Session,
+    cloud_run: CloudRun,
+) -> LocalTaskRun:
+    if cloud_run.local_run_id is None:
+        raise HTTPException(status_code=404, detail="Cloud run local run not found")
+    local_run = session.get(LocalTaskRun, cloud_run.local_run_id)
+    if local_run is None:
+        raise HTTPException(status_code=404, detail="Cloud run local run not found")
+    return local_run
+
+
+def get_cloud_run_read(session: Session, cloud_run_id: str) -> CloudRunRead:
+    cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
     return _cloud_run_read(cloud_run)
 
 
