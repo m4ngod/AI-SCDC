@@ -438,7 +438,7 @@ When the API is not started with `AI_SCDC_GITHUB_PR_ADAPTER=real`, the final `Cr
 
 Phase 8 keeps the fake cloud runner as the default. Start the API with `AI_SCDC_CLOUD_RUNNER=docker_local` only when you want a real local Docker sandbox to clone a GitHub repository and run whitelisted profile commands. Keep the default fake PR adapter for this smoke test; set `AI_SCDC_GITHUB_PR_ADAPTER=real` only for a final, intentional real GitHub PR creation after human approval.
 
-Do not paste PATs into docs, commits, logs, chat, or shell history, and do not put PATs in repository URLs. The GitHub repository `repo_url` in this smoke test is a normal non-token URL. With the no-token URL shown below, use a public smoke-test repository, or a repository that your local Docker environment can clone without URL-embedded credentials. The PAT still creates the API credential record and can be exposed to whitelisted sandbox commands through `AI_SCDC_GITHUB_TOKEN` when the API process starts.
+Do not paste PATs into docs, commits, logs, chat, or shell history, and do not put PATs in repository URLs. The GitHub repository `repo_url` in this smoke test is a normal non-token URL. With the no-token URL shown below, use a public smoke-test repository, or a repository that your local Docker environment can clone without URL-embedded credentials. The PAT still creates the API credential record for repository registration and later approval/PR flow testing, but the main smoke profile does not expose it to Docker.
 
 Prerequisites:
 
@@ -446,18 +446,15 @@ Prerequisites:
 - The target GitHub repository is accessible for the smoke path above, and the PAT stored in the API GitHub credential has access to the target repository for later approval/PR flow testing.
 - The sandbox profile patch command exists in the target repo or is self-contained.
 
-Start the API. Set `AI_SCDC_GITHUB_TOKEN` in this same API server session only if the sandbox profile whitelists it and commands inside Docker need it. The environment variable lives in this local shell and the API child process.
+Start the API:
 
 ```powershell
 $env:AI_SCDC_CLOUD_RUNNER = "docker_local"
 Remove-Item Env:\AI_SCDC_GITHUB_PR_ADAPTER -ErrorAction SilentlyContinue
-$secureSandboxToken = Read-Host "GitHub PAT for whitelisted sandbox env" -AsSecureString
-$env:AI_SCDC_GITHUB_TOKEN = [System.Net.NetworkCredential]::new("", $secureSandboxToken).Password
-Remove-Variable secureSandboxToken -ErrorAction SilentlyContinue
 pnpm dev:api
 ```
 
-After stopping the API, clear the local shell environment variable with `Remove-Item Env:\AI_SCDC_GITHUB_TOKEN -ErrorAction SilentlyContinue`.
+Keep `allowed_env_vars` empty unless a sandbox profile command explicitly needs a server-process environment variable. For local-only private-repo experiments, set any needed environment variable in the API server session before `pnpm dev:api`, whitelist only that variable in the profile, and clear it from the shell after stopping the API.
 
 In another PowerShell session, create the credential, GitHub repository, sandbox profile, task, and cloud run:
 
@@ -532,7 +529,7 @@ try {
           is_default = $true
         }
       )
-      allowed_env_vars = @("AI_SCDC_GITHUB_TOKEN")
+      allowed_env_vars = @()
       network_enabled = $true
     })
 
@@ -566,6 +563,7 @@ try {
     cloud_run_status = $cloudRun.cloud_run.status
     sandbox_kind = $cloudRun.cloud_run.sandbox_kind
     failure_reason = $cloudRun.cloud_run.failure_reason
+    command_result_count = @($cloudRun.cloud_run.command_results).Count
     files_changed = if ($cloudRun.patch_artifact) { $cloudRun.patch_artifact.files_changed -join ", " } else { "" }
     test_result = if ($cloudRun.patch_artifact) { $cloudRun.patch_artifact.test_result } else { "" }
   }
@@ -575,7 +573,11 @@ finally {
 }
 ```
 
-Expected successful smoke output shows `cloud_run_status` as `patch_ready`, `sandbox_kind` as `docker_local`, `files_changed` as `AI_SCDC_DOCKER_SMOKE.md`, and `test_result` as `passed`. If setup fails before an artifact is captured, inspect `failure_reason` and the redacted cloud run command results.
+Expected successful smoke output shows `cloud_run_status` as `patch_ready`, `sandbox_kind` as `docker_local`, `files_changed` as `AI_SCDC_DOCKER_SMOKE.md`, and `test_result` as `passed`. If setup fails before an artifact is captured, inspect `failure_reason` and the redacted cloud run command results:
+
+```powershell
+$cloudRun.cloud_run.command_results | ConvertTo-Json -Depth 8
+```
 
 Focused verification commands used for Phase 7 and its Phase 6/Phase 5 prerequisite workflow:
 
