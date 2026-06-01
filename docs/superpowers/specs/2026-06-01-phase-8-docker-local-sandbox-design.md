@@ -275,9 +275,7 @@ Errors are recorded on `CloudRun.failure_reason` and exposed in API/UI as safe s
 
 Rules:
 
-- Docker setup failures leave the task in its previous useful state and mark the cloud run failed.
-- Patch command failures do not create a patch artifact.
-- Empty diffs do not create a patch artifact.
+- All no-artifact failures leave the task in its previous useful state and mark the cloud run failed, including `docker_unavailable`, `repo_checkout_failed`, `patch_command_failed`, `no_patch_produced`, and `artifact_capture_failed`.
 - Test failures may still create a patch artifact and `LocalTestRun`, but reviewer approval must fail or remain blocked.
 - Docker `not_run`, passed, and failed test results bridge through the existing local test/review/debug endpoints rather than a separate cloud-only test model.
 - All failure paths emit task events with ids, status, and safe metadata only.
