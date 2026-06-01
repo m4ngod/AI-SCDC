@@ -169,6 +169,7 @@ describe("desktop API clients", () => {
 
   it("fake client creates sandbox profiles and starts profiled docker cloud runs", async () => {
     const profile = await fakeApiClient.createSandboxProfile("project_demo", {
+      repo_id: "repo_github_demo",
       name: "Default Docker profile",
       docker_image: "python:3.11-bookworm",
       patch_commands: [
@@ -198,12 +199,14 @@ describe("desktop API clients", () => {
     ]);
 
     const cloud = await fakeApiClient.startCloudRun("task_demo_created", {
+      repo_id: profile.repo_id,
       sandbox_profile_id: profile.id,
       patch_command_key: "write-note",
       test_command_keys: ["python-version"]
     });
 
     expect(cloud.cloud_run).toMatchObject({
+      repo_id: "repo_github_demo",
       sandbox_kind: "docker_local",
       sandbox_profile_id: profile.id,
       patch_command_key: "write-note",
@@ -782,6 +785,7 @@ describe("desktop API clients", () => {
           {
             id: "sandbox_profile_api",
             project_id: "project_demo",
+            repo_id: "repo_github_api",
             name: "Default Docker profile",
             docker_image: "python:3.11-bookworm",
             patch_commands: [
@@ -815,6 +819,7 @@ describe("desktop API clients", () => {
           {
             id: "sandbox_profile_api",
             project_id: "project_demo",
+            repo_id: "repo_github_api",
             name: "Default Docker profile",
             docker_image: "python:3.11-bookworm",
             patch_commands: [],
@@ -823,23 +828,6 @@ describe("desktop API clients", () => {
             network_enabled: true,
             created_at: "2026-05-30T01:30:00Z",
             updated_at: "2026-05-30T01:30:00Z"
-          }
-        ])
-      )
-      .mockResolvedValueOnce(
-        jsonResponse([
-          {
-            id: "repo_github_api",
-            name: "example/demo",
-            local_path: "",
-            default_branch: "main",
-            status: "active",
-            provider: "github",
-            repo_url: "https://github.com/example/demo",
-            github_owner: "example",
-            github_repo: "demo",
-            github_credential_id: "github_credential_api",
-            connection_status: "connected"
           }
         ])
       )
@@ -913,6 +901,7 @@ describe("desktop API clients", () => {
       projectId: "project_demo"
     });
     const profile = await client.createSandboxProfile("project_demo", {
+      repo_id: "repo_github_api",
       name: "Default Docker profile",
       docker_image: "python:3.11-bookworm",
       patch_commands: [
@@ -938,6 +927,7 @@ describe("desktop API clients", () => {
     });
     const profiles = await client.listSandboxProfiles("project_demo");
     const cloud = await client.startCloudRun("task_api", {
+      repo_id: "repo_github_api",
       sandbox_profile_id: profile.id,
       patch_command_key: "write-note",
       test_command_keys: ["python-version"]
@@ -950,6 +940,7 @@ describe("desktop API clients", () => {
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
+          repo_id: "repo_github_api",
           name: "Default Docker profile",
           docker_image: "python:3.11-bookworm",
           patch_commands: [
@@ -981,10 +972,6 @@ describe("desktop API clients", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
-      "http://127.0.0.1:8000/projects/project_demo/repositories"
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      4,
       "http://127.0.0.1:8000/tasks/task_api/cloud-runs",
       expect.objectContaining({
         method: "POST",
@@ -997,12 +984,13 @@ describe("desktop API clients", () => {
       })
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
-      5,
+      4,
       "http://127.0.0.1:8000/patch-approvals/patch_approval_api/pull-requests",
       expect.objectContaining({ method: "POST" })
     );
     expect(profiles[0]).toMatchObject({
       id: "sandbox_profile_api",
+      repo_id: "repo_github_api",
       docker_image: "python:3.11-bookworm"
     });
     expect(cloud).toMatchObject({

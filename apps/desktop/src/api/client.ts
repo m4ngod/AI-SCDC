@@ -71,6 +71,7 @@ export type SandboxProfileCard = {
   id: string;
   workspace_id?: string;
   project_id?: string;
+  repo_id: string;
   name: string;
   docker_image: string;
   patch_commands: SandboxCommandCard[];
@@ -82,6 +83,7 @@ export type SandboxProfileCard = {
 };
 
 export type SandboxProfileInput = {
+  repo_id: string;
   name: string;
   docker_image: string;
   patch_commands: SandboxCommandCard[];
@@ -91,6 +93,7 @@ export type SandboxProfileInput = {
 };
 
 export type CloudRunInput = {
+  repo_id?: string;
   sandbox_profile_id?: string;
   patch_command_key?: string;
   test_command_keys?: string[];
@@ -618,13 +621,14 @@ export const fakeApiClient: ConsoleApiClient = {
     const cloudRunId = `cloud_run_${taskId}`;
     const patchArtifactId = `patch_cloud_${taskId}`;
     const usesSandboxProfile = Boolean(input.sandbox_profile_id);
+    const repoId = input.repo_id ?? "repo_github_demo";
     return {
       cloud_run: {
         id: cloudRunId,
         workspace_id: "workspace_demo",
         project_id: "project_demo",
         task_id: taskId,
-        repo_id: "repo_github_demo",
+        repo_id: repoId,
         local_run_id: cloudRunId,
         base_branch: "main",
         head_branch: `ai-scdc/${taskId}`,
@@ -987,6 +991,7 @@ function mapSandboxProfileCard(profile: ApiSandboxProfile): SandboxProfileCard {
     id: profile.id,
     workspace_id: profile.workspace_id,
     project_id: profile.project_id,
+    repo_id: profile.repo_id,
     name: profile.name,
     docker_image: profile.docker_image,
     patch_commands: profile.patch_commands,
@@ -1393,26 +1398,32 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
       return profiles.map(mapSandboxProfileCard);
     },
     async startCloudRun(taskId: string, input: CloudRunInput = {}) {
-      const projectId = await getProjectId();
-      const repositoriesResponse = await fetch(
-        apiUrl(options.baseUrl, `/projects/${projectId}/repositories`)
-      );
-      const repositories = await readJsonResponse<ApiRepository[]>(
-        repositoriesResponse,
-        `GET /projects/${projectId}/repositories`
-      );
-      const repository =
-        repositories.find((item) => item.provider === "github" && item.status === "active") ??
-        repositories.find((item) => item.provider === "github") ??
-        repositories[0];
-      if (!repository) {
-        throw new Error("No repository registered for project");
+      let repoId = input.repo_id;
+      if (!repoId) {
+        const projectId = await getProjectId();
+        const repositoriesResponse = await fetch(
+          apiUrl(options.baseUrl, `/projects/${projectId}/repositories`)
+        );
+        const repositories = await readJsonResponse<ApiRepository[]>(
+          repositoriesResponse,
+          `GET /projects/${projectId}/repositories`
+        );
+        const repository =
+          repositories.find((item) => item.provider === "github" && item.status === "active") ??
+          repositories.find((item) => item.provider === "github") ??
+          repositories[0];
+        if (!repository) {
+          throw new Error("No repository registered for project");
+        }
+        repoId = repository.id;
       }
+      const cloudRunInput = { ...input };
+      delete cloudRunInput.repo_id;
 
       const response = await fetch(apiUrl(options.baseUrl, `/tasks/${taskId}/cloud-runs`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_id: repository.id, ...input })
+        body: JSON.stringify({ repo_id: repoId, ...cloudRunInput })
       });
       const result = await readJsonResponse<ApiCloudRunResult>(
         response,

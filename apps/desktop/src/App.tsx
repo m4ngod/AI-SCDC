@@ -26,7 +26,7 @@ type GitHubSetupInput = {
 
 const defaultApiClient = createConfiguredApiClient();
 
-const defaultDockerSandboxProfile: SandboxProfileInput = {
+const defaultDockerSandboxProfile: Omit<SandboxProfileInput, "repo_id"> = {
   name: "Default Docker profile",
   docker_image: "python:3.11-bookworm",
   patch_commands: [
@@ -91,6 +91,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const [githubSetupStatus, setGithubSetupStatus] = useState<string | null>(null);
   const [githubSetupError, setGithubSetupError] = useState<string | null>(null);
   const [sandboxProfileId, setSandboxProfileId] = useState<string | null>(null);
+  const [sandboxProfileRepoId, setSandboxProfileRepoId] = useState<string | null>(null);
   const [sandboxProfileStatus, setSandboxProfileStatus] = useState<string | null>(null);
   const [isConnectingGitHubRepo, setIsConnectingGitHubRepo] = useState(false);
   const [runningCloudTaskId, setRunningCloudTaskId] = useState<string | null>(null);
@@ -229,6 +230,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       setGithubSetupStatus(null);
       setGithubSetupError(null);
       setSandboxProfileId(null);
+      setSandboxProfileRepoId(null);
       setSandboxProfileStatus(null);
       const credential = await apiClient.createGitHubCredential({
         display_name: "Dev GitHub",
@@ -247,9 +249,13 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       }
       const sandboxProfile = await apiClient.createSandboxProfile(
         repository.project_id,
-        defaultDockerSandboxProfile
+        {
+          ...defaultDockerSandboxProfile,
+          repo_id: repository.id
+        }
       );
       setSandboxProfileId(sandboxProfile.id);
+      setSandboxProfileRepoId(repository.id);
       setSandboxProfileStatus(`Sandbox profile ready: ${sandboxProfile.docker_image}`);
       setGithubSetupStatus("GitHub repo connected");
       setGithubSetupInput((currentInput) => ({ ...currentInput, token: "" }));
@@ -277,8 +283,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       return nextErrors;
     });
     try {
-      const result = sandboxProfileId
+      const result = sandboxProfileId && sandboxProfileRepoId
         ? await apiClient.startCloudRun(taskId, {
+            repo_id: sandboxProfileRepoId,
             sandbox_profile_id: sandboxProfileId,
             patch_command_key: "write-note",
             test_command_keys: ["python-version"]

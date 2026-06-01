@@ -277,6 +277,7 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
     createSandboxProfile: vi.fn().mockResolvedValue({
       id: "sandbox_profile_test",
       project_id: "project_demo",
+      repo_id: "repo_github_test",
       name: "Default Docker profile",
       docker_image: "python:3.11-bookworm",
       patch_commands: [
@@ -1016,6 +1017,7 @@ describe("App", () => {
       vi.fn<ConsoleApiClient["createSandboxProfile"]>().mockResolvedValue({
         id: "sandbox_profile_test",
         project_id: "project_demo",
+        repo_id: "repo_github_test",
         name: "Default Docker profile",
         docker_image: "python:3.11-bookworm",
         patch_commands: [],
@@ -1047,6 +1049,7 @@ describe("App", () => {
       github_credential_id: "github_credential_test"
     });
     expect(createSandboxProfile).toHaveBeenCalledWith("project_demo", {
+      repo_id: "repo_github_test",
       name: "Default Docker profile",
       docker_image: "python:3.11-bookworm",
       patch_commands: [
@@ -1197,11 +1200,67 @@ describe("App", () => {
     await user.click(await within(board).findByRole("button", { name: "Run cloud" }));
 
     expect(startCloudRun).toHaveBeenCalledWith("task_cloud", {
+      repo_id: "repo_github_test",
       sandbox_profile_id: "sandbox_profile_test",
       patch_command_key: "write-note",
       test_command_keys: ["python-version"]
     });
     expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
+  });
+
+  it("clears stale sandbox profile state when replacement profile creation fails", async () => {
+    const user = userEvent.setup();
+    const createSandboxProfile = vi
+      .fn<ConsoleApiClient["createSandboxProfile"]>()
+      .mockResolvedValueOnce({
+        id: "sandbox_profile_first",
+        project_id: "project_demo",
+        repo_id: "repo_github_test",
+        name: "Default Docker profile",
+        docker_image: "python:3.11-bookworm",
+        patch_commands: [],
+        test_commands: [],
+        allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+        network_enabled: true
+      })
+      .mockRejectedValueOnce(new Error("Profile create failed"));
+    const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({
+      cloud_run: cloudRunFixture(),
+      patch_artifact: cloudPatchArtifactFixture()
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi
+        .fn()
+        .mockResolvedValue([
+          { ...taskCardFixture("Cloud task after failed profile"), id: "task_cloud" }
+        ]),
+      createSandboxProfile,
+      startCloudRun
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const tokenInput = screen.getByLabelText("GitHub token");
+    const connectButton = screen.getByRole("button", { name: "Connect GitHub repo" });
+
+    await user.type(tokenInput, "ghp_first_token_1234");
+    await user.click(connectButton);
+    expect(
+      await screen.findByText("Sandbox profile ready: python:3.11-bookworm")
+    ).toBeInTheDocument();
+
+    await user.type(tokenInput, "ghp_second_token_1234");
+    await user.click(connectButton);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Profile create failed");
+    expect(
+      screen.queryByText("Sandbox profile ready: python:3.11-bookworm")
+    ).not.toBeInTheDocument();
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run cloud" }));
+
+    expect(startCloudRun).toHaveBeenCalledWith("task_cloud");
   });
 
   it("renders docker cloud run metadata and failure reason", async () => {
