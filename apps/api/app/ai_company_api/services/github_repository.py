@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 from fastapi import HTTPException
 from sqlmodel import Session, select
 
@@ -94,6 +96,11 @@ def create_github_repository(
 ) -> RepositoryRead:
     get_project(session, project_id)
     get_active_github_credential(session, data.github_credential_id)
+    repo_url = validate_github_repository_url(
+        data.repo_url,
+        owner=data.github_owner,
+        repo=data.github_repo,
+    )
 
     repository = Repository(
         project_id=project_id,
@@ -101,7 +108,7 @@ def create_github_repository(
         local_path="",
         default_branch=data.default_branch,
         provider="github",
-        repo_url=data.repo_url,
+        repo_url=repo_url,
         github_owner=data.github_owner,
         github_repo=data.github_repo,
         github_credential_id=data.github_credential_id,
@@ -111,3 +118,35 @@ def create_github_repository(
     session.commit()
     session.refresh(repository)
     return _repository_read(repository)
+
+
+def validate_github_repository_url(repo_url: str, *, owner: str, repo: str) -> str:
+    try:
+        parsed = urlsplit(repo_url)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub repository URL must match owner/repo",
+        ) from exc
+
+    if parsed.username or parsed.password:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub repository URL must not include credentials",
+        )
+    if parsed.scheme != "https" or parsed.hostname != "github.com":
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub repository URL must match owner/repo",
+        )
+
+    expected_paths = {
+        f"/{owner}/{repo}",
+        f"/{owner}/{repo}.git",
+    }
+    if parsed.path not in expected_paths or parsed.query or parsed.fragment:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub repository URL must match owner/repo",
+        )
+    return repo_url

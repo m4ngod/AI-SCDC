@@ -298,6 +298,42 @@ def test_docker_executor_uses_askpass_for_github_token_without_persisting_secret
     assert token not in "\n".join(snapshot for _path, snapshot in runner.env_file_snapshots)
 
 
+def test_docker_executor_rejects_authenticated_clone_for_non_github_url(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        repo_url="https://evil.example/example/demo",
+        github_token="ghp_private_clone_token1234",
+    )
+
+    result = executor.run(request)
+
+    assert result.status == "failed"
+    assert result.failure_reason == "invalid_github_repository_url"
+    assert runner.calls == []
+
+
+def test_docker_executor_rejects_authenticated_clone_for_userinfo_url(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        repo_url="https://user:secret@github.com/example/demo",
+        github_token="ghp_private_clone_token1234",
+    )
+
+    result = executor.run(request)
+
+    assert result.status == "failed"
+    assert result.failure_reason == "invalid_github_repository_url"
+    assert runner.calls == []
+
+
 @pytest.mark.parametrize(
     ("field_name", "field_value"),
     [

@@ -123,6 +123,102 @@ def test_register_github_repository_persists_provider_metadata(tmp_path: Path) -
         assert persisted.provider == "github"
 
 
+def test_register_github_repository_normalizes_github_url(tmp_path: Path) -> None:
+    with build_client(tmp_path / "app.db") as client:
+        project = client.post("/projects", json={"name": "GitHub project"}).json()
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "Dev GitHub", "token": "ghp_example1234567890"},
+        ).json()
+
+        response = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Demo remote",
+                "repo_url": "https://github.com/example/demo.git",
+                "github_owner": "example",
+                "github_repo": "demo",
+                "default_branch": "main",
+                "github_credential_id": credential["id"],
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["repo_url"] == "https://github.com/example/demo.git"
+
+
+def test_register_github_repository_rejects_non_github_url(tmp_path: Path) -> None:
+    with build_client(tmp_path / "app.db") as client:
+        project = client.post("/projects", json={"name": "GitHub project"}).json()
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "Dev GitHub", "token": "ghp_example1234567890"},
+        ).json()
+
+        response = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Demo remote",
+                "repo_url": "https://evil.example/example/demo",
+                "github_owner": "example",
+                "github_repo": "demo",
+                "default_branch": "main",
+                "github_credential_id": credential["id"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub repository URL must match owner/repo"
+
+
+def test_register_github_repository_rejects_userinfo_url(tmp_path: Path) -> None:
+    with build_client(tmp_path / "app.db") as client:
+        project = client.post("/projects", json={"name": "GitHub project"}).json()
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "Dev GitHub", "token": "ghp_example1234567890"},
+        ).json()
+
+        response = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Demo remote",
+                "repo_url": "https://user:secret@github.com/example/demo",
+                "github_owner": "example",
+                "github_repo": "demo",
+                "default_branch": "main",
+                "github_credential_id": credential["id"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub repository URL must not include credentials"
+
+
+def test_register_github_repository_rejects_owner_repo_mismatch(tmp_path: Path) -> None:
+    with build_client(tmp_path / "app.db") as client:
+        project = client.post("/projects", json={"name": "GitHub project"}).json()
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "Dev GitHub", "token": "ghp_example1234567890"},
+        ).json()
+
+        response = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Demo remote",
+                "repo_url": "https://github.com/example/other",
+                "github_owner": "example",
+                "github_repo": "demo",
+                "default_branch": "main",
+                "github_credential_id": credential["id"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub repository URL must match owner/repo"
+
+
 def test_request_sessions_do_not_initialize_database_per_request(
     tmp_path: Path,
     monkeypatch,

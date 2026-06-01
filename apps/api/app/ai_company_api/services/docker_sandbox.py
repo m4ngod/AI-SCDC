@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 from typing import Protocol, Sequence
+from urllib.parse import urlsplit
 
 from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
@@ -248,6 +249,15 @@ class DockerLocalSandboxExecutor:
         if not _valid_git_reference_inputs(request):
             return _failed_result(
                 "invalid_git_reference",
+                "docker_local",
+                command_results,
+                test_results,
+            )
+        if request.github_token and not _is_safe_authenticated_github_url(
+            request.repo_url,
+        ):
+            return _failed_result(
+                "invalid_github_repository_url",
                 "docker_local",
                 command_results,
                 test_results,
@@ -580,6 +590,23 @@ def _valid_git_reference_inputs(request: SandboxExecutionRequest) -> bool:
 def _valid_git_branch_name(branch_name: str) -> bool:
     candidate = branch_name.strip()
     return candidate != "" and not candidate.startswith("-")
+
+
+def _is_safe_authenticated_github_url(repo_url: str) -> bool:
+    try:
+        parsed = urlsplit(repo_url)
+    except ValueError:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    if parsed.scheme != "https" or parsed.hostname != "github.com":
+        return False
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if len(path_parts) != 2 or path_parts[0] == "" or path_parts[1] == "":
+        return False
+    if parsed.query or parsed.fragment:
+        return False
+    return True
 
 
 def _shell_quote(value: str) -> str:
