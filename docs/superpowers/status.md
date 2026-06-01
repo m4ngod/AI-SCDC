@@ -1,0 +1,116 @@
+# AI-SCDC Project Status
+
+Last verified: 2026-06-02
+
+## Current Phase
+
+The project is through Phase 8: Docker local sandbox executor.
+
+`docs/architecture.md` is the authoritative phase boundary document. The older
+`docs/superpowers/plans/*.md` files still contain unchecked implementation
+checklists, but those checkboxes are not current progress markers. Current
+progress should be judged from the architecture roadmap, implemented services,
+tests, README smoke instructions, and git history.
+
+## Completed
+
+1. Phase 0 monorepo foundation: desktop shell, FastAPI API, agent protocol,
+   deterministic gateway interface, worker simulator, SQLite-backed tests, and
+   Docker Compose reservations.
+2. Phase 1 planner approval loop: fake planner drafts, human approval or
+   rejection, task creation, and audit events.
+3. Phase 2 model routing and BYOK foundation: provider metadata, write-only
+   credentials, model routes, fake fallback route, and usage ledger records.
+4. Phase 3 real model-backed planner: OpenAI-compatible planner calls, validated
+   TaskSpec drafts, usage logging, and fake fallback on provider failures.
+5. Phase 4 local runner: repository registration, git worktree execution, patch
+   artifact capture, and desktop run controls.
+6. Phase 5 deterministic verification: local test runs, patch review,
+   debug-attempt records, and desktop controls.
+7. Phase 6 patch approval: compact diff preview, durable patch approval,
+   `MERGE_READY`, and `HUMAN_APPROVAL` boundaries.
+8. Phase 7 GitHub PR boundary: GitHub credential metadata, repository records,
+   fake cloud sandbox artifacts, explicit PR creation, and no automatic merge.
+9. Phase 8 Docker local sandbox executor: sandbox profiles, command whitelists,
+   GitHub clone credential boundary, redacted command payloads, Docker failure
+   codes, timeout cleanup, and patch/test artifact capture.
+
+## Verification
+
+Latest automated verification:
+
+```bash
+pnpm typecheck
+pnpm test:js
+pytest apps/api/tests apps/worker/tests services/llm-gateway/tests -q
+git diff --check
+```
+
+Results:
+
+- `pnpm typecheck`: passed.
+- `pnpm test:js`: passed, including desktop and agent protocol tests.
+- Python tests: passed, 295 tests.
+- `git diff --check`: passed.
+
+Note: a single combined `pnpm test` invocation timed out in the Codex tool after
+124 seconds, but its split JS and Python test commands completed successfully.
+
+## Phase 8 Smoke
+
+A real Docker local sandbox smoke was run on 2026-06-02 with:
+
+- `AI_SCDC_CLOUD_RUNNER=docker_local`
+- temporary SQLite database
+- public repository: `https://github.com/octocat/Hello-World`
+- cached Docker image: `mcr.microsoft.com/devcontainers/python:1-3.12-bookworm`
+- fake local GitHub token value, used only to exercise credential handling
+
+Smoke result:
+
+```text
+cloud_run_status: patch_ready
+sandbox_kind: docker_local
+failure_reason: null
+files_changed: AI_SCDC_DOCKER_SMOKE.md
+test_result: passed
+workflow_test_status: passed
+review_verdict: approved
+approval_status: MERGE_READY
+human_approval_status: HUMAN_APPROVAL
+pr_status: PR_CREATED
+token_redacted: true
+```
+
+This verifies that Phase 8 Docker-produced patch artifacts can flow through the
+existing Phase 5 test workflow, Phase 5 deterministic review, Phase 6 patch
+approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
+
+## Known Limits
+
+- The Docker local sandbox is synchronous and local-first; it is not a remote
+  cloud worker.
+- Docker Hub image pulls failed in the local environment with an EOF response
+  from `registry-1.docker.io`, so the smoke used an already cached image.
+- Real GitHub PR publishing still requires starting the API with
+  `AI_SCDC_GITHUB_PR_ADAPTER=real` and providing a real PAT.
+- Authentication, organization RBAC, subscriptions, billing collection, and
+  production KMS are still development placeholders.
+- Reviewer and debugger behavior is deterministic, not model-backed.
+- The API still initializes schema through SQLModel metadata and SQLite upgrade
+  helpers; Alembic migrations remain reserved for later.
+
+## Recommended Next Phase
+
+Phase 9 should be remote cloud sandbox workers:
+
+1. Put `CloudRun` execution behind a queue and worker boundary.
+2. Add durable run cancellation.
+3. Add live log streaming or event polling.
+4. Add object storage contracts for large logs, diffs, and artifacts.
+5. Keep fake and `docker_local` executors as selectable adapters while moving
+   execution out of the synchronous API request path.
+
+This should come before model-backed reviewer/debugger agents or commercial
+beta work, because the execution plane needs an asynchronous, inspectable worker
+contract first.
