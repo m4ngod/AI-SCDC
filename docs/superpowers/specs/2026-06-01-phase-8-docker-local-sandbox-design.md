@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Phase 8 replaces the Phase 7 fake cloud worker with a first real sandbox execution path. The goal is to prove that AI-SCDC can run a task against a GitHub repository inside an isolated Docker container, produce a reviewable patch, capture test results, and then reuse the existing reviewer, approval, and GitHub pull request flow.
+Phase 8 adds `docker_local` alongside the Phase 7 fake cloud worker default as the first real sandbox execution path. The goal is to prove that AI-SCDC can run a task against a GitHub repository inside an isolated Docker container, produce a reviewable patch, capture test results, and then reuse the existing reviewer, approval, and GitHub pull request flow.
 
 The core product goal is:
 
@@ -237,7 +237,8 @@ Add or extend endpoints:
 3. The GitHub credential is active.
 4. The selected sandbox profile exists, is active, belongs to the same project/repo, and has the requested command keys.
 5. Docker execution is enabled when `AI_SCDC_CLOUD_RUNNER=docker_local`.
-6. Task allowed paths and required tests are compatible with the selected commands.
+
+The selected patch command and test command keys, including profile defaults when request keys are omitted, define the commands executed and persisted for the run. Phase 8 does not perform a separate pre-run compatibility validation between `Task.required_tests` and the selected profile test commands. Task allowed paths are enforced after diff capture, before a patch artifact is marked usable.
 
 The response remains `CloudRunResultRead` with:
 
@@ -290,7 +291,8 @@ Unit tests:
 - Docker command construction uses the selected image, mounts only temporary paths, and does not mount the Docker socket or host home.
 - Sandbox profile validation rejects missing, disabled, cross-project, cross-repo, or unknown command keys.
 - Token redaction removes GitHub token values from stdout, stderr, exceptions, and command result payloads.
-- Allowed-path validation rejects changed files outside task allowed paths.
+- Selected command keys and profile defaults drive persisted test command results through the existing `LocalTestRun` shape.
+- Allowed-path validation rejects changed files outside task allowed paths after diff capture.
 - Docker/process failures map to the correct `failure_reason`.
 - Timeouts terminate the process and produce safe failed results.
 

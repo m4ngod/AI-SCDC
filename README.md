@@ -438,19 +438,26 @@ When the API is not started with `AI_SCDC_GITHUB_PR_ADAPTER=real`, the final `Cr
 
 Phase 8 keeps the fake cloud runner as the default. Start the API with `AI_SCDC_CLOUD_RUNNER=docker_local` only when you want a real local Docker sandbox to clone a GitHub repository and run whitelisted profile commands. Keep the default fake PR adapter for this smoke test; set `AI_SCDC_GITHUB_PR_ADAPTER=real` only for a final, intentional real GitHub PR creation after human approval.
 
+Do not paste PATs into docs, commits, logs, chat, or shell history, and do not put PATs in repository URLs. The GitHub repository `repo_url` in this smoke test is a normal non-token URL. With the no-token URL shown below, use a public smoke-test repository, or a repository that your local Docker environment can clone without URL-embedded credentials. The PAT still creates the API credential record and can be exposed to whitelisted sandbox commands through `AI_SCDC_GITHUB_TOKEN` when the API process starts.
+
 Prerequisites:
 
 - Docker Desktop is running.
-- The target GitHub repository is accessible by the PAT used for the smoke test.
+- The target GitHub repository is accessible for the smoke path above, and the PAT stored in the API GitHub credential has access to the target repository for later approval/PR flow testing.
 - The sandbox profile patch command exists in the target repo or is self-contained.
 
-Start the API:
+Start the API. Set `AI_SCDC_GITHUB_TOKEN` in this same API server session only if the sandbox profile whitelists it and commands inside Docker need it. The environment variable lives in this local shell and the API child process.
 
 ```powershell
 $env:AI_SCDC_CLOUD_RUNNER = "docker_local"
 Remove-Item Env:\AI_SCDC_GITHUB_PR_ADAPTER -ErrorAction SilentlyContinue
+$secureSandboxToken = Read-Host "GitHub PAT for whitelisted sandbox env" -AsSecureString
+$env:AI_SCDC_GITHUB_TOKEN = [System.Net.NetworkCredential]::new("", $secureSandboxToken).Password
+Remove-Variable secureSandboxToken -ErrorAction SilentlyContinue
 pnpm dev:api
 ```
+
+After stopping the API, clear the local shell environment variable with `Remove-Item Env:\AI_SCDC_GITHUB_TOKEN -ErrorAction SilentlyContinue`.
 
 In another PowerShell session, create the credential, GitHub repository, sandbox profile, task, and cloud run:
 
@@ -458,7 +465,6 @@ In another PowerShell session, create the credential, GitHub repository, sandbox
 $base = "http://127.0.0.1:8000"
 $secureToken = Read-Host "GitHub PAT" -AsSecureString
 $githubToken = [System.Net.NetworkCredential]::new("", $secureToken).Password
-$env:AI_SCDC_GITHUB_TOKEN = $githubToken
 
 function JsonBody($value) {
   $value | ConvertTo-Json -Depth 12 -Compress
@@ -476,7 +482,7 @@ try {
 
   $githubOwner = Read-Host "GitHub owner"
   $githubRepo = Read-Host "GitHub repo"
-  $repoUrl = "https://$githubOwner`:$githubToken@github.com/$githubOwner/$githubRepo.git"
+  $repoUrl = "https://github.com/$githubOwner/$githubRepo"
 
   $project = Invoke-RestMethod `
     -Uri "$base/projects" `
@@ -566,7 +572,6 @@ try {
 }
 finally {
   Remove-Variable githubToken, secureToken, repoUrl -ErrorAction SilentlyContinue
-  Remove-Item Env:\AI_SCDC_GITHUB_TOKEN -ErrorAction SilentlyContinue
 }
 ```
 
