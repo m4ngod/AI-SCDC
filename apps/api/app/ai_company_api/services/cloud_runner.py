@@ -1,11 +1,13 @@
 from datetime import datetime, timedelta
 import os
+from typing import Any
 
 from fastapi import HTTPException
 from sqlmodel import Session, select
 
 from ai_company_api.models.entities import (
     CloudRun,
+    CloudRunLogEntry,
     LocalTaskRun,
     LocalTestRun,
     PatchArtifact,
@@ -40,8 +42,166 @@ from ai_company_api.services.task_state import (
     validate_transition,
 )
 
+SENSITIVE_PAYLOAD_KEYS = {
+    "token",
+    "github_token",
+    "access_token",
+    "authorization",
+    "password",
+    "secret",
+}
+SENSITIVE_PAYLOAD_KEY_PARTS = ("token", "secret", "password", "authorization")
+
+
+def _is_sensitive_payload_key(key: str) -> bool:
+    normalized = "".join(character for character in key.lower() if character.isalnum())
+    if key.lower() in SENSITIVE_PAYLOAD_KEYS:
+        return True
+    return any(part in normalized for part in SENSITIVE_PAYLOAD_KEY_PARTS)
+
+
+def redact_sensitive_values(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "***REDACTED***"
+            if _is_sensitive_payload_key(key)
+            else redact_sensitive_values(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive_values(item) for item in value]
+    return value
+
+
+def _append_cloud_run_log(
+    session: Session,
+    *,
+    cloud_run: CloudRun,
+    event: str,
+    message: str,
+    level: str = "info",
+    payload: dict[str, Any] | None = None,
+) -> CloudRunLogEntry:
+    entry = CloudRunLogEntry(
+        cloud_run_id=cloud_run.id,
+        workspace_id=cloud_run.workspace_id,
+        event=event,
+        message=message,
+        level=level,
+        payload=redact_sensitive_values(payload) if payload else None,
+    )
+    session.add(entry)
+    return entry
+
 
 def start_cloud_run(
+    session: Session,
+    task_id: str,
+    data: CloudRunCreate,
+) -> CloudRunResultRead:
+    return enqueue_cloud_run(session, task_id, data)
+
+
+def enqueue_cloud_run(
+    session: Session,
+    task_id: str,
+    data: CloudRunCreate,
+) -> CloudRunResultRead:
+    task = get_task(session, task_id)
+    repository = get_repository(session, data.repo_id)
+    if repository.project_id != task.project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository does not belong to task project",
+        )
+    if repository.provider != "github":
+        raise HTTPException(status_code=400, detail="Cloud runs require a GitHub repository")
+    if repository.connection_status != "active":
+        raise HTTPException(status_code=400, detail="GitHub repository is not active")
+
+    executor = select_cloud_sandbox_executor()
+    sandbox_profile_id: str | None = None
+    patch_command_key: str | None = None
+    test_command_keys: list[str] = []
+    if executor.sandbox_kind == "docker_local":
+        if data.sandbox_profile_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Docker cloud runs require a sandbox profile",
+            )
+        if repository.github_credential_id is None:
+            raise HTTPException(status_code=404, detail="GitHub credential not found")
+        validate_github_repository_url(
+            repository.repo_url,
+            owner=repository.github_owner or "",
+            repo=repository.github_repo or "",
+        )
+        profile = validate_sandbox_profile_for_repo(
+            session,
+            data.sandbox_profile_id,
+            project_id=task.project_id,
+            repo_id=repository.id,
+        )
+        patch_command, test_commands = _select_profile_commands(profile, data)
+        sandbox_profile_id = profile.id
+        patch_command_key = patch_command.key
+        test_command_keys = [command.key for command in test_commands]
+
+    cloud_run = CloudRun(
+        project_id=task.project_id,
+        task_id=task.id,
+        repo_id=repository.id,
+        base_branch=repository.default_branch,
+        head_branch="",
+        status="queued",
+        sandbox_kind=executor.sandbox_kind,
+        sandbox_profile_id=sandbox_profile_id,
+        patch_command_key=patch_command_key,
+        test_command_keys=test_command_keys,
+    )
+    session.add(cloud_run)
+    session.flush()
+
+    head_branch = f"ai-scdc/task-{task.id}-{cloud_run.id}"
+    cloud_run.head_branch = head_branch
+
+    local_run = LocalTaskRun(
+        project_id=task.project_id,
+        task_id=task.id,
+        repo_id=repository.id,
+        status="queued",
+        runner_kind=executor.sandbox_kind,
+        base_branch=repository.default_branch,
+    )
+    session.add(local_run)
+    session.flush()
+
+    cloud_run.local_run_id = local_run.id
+    cloud_run.updated_at = utc_now()
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="queued",
+        message="Cloud run queued.",
+        payload={
+            "repo_id": repository.id,
+            "sandbox_kind": executor.sandbox_kind,
+            "sandbox_profile_id": sandbox_profile_id,
+            "patch_command_key": patch_command_key,
+            "test_command_keys": test_command_keys,
+        },
+    )
+    session.add(local_run)
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    return CloudRunResultRead(
+        cloud_run=_cloud_run_read(cloud_run),
+        patch_artifact=None,
+    )
+
+
+def _execute_cloud_run_sync(
     session: Session,
     task_id: str,
     data: CloudRunCreate,

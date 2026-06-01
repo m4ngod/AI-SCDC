@@ -8,6 +8,7 @@ from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
     CloudRun,
+    CloudRunLogEntry,
     TaskEvent,
     GitHubCredential,
     LocalTaskRun,
@@ -160,6 +161,138 @@ def test_cloud_runner_command_payloads_redact_secrets_before_persistence() -> No
             "timed_out": True,
         }
     ]
+
+
+def test_cloud_run_log_payload_redacts_token_like_keys() -> None:
+    from ai_company_api.services.cloud_runner import redact_sensitive_values
+
+    payload = {
+        "githubToken": "ghp_secret_token",
+        "access_token": "access-secret",
+        "visible": "kept",
+        "nested": [{"nestedSecret": "inner-secret"}],
+    }
+
+    assert redact_sensitive_values(payload) == {
+        "githubToken": "***REDACTED***",
+        "access_token": "***REDACTED***",
+        "visible": "kept",
+        "nested": [{"nestedSecret": "***REDACTED***"}],
+    }
+
+
+def test_start_cloud_run_enqueues_fake_run_without_executor_work(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    response = client.post(f"/tasks/{task_id}/cloud-runs", json={"repo_id": repo_id})
+
+    assert response.status_code == 201
+    result = response.json()
+    cloud_run = result["cloud_run"]
+    assert cloud_run["status"] == "queued"
+    assert cloud_run["sandbox_kind"] == "fake"
+    assert cloud_run["head_branch"] == f"ai-scdc/task-{task_id}-{cloud_run['id']}"
+    assert cloud_run["local_run_id"] is not None
+    assert cloud_run["failure_reason"] is None
+    assert result["patch_artifact"] is None
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        persisted_cloud_run = session.get(CloudRun, cloud_run["id"])
+        local_run = session.get(LocalTaskRun, cloud_run["local_run_id"])
+        artifacts = session.exec(select(PatchArtifact)).all()
+        task_after_enqueue = session.get(Task, task_id)
+        log_entries = session.exec(
+            select(CloudRunLogEntry).where(
+                CloudRunLogEntry.cloud_run_id == cloud_run["id"],
+            )
+        ).all()
+
+    assert persisted_cloud_run is not None
+    assert local_run is not None
+    assert task_after_enqueue is not None
+    assert persisted_cloud_run.status == "queued"
+    assert persisted_cloud_run.patch_artifact_id is None
+    assert local_run.status == "queued"
+    assert local_run.runner_kind == "fake"
+    assert local_run.patch_artifact_id is None
+    assert artifacts == []
+    assert task_after_enqueue.status == TaskStatus.CREATED
+    assert [entry.event for entry in log_entries] == ["queued"]
+
+
+def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class VaultShouldNotOpen:
+        def open(self, _encrypted_secret: str) -> str:
+            raise AssertionError("vault should not open token during enqueue")
+
+    class DockerExecutorShouldNotRun:
+        sandbox_kind = "docker_local"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutorShouldNotRun(),
+    )
+    monkeypatch.setattr(cloud_runner, "DevSecretVault", VaultShouldNotOpen)
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "patch_command_key": "patch",
+            "test_command_keys": ["test"],
+        },
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    cloud_run = result["cloud_run"]
+    assert cloud_run["status"] == "queued"
+    assert cloud_run["sandbox_kind"] == "docker_local"
+    assert cloud_run["sandbox_profile_id"] == profile_id
+    assert cloud_run["patch_command_key"] == "patch"
+    assert cloud_run["test_command_keys"] == ["test"]
+    assert cloud_run["failure_reason"] is None
+    assert result["patch_artifact"] is None
+    assert "ghp_cloud_runner_secret1234" not in str(result)
 
 
 def test_docker_cloud_run_redacts_github_token_from_persisted_results(
