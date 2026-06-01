@@ -213,10 +213,11 @@ Docker runs use these constraints:
 - The host home, SSH configuration, credential stores, project root, and Docker socket are not mounted.
 - Only environment variables named by the sandbox profile may enter the container.
 - Sandbox environment values are written to a Docker `--env-file`; they are not injected into or used to mutate the host Docker CLI environment.
+- GitHub clone credentials come from the registered repository credential and are passed only to the clone step through a temporary `GIT_ASKPASS` helper, not through the sandbox profile environment.
 - GitHub token material is redacted from stdout, stderr, exception messages, API responses, and task events.
 - Repository URL credentials are also redacted from command strings and logs before persistence.
-- Every Docker operation and command has a timeout.
-- Containers are removed after execution unless an explicit debug flag keeps them for local troubleshooting.
+- Every Docker operation and command has a timeout, and timed-out containers are force removed by name.
+- Containers are removed after execution; Phase 8 does not keep debug containers.
 - The executor fails closed when Docker is unavailable or the selected profile is missing/disabled.
 
 The first implementation may use the Docker CLI through a process runner instead of introducing a Docker SDK dependency. The command runner should still be abstracted so unit tests can verify behavior without invoking Docker.
@@ -288,11 +289,13 @@ Unit tests:
 - Executor selection chooses fake by default and Docker only when configured.
 - Docker command construction uses the selected image, mounts only temporary paths, and does not mount the Docker socket or host home.
 - Sandbox profile validation rejects missing, disabled, cross-project, cross-repo, or unknown command keys.
+- Sandbox profile creation rejects invalid or option-like Docker image values before persistence.
 - Token redaction removes GitHub token values from stdout, stderr, exceptions, and command result payloads.
+- Docker clone auth uses `GIT_ASKPASS` without persisting the token in command strings, API payloads, or patch/test environments.
 - Selected command keys and profile defaults drive persisted test command results through the existing `LocalTestRun` shape.
 - Allowed-path validation rejects changed files outside task allowed paths after diff capture.
 - Docker/process failures map to the correct `failure_reason`.
-- Timeouts terminate the process and produce safe failed results.
+- Timeouts terminate the process, force remove the named container, and produce safe failed results.
 
 Integration tests without real Docker:
 

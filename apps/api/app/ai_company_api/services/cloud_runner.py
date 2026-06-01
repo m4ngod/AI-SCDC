@@ -29,6 +29,7 @@ from ai_company_api.services.cloud_sandbox_executor import (
 from ai_company_api.services.github_repository import get_active_github_credential
 from ai_company_api.services.repository import create_task_event, get_repository, get_task
 from ai_company_api.services.sandbox_profiles import validate_sandbox_profile_for_repo
+from ai_company_api.services.secret_vault import DevSecretVault
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
@@ -64,6 +65,7 @@ def start_cloud_run(
     test_commands: list[SandboxCommandSelection] = []
     sandbox_env: dict[str, str] = {}
     network_enabled = True
+    github_token: str | None = None
     if executor.sandbox_kind == "docker_local":
         if data.sandbox_profile_id is None:
             raise HTTPException(
@@ -72,7 +74,8 @@ def start_cloud_run(
             )
         if repository.github_credential_id is None:
             raise HTTPException(status_code=404, detail="GitHub credential not found")
-        get_active_github_credential(session, repository.github_credential_id)
+        credential = get_active_github_credential(session, repository.github_credential_id)
+        github_token = DevSecretVault().open(credential.encrypted_token)
         profile = validate_sandbox_profile_for_repo(
             session,
             data.sandbox_profile_id,
@@ -121,6 +124,7 @@ def start_cloud_run(
             test_commands=test_commands,
             env=sandbox_env,
             network_enabled=network_enabled,
+            github_token=github_token,
         )
     )
 
@@ -150,7 +154,7 @@ def start_cloud_run(
     cloud_run.local_run_id = local_run.id
     cloud_run.updated_at = utc_now()
 
-    secrets = _redaction_secrets(sandbox_env, repository.repo_url)
+    secrets = _redaction_secrets(sandbox_env, repository.repo_url, github_token)
     if not _should_create_patch_artifact(execution_result):
         failure_command_results = [
             *execution_result.command_results,
@@ -481,10 +485,14 @@ def _create_cloud_run_event(
     event.created_at = event_clock.next()
 
 
-def _redaction_secrets(env: dict[str, str], repo_url: str = "") -> list[str]:
+def _redaction_secrets(
+    env: dict[str, str],
+    repo_url: str = "",
+    github_token: str | None = None,
+) -> list[str]:
     return [
         value
-        for value in [*env.values(), *repo_url_redaction_secrets(repo_url)]
+        for value in [*env.values(), github_token, *repo_url_redaction_secrets(repo_url)]
         if value
     ]
 

@@ -98,7 +98,7 @@ def test_command_result_redacts_secret_from_command_stdout_and_stderr() -> None:
     assert redacted.stderr == "failed [redacted]"
 
 
-def test_command_result_payload_redacts_secret_without_timeout_field() -> None:
+def test_command_result_payload_redacts_secret_and_preserves_timeout_field() -> None:
     result = CommandResult(
         command="echo ghp_example1234567890",
         exit_code=1,
@@ -116,6 +116,7 @@ def test_command_result_payload_redacts_secret_without_timeout_field() -> None:
         "stdout": "seen [redacted]",
         "stderr": "failed [redacted]",
         "duration_ms": 25,
+        "timed_out": True,
     }
 
 

@@ -290,6 +290,7 @@ class CommandResultRead(BaseModel):
     stdout: str
     stderr: str
     duration_ms: int
+    timed_out: bool = False
 
 
 class CloudRunRead(BaseModel):

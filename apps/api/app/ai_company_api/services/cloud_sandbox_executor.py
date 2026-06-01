@@ -46,6 +46,7 @@ class CommandResult:
             "stdout": result.stdout,
             "stderr": result.stderr,
             "duration_ms": result.duration_ms,
+            "timed_out": result.timed_out,
         }
 
     def redacted(self, secrets: list[str]) -> "CommandResult":
@@ -81,6 +82,7 @@ class SandboxExecutionRequest:
     test_commands: list[SandboxCommandSelection]
     env: dict[str, str]
     network_enabled: bool
+    github_token: str | None = None
 
 
 @dataclass(frozen=True)

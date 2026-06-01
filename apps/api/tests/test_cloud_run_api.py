@@ -22,6 +22,7 @@ from ai_company_api.services.cloud_sandbox_executor import (
     SandboxExecutionRequest,
     SandboxExecutionResult,
 )
+from ai_company_api.services.secret_vault import DevSecretVault
 from ai_company_api.services.task_state import TaskStatus
 
 
@@ -41,10 +42,11 @@ def create_cloud_task(
     project = Project(name="Cloud project")
     session.add(project)
     session.flush()
+    sealed = DevSecretVault().seal("ghp_cloud_runner_secret1234")
     credential = GitHubCredential(
         display_name="Cloud runner credential",
-        token_last4="test",
-        encrypted_token="sealed-token",
+        token_last4=sealed.secret_last4,
+        encrypted_token=sealed.encrypted_secret,
     )
     session.add(credential)
     session.flush()
@@ -154,8 +156,71 @@ def test_cloud_runner_command_payloads_redact_secrets_before_persistence() -> No
             "stdout": "seen [redacted]",
             "stderr": "failed [redacted]",
             "duration_ms": 25,
+            "timed_out": True,
         }
     ]
+
+
+def test_docker_cloud_run_redacts_github_token_from_persisted_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class DockerExecutor:
+        sandbox_kind = "docker_local"
+
+        def run(self, request):
+            return SandboxExecutionResult(
+                status="failed",
+                runner_kind="docker_local",
+                base_sha=None,
+                head_sha=None,
+                worktree_ref=None,
+                summary="",
+                files_changed=[],
+                tests_run=[],
+                test_result="not_run",
+                risks=[],
+                diff_text="",
+                command_results=[
+                    CommandResult(
+                        command=f"git clone {request.github_token}",
+                        exit_code=1,
+                        stdout=f"stdout {request.github_token}",
+                        stderr=f"stderr {request.github_token}",
+                        duration_ms=10,
+                    )
+                ],
+                test_command_results=[],
+                failure_reason="repo_checkout_failed",
+            )
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutor(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()["cloud_run"]["command_results"][0]
+    assert "ghp_cloud_runner_secret1234" not in str(payload)
+    assert payload["command"] == "git clone [redacted]"
+    assert payload["stdout"] == "stdout [redacted]"
+    assert payload["stderr"] == "stderr [redacted]"
 
 
 def test_docker_cloud_run_requires_active_sandbox_profile(
@@ -348,6 +413,7 @@ def test_docker_cloud_run_uses_default_profile_commands(
     assert captured_requests[0].patch_command is not None
     assert captured_requests[0].patch_command.key == "patch_default"
     assert [command.key for command in captured_requests[0].test_commands] == ["unit"]
+    assert getattr(captured_requests[0], "github_token", None) == "ghp_cloud_runner_secret1234"
     assert response.json()["cloud_run"]["patch_command_key"] == "patch_default"
     assert response.json()["cloud_run"]["test_command_keys"] == ["unit"]
 
@@ -887,6 +953,7 @@ def test_start_cloud_run_persists_executor_test_results(
             "stdout": "Python 3.11\n",
             "stderr": "",
             "duration_ms": 3,
+            "timed_out": False,
         }
     ]
     assert test_runs[0].failure_reason is None
@@ -1141,6 +1208,7 @@ def test_docker_cloud_run_test_failure_keeps_patch_artifact(
             "stdout": "",
             "stderr": "failed",
             "duration_ms": 3,
+            "timed_out": False,
         }
     ]
     assert test_runs[0].failure_reason == "test_failed"

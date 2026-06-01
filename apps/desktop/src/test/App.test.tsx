@@ -298,8 +298,9 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
           is_default: true
         }
       ],
-      allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
-      network_enabled: true
+      allowed_env_vars: [],
+      network_enabled: true,
+      status: "active"
     }),
     listSandboxProfiles: vi.fn().mockResolvedValue([]),
     startCloudRun: vi.fn().mockResolvedValue({
@@ -1022,8 +1023,9 @@ describe("App", () => {
         docker_image: "python:3.11-bookworm",
         patch_commands: [],
         test_commands: [],
-        allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
-        network_enabled: true
+        allowed_env_vars: [],
+        network_enabled: true,
+        status: "active"
       });
     const apiClient = createMockApiClient({
       createGitHubCredential,
@@ -1070,7 +1072,7 @@ describe("App", () => {
           is_default: true
         }
       ],
-      allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+      allowed_env_vars: [],
       network_enabled: true
     });
     expect(await screen.findByText("GitHub repo connected")).toBeInTheDocument();
@@ -1220,8 +1222,9 @@ describe("App", () => {
         docker_image: "python:3.11-bookworm",
         patch_commands: [],
         test_commands: [],
-        allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
-        network_enabled: true
+        allowed_env_vars: [],
+        network_enabled: true,
+        status: "active"
       })
       .mockRejectedValueOnce(new Error("Profile create failed"));
     const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({

@@ -808,6 +808,7 @@ describe("desktop API clients", () => {
             ],
             allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
             network_enabled: true,
+            status: "active",
             created_at: "2026-05-30T01:30:00Z",
             updated_at: "2026-05-30T01:30:00Z"
           },
@@ -826,6 +827,7 @@ describe("desktop API clients", () => {
             test_commands: [],
             allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
             network_enabled: true,
+            status: "active",
             created_at: "2026-05-30T01:30:00Z",
             updated_at: "2026-05-30T01:30:00Z"
           }

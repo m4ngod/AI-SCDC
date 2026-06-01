@@ -181,6 +181,7 @@ def test_docker_run_args_do_not_mount_host_home_or_docker_socket(
     assert "--network" in args
     assert "bridge" in args
     assert "-v" in args
+    assert "--name" in args
 
 
 def test_docker_executor_rejects_option_like_docker_image(tmp_path: Path) -> None:
@@ -266,6 +267,35 @@ def test_docker_executor_redacts_credentials_embedded_in_repo_url(
     assert "[redacted]" in result.command_results[1].command
     assert "[redacted]" in result.command_results[1].stdout
     assert "[redacted]" in result.command_results[1].stderr
+
+
+def test_docker_executor_uses_askpass_for_github_token_without_persisting_secret(
+    tmp_path: Path,
+) -> None:
+    token = "ghp_private_clone_token1234"
+    runner = RecordingRunner(docker_success_results())
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(
+        docker_request(tmp_path),
+        github_token=token,
+        env={},
+        test_commands=[],
+        required_tests=[],
+    )
+
+    result = executor.run(request)
+
+    clone_command = runner.calls[1]["args"][-1]
+    command_payloads = "\n".join(
+        "\n".join([item.command, item.stdout, item.stderr])
+        for item in result.command_results
+    )
+    assert result.status == "patch_ready"
+    assert "GIT_ASKPASS=/artifacts/git-askpass.sh" in clone_command
+    assert "GIT_TERMINAL_PROMPT=0" in clone_command
+    assert token not in clone_command
+    assert token not in command_payloads
+    assert token not in "\n".join(snapshot for _path, snapshot in runner.env_file_snapshots)
 
 
 @pytest.mark.parametrize(
@@ -369,12 +399,12 @@ def test_docker_executor_delivers_sandbox_env_via_env_file_without_host_env_over
     )
 
     assert result.status == "patch_ready"
-    assert docker_version_env["LD_PRELOAD"] == "host-ld-preload"
-    assert docker_version_env["HOME"] == "host-home"
-    assert docker_version_env["API_KEY"] == "host-api-key"
-    assert docker_run_env["LD_PRELOAD"] == "host-ld-preload"
-    assert docker_run_env["HOME"] == "host-home"
-    assert docker_run_env["API_KEY"] == "host-api-key"
+    assert "LD_PRELOAD" not in docker_version_env
+    assert "HOME" not in docker_version_env
+    assert "API_KEY" not in docker_version_env
+    assert "LD_PRELOAD" not in docker_run_env
+    assert "HOME" not in docker_run_env
+    assert "API_KEY" not in docker_run_env
     assert "--env-file" in docker_run_args
     assert "-e" not in docker_run_args
     assert "LD_PRELOAD=/tmp/sandbox.so\n" in env_file_text
@@ -502,7 +532,7 @@ def test_docker_executor_captures_diff_and_test_result(tmp_path: Path) -> None:
     assert result.failure_reason is None
 
 
-def test_docker_executor_keeps_host_env_for_docker_cli(
+def test_docker_executor_uses_minimal_host_env_for_docker_cli(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -534,20 +564,61 @@ def test_docker_executor_keeps_host_env_for_docker_cli(
     docker_run_env = runner.calls[1]["env"]
     env_file_text = runner.env_file_snapshots[0][1]
     assert docker_run_env is not request.env
-    assert docker_run_env["AI_SCDC_HOST_ENV_MARKER"] == "host-value"
+    assert "AI_SCDC_HOST_ENV_MARKER" not in docker_run_env
     assert docker_run_env.get("AI_SCDC_GITHUB_TOKEN") != "ghp_example1234567890"
     assert docker_run_env.get("AI_SCDC_SAFE_SANDBOX_VAR") != "sandbox-value"
     assert docker_run_env["PATH"] == "host-path"
-    assert docker_run_env["DOCKER_HOST"] == "host-docker"
-    assert docker_run_env["DOCKER_CONFIG"] == "host-docker-config"
-    assert docker_run_env["HTTP_PROXY"] == "http://host-proxy"
-    assert docker_run_env["CUSTOM_ENV"] == "host-custom"
+    assert "DOCKER_HOST" not in docker_run_env
+    assert "DOCKER_CONFIG" not in docker_run_env
+    assert "HTTP_PROXY" not in docker_run_env
+    assert "CUSTOM_ENV" not in docker_run_env
     assert "AI_SCDC_SAFE_SANDBOX_VAR=sandbox-value\n" in env_file_text
     assert "CUSTOM_ENV=sandbox-custom\n" in env_file_text
     assert "PATH=sandbox-path\n" not in env_file_text
     assert "DOCKER_HOST=sandbox-docker\n" not in env_file_text
     assert "DOCKER_CONFIG=sandbox-docker-config\n" not in env_file_text
     assert "HTTP_PROXY=http://sandbox-proxy\n" not in env_file_text
+
+
+def test_docker_executor_removes_timed_out_container(tmp_path: Path) -> None:
+    runner = RecordingRunner(
+        [
+            ProcessResult(
+                args=["docker", "version"],
+                exit_code=0,
+                stdout="Docker",
+                stderr="",
+                duration_ms=1,
+            ),
+            ProcessResult(
+                args=["docker", "clone"],
+                exit_code=None,
+                stdout="",
+                stderr="timeout",
+                duration_ms=300000,
+                timed_out=True,
+            ),
+            ProcessResult(
+                args=["docker", "rm", "-f", "container"],
+                exit_code=0,
+                stdout="container",
+                stderr="",
+                duration_ms=1,
+            ),
+        ]
+    )
+    executor = DockerLocalSandboxExecutor(process_runner=runner, workspace_root=tmp_path)
+    request = replace(docker_request(tmp_path), test_commands=[], required_tests=[])
+
+    result = executor.run(request)
+
+    docker_run_args = runner.calls[1]["args"]
+    name_index = docker_run_args.index("--name")
+    container_name = docker_run_args[name_index + 1]
+    assert result.status == "failed"
+    assert result.failure_reason == "repo_checkout_failed"
+    assert result.command_results[1].timed_out is True
+    assert runner.calls[2]["args"] == ["docker", "rm", "-f", container_name]
 
 
 def test_docker_executor_quotes_fixed_git_setup_commands(

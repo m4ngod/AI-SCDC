@@ -93,7 +93,7 @@ The first cloud sandbox is a control-plane fake worker, not a real container ser
 
 ## Phase 8 Boundary
 
-Phase 8 adds the first real sandbox executor by running GitHub cloud tasks inside local Docker. The executor is still local-first and synchronous, but it establishes the sandbox profile, command whitelist, redacted logs, Docker failure codes, and artifact capture contract needed for future remote cloud workers.
+Phase 8 adds the first real sandbox executor by running GitHub cloud tasks inside local Docker. The executor is still local-first and synchronous, but it establishes the sandbox profile, command whitelist, GitHub clone credential boundary, redacted logs, Docker failure codes, timeout cleanup, and artifact capture contract needed for future remote cloud workers.
 
 ## Roadmap
 

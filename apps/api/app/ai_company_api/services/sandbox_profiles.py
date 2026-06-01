@@ -7,6 +7,7 @@ from ai_company_api.schemas.api import (
     SandboxProfileCreate,
     SandboxProfileRead,
 )
+from ai_company_api.services.docker_sandbox import validate_docker_image
 from ai_company_api.services.repository import get_project, get_repository
 
 
@@ -28,13 +29,16 @@ def create_sandbox_profile(
     _validate_unique_command_keys([*data.patch_commands, *data.test_commands])
     _validate_sandbox_commands(data.patch_commands, command_kind="patch")
     _validate_sandbox_commands(data.test_commands, command_kind="test")
+    docker_image = validate_docker_image(data.docker_image)
+    if docker_image is None:
+        raise HTTPException(status_code=400, detail="Invalid Docker image")
 
     profile = SandboxProfile(
         workspace_id=project.workspace_id,
         project_id=project.id,
         repo_id=repository.id,
         name=data.name,
-        docker_image=data.docker_image,
+        docker_image=docker_image,
         patch_commands=[command.model_dump() for command in data.patch_commands],
         test_commands=[command.model_dump() for command in data.test_commands],
         allowed_env_vars=list(data.allowed_env_vars),

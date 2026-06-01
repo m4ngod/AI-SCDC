@@ -78,6 +78,7 @@ export type SandboxProfileCard = {
   test_commands: SandboxCommandCard[];
   allowed_env_vars: string[];
   network_enabled: boolean;
+  status: string;
   created_at?: string;
   updated_at?: string;
 };
@@ -127,6 +128,7 @@ export type CommandResultCard = {
   stdout: string;
   stderr: string;
   duration_ms: number;
+  timed_out?: boolean;
 };
 
 export type LocalTestRunCard = {
@@ -607,6 +609,7 @@ export const fakeApiClient: ConsoleApiClient = {
     const profile: SandboxProfileCard = {
       id: `sandbox_profile_${projectId}_${profiles.length + 1}`,
       project_id: projectId,
+      status: "active",
       ...input,
       created_at: "2026-05-29T00:00:00Z",
       updated_at: "2026-05-29T00:00:00Z"
@@ -998,6 +1001,7 @@ function mapSandboxProfileCard(profile: ApiSandboxProfile): SandboxProfileCard {
     test_commands: profile.test_commands,
     allowed_env_vars: profile.allowed_env_vars,
     network_enabled: profile.network_enabled,
+    status: profile.status,
     created_at: profile.created_at,
     updated_at: profile.updated_at
   };

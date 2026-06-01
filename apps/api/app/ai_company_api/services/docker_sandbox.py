@@ -30,8 +30,19 @@ _DOCKER_CLI_ENV_DENYLIST = {
     "PATH",
     "PATHEXT",
 }
+_DOCKER_CLI_ENV_ALLOWLIST = {
+    "COMSPEC",
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "WINDIR",
+}
 _DEFAULT_DOCKER_IMAGE = "python:3.11-bookworm"
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_DOCKER_IMAGE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]*")
 
 
 @dataclass(frozen=True)
@@ -67,6 +78,12 @@ class ProcessResult:
             duration_ms=safe_result.duration_ms,
             timed_out=safe_result.timed_out,
         )
+
+
+@dataclass(frozen=True)
+class GitAuthFiles:
+    askpass_path: Path
+    token_path: Path
 
 
 class ProcessRunner(Protocol):
@@ -173,6 +190,7 @@ class DockerLocalSandboxExecutor:
         command: str,
         timeout_seconds: int,
         env_file_path: Path | None = None,
+        container_name: str | None = None,
     ) -> list[str]:
         network_args = (
             ["--network", "bridge"] if request.network_enabled else ["--network", "none"]
@@ -183,11 +201,17 @@ class DockerLocalSandboxExecutor:
         docker_image = _validated_docker_image(request.docker_image)
         if docker_image is None:
             raise DockerSandboxError("invalid_docker_image")
+        safe_container_name = container_name or _docker_container_name(
+            request.cloud_run_id,
+            "manual",
+        )
 
         return [
             "docker",
             "run",
             "--rm",
+            "--name",
+            safe_container_name,
             *network_args,
             "-v",
             f"{workspace_path.as_posix()}:/workspace",
@@ -205,7 +229,12 @@ class DockerLocalSandboxExecutor:
     def run(self, request: SandboxExecutionRequest) -> SandboxExecutionResult:
         command_results: list[CommandResult] = []
         test_results: list[CommandResult] = []
-        secrets = [*request.env.values(), *repo_url_redaction_secrets(request.repo_url)]
+        secrets = [
+            *request.env.values(),
+            request.github_token,
+            *repo_url_redaction_secrets(request.repo_url),
+        ]
+        secrets = [secret for secret in secrets if secret]
         runner = RedactingProcessRunner(self._process_runner, secrets)
         docker_cli_env = _docker_cli_env()
         docker_image = _validated_docker_image(request.docker_image)
@@ -256,12 +285,23 @@ class DockerLocalSandboxExecutor:
                     test_results,
                 )
 
+            git_auth_files = _write_git_auth_files(
+                artifact_path,
+                request.github_token,
+            )
             patch_command = request.patch_command.command if request.patch_command else ""
             patch_timeout = (
                 request.patch_command.timeout_seconds if request.patch_command else 300
             )
             steps = [
-                ("clone", f"git clone -- {_shell_quote(request.repo_url)} .", 300),
+                (
+                    "clone",
+                    _git_clone_command(
+                        request.repo_url,
+                        use_askpass=git_auth_files is not None,
+                    ),
+                    300,
+                ),
                 ("checkout", f"git checkout {_shell_quote(request.base_branch)}", 60),
                 ("branch", f"git checkout -B {_shell_quote(request.head_branch)}", 60),
                 ("patch", patch_command, patch_timeout),
@@ -278,18 +318,19 @@ class DockerLocalSandboxExecutor:
 
             captured: dict[str, ProcessResult] = {}
             for label, command, timeout_seconds in steps:
-                process_result = runner.run(
-                    self.build_docker_run_args(
-                        request=request,
-                        workspace_path=workspace_path,
-                        artifact_path=artifact_path,
-                        env_file_path=env_file_path,
-                        command=command,
-                        timeout_seconds=timeout_seconds,
-                    ),
-                    env=docker_cli_env,
+                process_result = self._run_docker_container(
+                    runner,
+                    request=request,
+                    workspace_path=workspace_path,
+                    artifact_path=artifact_path,
+                    env_file_path=env_file_path,
+                    docker_cli_env=docker_cli_env,
+                    label=label,
+                    command=command,
                     timeout_seconds=timeout_seconds,
                 )
+                if label == "clone" and git_auth_files is not None:
+                    _remove_git_auth_files(git_auth_files)
                 captured[label] = process_result
                 command_results.append(
                     process_result.to_command_result(command, secrets=secrets)
@@ -344,16 +385,15 @@ class DockerLocalSandboxExecutor:
 
             test_status = "passed" if request.test_commands else "not_run"
             for command in request.test_commands:
-                process_result = runner.run(
-                    self.build_docker_run_args(
-                        request=request,
-                        workspace_path=workspace_path,
-                        artifact_path=artifact_path,
-                        env_file_path=env_file_path,
-                        command=command.command,
-                        timeout_seconds=command.timeout_seconds,
-                    ),
-                    env=docker_cli_env,
+                process_result = self._run_docker_container(
+                    runner,
+                    request=request,
+                    workspace_path=workspace_path,
+                    artifact_path=artifact_path,
+                    env_file_path=env_file_path,
+                    docker_cli_env=docker_cli_env,
+                    label=f"test-{command.key}",
+                    command=command.command,
                     timeout_seconds=command.timeout_seconds,
                 )
                 test_results.append(
@@ -383,6 +423,41 @@ class DockerLocalSandboxExecutor:
                 failure_reason=failure_reason,
             )
 
+    def _run_docker_container(
+        self,
+        runner: ProcessRunner,
+        *,
+        request: SandboxExecutionRequest,
+        workspace_path: Path,
+        artifact_path: Path,
+        env_file_path: Path | None,
+        docker_cli_env: dict[str, str],
+        label: str,
+        command: str,
+        timeout_seconds: int,
+    ) -> ProcessResult:
+        container_name = _docker_container_name(request.cloud_run_id, label)
+        process_result = runner.run(
+            self.build_docker_run_args(
+                request=request,
+                workspace_path=workspace_path,
+                artifact_path=artifact_path,
+                env_file_path=env_file_path,
+                command=command,
+                timeout_seconds=timeout_seconds,
+                container_name=container_name,
+            ),
+            env=docker_cli_env,
+            timeout_seconds=timeout_seconds,
+        )
+        if process_result.timed_out:
+            runner.run(
+                ["docker", "rm", "-f", container_name],
+                env=docker_cli_env,
+                timeout_seconds=15,
+            )
+        return process_result
+
 
 def _output_to_text(value: str | bytes | None) -> str:
     if value is None:
@@ -393,7 +468,11 @@ def _output_to_text(value: str | bytes | None) -> str:
 
 
 def _docker_cli_env() -> dict[str, str]:
-    return dict(os.environ)
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name.upper() in _DOCKER_CLI_ENV_ALLOWLIST and value
+    }
 
 
 def _safe_container_env_names(container_env: dict[str, str]) -> list[str]:
@@ -416,6 +495,52 @@ def _write_docker_env_file(path: Path, container_env: dict[str, str]) -> Path | 
     return path
 
 
+def _write_git_auth_files(artifact_path: Path, github_token: str | None) -> GitAuthFiles | None:
+    if not github_token:
+        return None
+
+    askpass_path = artifact_path / "git-askpass.sh"
+    token_path = artifact_path / "github-token"
+    token_path.write_text(github_token, encoding="utf-8")
+    askpass_path.write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                "case \"$1\" in",
+                "*Username*) printf '%s\\n' 'x-access-token' ;;",
+                "*) cat /artifacts/github-token ;;",
+                "esac",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return GitAuthFiles(askpass_path=askpass_path, token_path=token_path)
+
+
+def _remove_git_auth_files(auth_files: GitAuthFiles) -> None:
+    for path in (auth_files.askpass_path, auth_files.token_path):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _git_clone_command(repo_url: str, *, use_askpass: bool) -> str:
+    clone_command = f"git clone -- {_shell_quote(repo_url)} ."
+    if not use_askpass:
+        return clone_command
+    return (
+        "chmod 700 /artifacts/git-askpass.sh; "
+        "GIT_ASKPASS=/artifacts/git-askpass.sh "
+        "GIT_TERMINAL_PROMPT=0 "
+        f"{clone_command}; "
+        "status=$?; "
+        "rm -f /artifacts/git-askpass.sh /artifacts/github-token; "
+        "exit $status"
+    )
+
+
 def _is_safe_sandbox_env_name(name: str) -> bool:
     normalized = name.upper()
     return (
@@ -432,9 +557,17 @@ def _validated_docker_image(image: str | None) -> str | None:
     if image is None:
         return _DEFAULT_DOCKER_IMAGE
     candidate = image.strip()
-    if candidate == "" or candidate.startswith("-"):
+    if (
+        candidate == ""
+        or candidate.startswith("-")
+        or _DOCKER_IMAGE_RE.fullmatch(candidate) is None
+    ):
         return None
     return candidate
+
+
+def validate_docker_image(image: str | None) -> str | None:
+    return _validated_docker_image(image)
 
 
 def _valid_git_reference_inputs(request: SandboxExecutionRequest) -> bool:
@@ -451,6 +584,15 @@ def _valid_git_branch_name(branch_name: str) -> bool:
 
 def _shell_quote(value: str) -> str:
     return shlex.quote(value)
+
+
+def _docker_container_name(cloud_run_id: str, label: str) -> str:
+    return f"ai-scdc-{_docker_name_part(cloud_run_id)}-{_docker_name_part(label)}"[:120]
+
+
+def _docker_name_part(value: str) -> str:
+    candidate = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.")
+    return candidate or "run"
 
 
 def _failed_result(

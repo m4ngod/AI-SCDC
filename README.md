@@ -438,12 +438,12 @@ When the API is not started with `AI_SCDC_GITHUB_PR_ADAPTER=real`, the final `Cr
 
 Phase 8 keeps the fake cloud runner as the default. Start the API with `AI_SCDC_CLOUD_RUNNER=docker_local` only when you want a real local Docker sandbox to clone a GitHub repository and run whitelisted profile commands. Keep the default fake PR adapter for this smoke test; set `AI_SCDC_GITHUB_PR_ADAPTER=real` only for a final, intentional real GitHub PR creation after human approval.
 
-Do not paste PATs into docs, commits, logs, chat, or shell history, and do not put PATs in repository URLs. The GitHub repository `repo_url` in this smoke test is a normal non-token URL. With the no-token URL shown below, use a public smoke-test repository, or a repository that your local Docker environment can clone without URL-embedded credentials. The PAT still creates the API credential record for repository registration and later approval/PR flow testing, but the main smoke profile does not expose it to Docker.
+Do not paste PATs into docs, commits, logs, chat, or shell history, and do not put PATs in repository URLs. The GitHub repository `repo_url` in this smoke test is a normal non-token URL. For `docker_local` runs, the API opens the registered GitHub credential only for the clone step and passes it through a temporary container-local `GIT_ASKPASS` helper; it is redacted from command payloads and is not added to the sandbox profile environment.
 
 Prerequisites:
 
 - Docker Desktop is running.
-- The target GitHub repository is accessible for the smoke path above, and the PAT stored in the API GitHub credential has access to the target repository for later approval/PR flow testing.
+- The PAT stored in the API GitHub credential has clone access to the target GitHub repository.
 - The sandbox profile patch command exists in the target repo or is self-contained.
 
 Start the API:
@@ -454,7 +454,7 @@ Remove-Item Env:\AI_SCDC_GITHUB_PR_ADAPTER -ErrorAction SilentlyContinue
 pnpm dev:api
 ```
 
-Keep `allowed_env_vars` empty unless a sandbox profile command explicitly needs a server-process environment variable. For local-only private-repo experiments, set any needed environment variable in the API server session before `pnpm dev:api`, whitelist only that variable in the profile, and clear it from the shell after stopping the API.
+Keep `allowed_env_vars` empty unless a sandbox profile command explicitly needs a server-process environment variable. Private repository cloning uses the registered GitHub credential and does not require whitelisting a token into the patch or test command environment.
 
 In another PowerShell session, create the credential, GitHub repository, sandbox profile, task, and cloud run:
 

@@ -47,7 +47,7 @@ const defaultDockerSandboxProfile: Omit<SandboxProfileInput, "repo_id"> = {
       is_default: true
     }
   ],
-  allowed_env_vars: ["AI_SCDC_GITHUB_TOKEN"],
+  allowed_env_vars: [],
   network_enabled: true
 };
 

@@ -161,6 +161,37 @@ def test_sandbox_profile_rejects_non_github_repo(tmp_path: Path) -> None:
     assert response.json()["detail"] == "Sandbox profiles require a GitHub repository"
 
 
+@pytest.mark.parametrize(
+    "docker_image",
+    [
+        "--privileged",
+        "python:3.11 --volume /:/host",
+        "",
+    ],
+)
+def test_sandbox_profile_rejects_invalid_docker_image(
+    tmp_path: Path,
+    docker_image: str,
+) -> None:
+    database_path = tmp_path / "app.db"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        init_db(session.get_bind())
+        project, repository = create_github_repo(session)
+
+    payload = profile_payload(repository.id)
+    payload["docker_image"] = docker_image
+
+    with build_client(database_path) as client:
+        response = client.post(
+            f"/projects/{project.id}/sandbox-profiles",
+            json=payload,
+        )
+
+    assert response.status_code in {400, 422}
+    if response.status_code == 400:
+        assert response.json()["detail"] == "Invalid Docker image"
+
+
 def test_sandbox_profile_rejects_cross_project_repo(tmp_path: Path) -> None:
     database_path = tmp_path / "app.db"
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
