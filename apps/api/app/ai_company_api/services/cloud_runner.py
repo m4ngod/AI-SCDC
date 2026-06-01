@@ -570,6 +570,12 @@ def _cloud_run_read(cloud_run: CloudRun) -> CloudRunRead:
         sandbox_kind=cloud_run.sandbox_kind,
         patch_artifact_id=cloud_run.patch_artifact_id,
         failure_reason=cloud_run.failure_reason,
+        cancel_requested=cloud_run.cancel_requested,
+        cancel_requested_at=cloud_run.cancel_requested_at,
+        cancelled_at=cloud_run.cancelled_at,
+        worker_id=cloud_run.worker_id,
+        claimed_at=cloud_run.claimed_at,
+        completed_at=cloud_run.completed_at,
         created_at=cloud_run.created_at,
         updated_at=cloud_run.updated_at,
     )

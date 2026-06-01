@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlalchemy import text
-from sqlmodel import Session, select
+from sqlalchemy import inspect, text
+from sqlmodel import SQLModel, Session, select
 
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
@@ -1522,6 +1522,86 @@ def test_docker_cloud_run_persisted_failed_tests_request_fix_without_rerun(
     assert "Test command failed" in test_response.json()["debug_attempt"]["root_cause"]
     assert review_response.status_code == 400
     assert review_response.json()["detail"]["current_status"] == "FIX_REQUESTED"
+
+
+def test_init_db_adds_phase_9_cloud_run_columns_and_log_table(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "phase9.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    SQLModel.metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE cloud_run RENAME TO cloud_run_old")
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE cloud_run (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                workspace_id VARCHAR NOT NULL,
+                project_id VARCHAR NOT NULL,
+                task_id VARCHAR NOT NULL,
+                repo_id VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                sandbox_kind VARCHAR NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO cloud_run (
+                id, workspace_id, project_id, task_id, repo_id, status, sandbox_kind, created_at, updated_at
+            )
+            SELECT id, workspace_id, project_id, task_id, repo_id, status, sandbox_kind, created_at, updated_at
+            FROM cloud_run_old
+            """
+        )
+        connection.exec_driver_sql("DROP TABLE cloud_run_old")
+        connection.exec_driver_sql("DROP TABLE IF EXISTS cloud_run_log_entry")
+
+    init_db(engine)
+
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("cloud_run")}
+    assert {
+        "cancel_requested",
+        "cancel_requested_at",
+        "cancelled_at",
+        "worker_id",
+        "claimed_at",
+        "completed_at",
+    }.issubset(columns)
+    assert "cloud_run_log_entry" in inspector.get_table_names()
+    log_columns = {
+        column["name"] for column in inspector.get_columns("cloud_run_log_entry")
+    }
+    assert {
+        "id",
+        "cloud_run_id",
+        "workspace_id",
+        "level",
+        "event",
+        "message",
+        "payload",
+        "created_at",
+    }.issubset(log_columns)
+    log_foreign_keys = inspector.get_foreign_keys("cloud_run_log_entry")
+    assert any(
+        foreign_key["constrained_columns"] == ["cloud_run_id"]
+        and foreign_key["referred_table"] == "cloud_run"
+        and foreign_key["referred_columns"] == ["id"]
+        for foreign_key in log_foreign_keys
+    )
+    log_index_columns = {
+        tuple(index["column_names"])
+        for index in inspector.get_indexes("cloud_run_log_entry")
+    }
+    assert ("cloud_run_id",) in log_index_columns
+    assert ("workspace_id",) in log_index_columns
+    assert ("level",) in log_index_columns
+    assert ("event",) in log_index_columns
+    assert ("created_at",) in log_index_columns
 
 
 def test_init_db_allows_cloud_test_run_without_patch_artifact(

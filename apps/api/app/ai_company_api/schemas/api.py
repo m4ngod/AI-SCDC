@@ -310,8 +310,24 @@ class CloudRunRead(BaseModel):
     sandbox_kind: str
     patch_artifact_id: str | None
     failure_reason: str | None
+    cancel_requested: bool
+    cancel_requested_at: datetime | None
+    cancelled_at: datetime | None
+    worker_id: str | None
+    claimed_at: datetime | None
+    completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class CloudRunLogEntryRead(BaseModel):
+    id: str
+    cloud_run_id: str
+    level: str
+    event: str
+    message: str
+    payload: dict[str, Any] | None
+    created_at: datetime
 
 
 class CloudRunResultRead(BaseModel):

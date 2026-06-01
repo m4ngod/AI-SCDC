@@ -17,6 +17,10 @@ def prefixed_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
 
 
+def uuid_hex() -> str:
+    return uuid4().hex
+
+
 class Project(SQLModel, table=True):
     id: str = Field(default_factory=lambda: prefixed_id("project"), primary_key=True)
     workspace_id: str = "dev_workspace"
@@ -498,8 +502,27 @@ class CloudRun(SQLModel, table=True):
     sandbox_kind: str = "fake"
     patch_artifact_id: str | None = Field(default=None, index=True)
     failure_reason: str | None = None
+    cancel_requested: bool = Field(default=False, index=True)
+    cancel_requested_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    worker_id: str | None = Field(default=None, index=True)
+    claimed_at: datetime | None = None
+    completed_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now, index=True)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class CloudRunLogEntry(SQLModel, table=True):
+    __tablename__ = "cloud_run_log_entry"
+
+    id: str = Field(default_factory=uuid_hex, primary_key=True)
+    cloud_run_id: str = Field(foreign_key="cloud_run.id", index=True)
+    workspace_id: str = Field(index=True)
+    level: str = Field(default="info", index=True)
+    event: str = Field(index=True)
+    message: str
+    payload: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
 class PatchArtifact(SQLModel, table=True):
