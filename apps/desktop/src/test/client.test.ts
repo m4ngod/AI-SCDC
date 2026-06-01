@@ -1016,6 +1016,116 @@ describe("desktop API clients", () => {
     });
   });
 
+  it("HTTP client starts no-input cloud runs with an internally selected repository only", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "repo_inactive_api",
+            name: "example/inactive",
+            local_path: "",
+            default_branch: "main",
+            status: "inactive",
+            provider: "github",
+            repo_url: "https://github.com/example/inactive",
+            github_owner: "example",
+            github_repo: "inactive",
+            github_credential_id: "github_credential_api",
+            connection_status: "connected"
+          },
+          {
+            id: "repo_selected_api",
+            name: "example/selected",
+            local_path: "",
+            default_branch: "main",
+            status: "active",
+            provider: "github",
+            repo_url: "https://github.com/example/selected",
+            github_owner: "example",
+            github_repo: "selected",
+            github_credential_id: "github_credential_api",
+            connection_status: "connected"
+          }
+        ])
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            cloud_run: {
+              id: "cloud_run_no_input_api",
+              workspace_id: "workspace_api",
+              project_id: "project_demo",
+              task_id: "task_api",
+              repo_id: "repo_selected_api",
+              status: "patch_ready",
+              head_branch: "codex/task-api",
+              sandbox_kind: "fake",
+              sandbox_profile_id: null,
+              patch_command_key: null,
+              test_command_keys: [],
+              command_results: [],
+              patch_artifact_id: "patch_cloud_no_input_api",
+              failure_reason: null,
+              created_at: "2026-05-30T02:00:00Z"
+            },
+            patch_artifact: {
+              id: "patch_cloud_no_input_api",
+              task_id: "task_api",
+              local_run_id: "cloud_run_no_input_api",
+              summary: "Prepared cloud patch.",
+              files_changed: ["README.md"],
+              tests_run: [],
+              test_result: "not_run",
+              diff_text: "diff --git a/README.md b/README.md\n+cloud"
+            }
+          },
+          { status: 201 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+    const cloud = await client.startCloudRun("task_api");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:8000/projects/project_demo/repositories"
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:8000/tasks/task_api/cloud-runs",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ repo_id: "repo_selected_api" })
+      })
+    );
+    const [, postOptions] = fetchMock.mock.calls[1];
+    expect(JSON.parse((postOptions as RequestInit).body as string)).toEqual({
+      repo_id: "repo_selected_api"
+    });
+    expect(cloud).toMatchObject({
+      cloud_run: {
+        id: "cloud_run_no_input_api",
+        repo_id: "repo_selected_api",
+        sandbox_kind: "fake",
+        sandbox_profile_id: null,
+        patch_command_key: null,
+        test_command_keys: [],
+        command_results: [],
+        patch_artifact_id: "patch_cloud_no_input_api"
+      },
+      patch_artifact: {
+        id: "patch_cloud_no_input_api",
+        task_id: "task_api",
+        diff_text: "diff --git a/README.md b/README.md\n+cloud"
+      }
+    });
+  });
+
   it("HTTP client formats FastAPI JSON detail errors", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
       jsonResponse(
