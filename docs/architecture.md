@@ -91,6 +91,10 @@ Phase 7 adds a GitHub-only pull request publishing boundary. A task can run thro
 
 The first cloud sandbox is a control-plane fake worker, not a real container service. The API stores GitHub PAT metadata through the development secret vault, registers GitHub repositories, records `CloudRun` and `PullRequestRecord` rows, and moves tasks to `PR_CREATED` after successful PR creation. Phase 7 does not merge pull requests, write to default branches, deploy code, add GitHub OAuth, or add GitLab support.
 
+## Phase 8 Boundary
+
+Phase 8 adds the first real sandbox executor by running GitHub cloud tasks inside local Docker. The executor is still local-first and synchronous, but it establishes the sandbox profile, command whitelist, redacted logs, Docker failure codes, and artifact capture contract needed for future remote cloud workers.
+
 ## Roadmap
 
 Completed:
@@ -103,9 +107,10 @@ Completed:
 6. Deterministic local test, patch review, and debug-attempt workflow with desktop controls, durable verification records, and idempotent review results.
 7. Human patch approval boundary with compact diff preview, durable approval records, `MERGE_READY` and `HUMAN_APPROVAL` transitions, and no automatic git merge.
 8. GitHub-only cloud-run and pull-request boundary with PAT metadata, fake cloud sandbox artifacts, explicit `Create PR`, durable PR records, and no automatic merge.
+9. Docker local sandbox executor with GitHub repository cloning, sandbox profiles, command whitelists, redacted logs, Docker failure codes, and patch/test artifact capture.
 
 Future:
 
-1. Real cloud sandbox workers, GitLab support, and broader pull-request lifecycle automation beyond GitHub-only PR creation.
+1. Remote cloud sandbox workers with queueing, object storage, cancellation, and live log streaming.
 2. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
 3. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.

@@ -94,7 +94,7 @@ Fields:
 - `project_id`
 - `repo_id`
 - `name`
-- `docker_image`
+- `docker_image`, defaulting to `python:3.11-bookworm` for examples and generated defaults because the Docker executor performs `git clone` inside the container
 - `patch_commands`: JSON list of whitelisted commands with key, label, command, and timeout seconds
 - `test_commands`: JSON list of whitelisted commands with key, label, command, and timeout seconds
 - `allowed_env_vars`: JSON list of environment variable names allowed to enter the container
@@ -212,7 +212,9 @@ Docker runs use these constraints:
 - The host only mounts a temporary workspace and an artifact output directory.
 - The host home, SSH configuration, credential stores, project root, and Docker socket are not mounted.
 - Only environment variables named by the sandbox profile may enter the container.
+- Sandbox environment values are written to a Docker `--env-file`; they are not injected into or used to mutate the host Docker CLI environment.
 - GitHub token material is redacted from stdout, stderr, exception messages, API responses, and task events.
+- Repository URL credentials are also redacted from command strings and logs before persistence.
 - Every Docker operation and command has a timeout.
 - Containers are removed after execution unless an explicit debug flag keeps them for local troubleshooting.
 - The executor fails closed when Docker is unavailable or the selected profile is missing/disabled.
@@ -276,6 +278,7 @@ Rules:
 - Patch command failures do not create a patch artifact.
 - Empty diffs do not create a patch artifact.
 - Test failures may still create a patch artifact and `LocalTestRun`, but reviewer approval must fail or remain blocked.
+- Docker `not_run`, passed, and failed test results bridge through the existing local test/review/debug endpoints rather than a separate cloud-only test model.
 - All failure paths emit task events with ids, status, and safe metadata only.
 - Secrets are redacted before persistence or logging.
 

@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, and Phase 7 GitHub-only cloud-run and pull-request boundary for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, and Phase 8 Docker local sandbox executor for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -433,6 +433,144 @@ PR_CREATED
 ```
 
 When the API is not started with `AI_SCDC_GITHUB_PR_ADAPTER=real`, the final `Create PR` request stays in fake adapter mode and no remote GitHub PR is created. The API returns only credential metadata.
+
+## Phase 8 Docker Local Sandbox PowerShell Smoke Test
+
+Phase 8 keeps the fake cloud runner as the default. Start the API with `AI_SCDC_CLOUD_RUNNER=docker_local` only when you want a real local Docker sandbox to clone a GitHub repository and run whitelisted profile commands. Keep the default fake PR adapter for this smoke test; set `AI_SCDC_GITHUB_PR_ADAPTER=real` only for a final, intentional real GitHub PR creation after human approval.
+
+Prerequisites:
+
+- Docker Desktop is running.
+- The target GitHub repository is accessible by the PAT used for the smoke test.
+- The sandbox profile patch command exists in the target repo or is self-contained.
+
+Start the API:
+
+```powershell
+$env:AI_SCDC_CLOUD_RUNNER = "docker_local"
+Remove-Item Env:\AI_SCDC_GITHUB_PR_ADAPTER -ErrorAction SilentlyContinue
+pnpm dev:api
+```
+
+In another PowerShell session, create the credential, GitHub repository, sandbox profile, task, and cloud run:
+
+```powershell
+$base = "http://127.0.0.1:8000"
+$secureToken = Read-Host "GitHub PAT" -AsSecureString
+$githubToken = [System.Net.NetworkCredential]::new("", $secureToken).Password
+$env:AI_SCDC_GITHUB_TOKEN = $githubToken
+
+function JsonBody($value) {
+  $value | ConvertTo-Json -Depth 12 -Compress
+}
+
+try {
+  $credential = Invoke-RestMethod `
+    -Uri "$base/github-credentials" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      display_name = "Local Docker GitHub"
+      token = $githubToken
+    })
+
+  $githubOwner = Read-Host "GitHub owner"
+  $githubRepo = Read-Host "GitHub repo"
+  $repoUrl = "https://$githubOwner`:$githubToken@github.com/$githubOwner/$githubRepo.git"
+
+  $project = Invoke-RestMethod `
+    -Uri "$base/projects" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      name = "Phase 8 Docker smoke"
+      description = "Docker local sandbox smoke test"
+    })
+
+  $repository = Invoke-RestMethod `
+    -Uri "$base/projects/$($project.id)/github-repositories" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      name = "$githubOwner/$githubRepo"
+      repo_url = $repoUrl
+      github_owner = $githubOwner
+      github_repo = $githubRepo
+      default_branch = "main"
+      github_credential_id = $credential.id
+    })
+
+  $profile = Invoke-RestMethod `
+    -Uri "$base/projects/$($project.id)/sandbox-profiles" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      repo_id = $repository.id
+      name = "Default Docker profile"
+      docker_image = "python:3.11-bookworm"
+      patch_commands = @(
+        @{
+          key = "write-note"
+          label = "Write smoke note"
+          command = 'python -c "from pathlib import Path; Path(''AI_SCDC_DOCKER_SMOKE.md'').write_text(''# AI-SCDC Docker Smoke\n\nDocker local sandbox wrote this file.\n'')"'
+          timeout_seconds = 300
+          is_default = $true
+        }
+      )
+      test_commands = @(
+        @{
+          key = "python-version"
+          label = "Python version"
+          command = "python -V"
+          timeout_seconds = 300
+          is_default = $true
+        }
+      )
+      allowed_env_vars = @("AI_SCDC_GITHUB_TOKEN")
+      network_enabled = $true
+    })
+
+  $task = Invoke-RestMethod `
+    -Uri "$base/projects/$($project.id)/tasks" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      title = "Write Docker smoke note"
+      description = "Create a deterministic Docker local sandbox patch."
+      role_required = "documentation"
+      acceptance_criteria = @("Docker local sandbox produces a patch artifact.")
+      allowed_paths = @("AI_SCDC_DOCKER_SMOKE.md")
+      required_tests = @("python -V")
+      repo_id = $repository.id
+      branch_name = $repository.default_branch
+    })
+
+  $cloudRun = Invoke-RestMethod `
+    -Uri "$base/tasks/$($task.id)/cloud-runs" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body (JsonBody @{
+      repo_id = $repository.id
+      sandbox_profile_id = $profile.id
+      patch_command_key = "write-note"
+      test_command_keys = @("python-version")
+    })
+
+  [ordered]@{
+    cloud_run_status = $cloudRun.cloud_run.status
+    sandbox_kind = $cloudRun.cloud_run.sandbox_kind
+    failure_reason = $cloudRun.cloud_run.failure_reason
+    files_changed = if ($cloudRun.patch_artifact) { $cloudRun.patch_artifact.files_changed -join ", " } else { "" }
+    test_result = if ($cloudRun.patch_artifact) { $cloudRun.patch_artifact.test_result } else { "" }
+  }
+}
+finally {
+  Remove-Variable githubToken, secureToken, repoUrl -ErrorAction SilentlyContinue
+  Remove-Item Env:\AI_SCDC_GITHUB_TOKEN -ErrorAction SilentlyContinue
+}
+```
+
+Expected successful smoke output shows `cloud_run_status` as `patch_ready`, `sandbox_kind` as `docker_local`, `files_changed` as `AI_SCDC_DOCKER_SMOKE.md`, and `test_result` as `passed`. If setup fails before an artifact is captured, inspect `failure_reason` and the redacted cloud run command results.
 
 Focused verification commands used for Phase 7 and its Phase 6/Phase 5 prerequisite workflow:
 
