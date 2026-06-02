@@ -19,6 +19,7 @@ from ai_company_api.models.entities import (
 )
 from ai_company_api.schemas.api import (
     CloudRunCreate,
+    CloudRunExecutionResultCreate,
     CloudRunLeaseRead,
     CloudRunLogEntryRead,
     CloudRunRead,
@@ -331,6 +332,82 @@ def heartbeat_cloud_run_lease(
     session.commit()
     session.refresh(cloud_run)
     return _cloud_run_lease_read(cloud_run)
+
+
+def _command_result_from_create(data) -> CommandResult:
+    return CommandResult(
+        command=data.command,
+        exit_code=data.exit_code,
+        stdout=data.stdout,
+        stderr=data.stderr,
+        duration_ms=data.duration_ms,
+        timed_out=data.timed_out,
+    )
+
+
+def _sandbox_execution_result_from_create(
+    data: CloudRunExecutionResultCreate,
+) -> SandboxExecutionResult:
+    return SandboxExecutionResult(
+        status=data.status,
+        runner_kind=data.runner_kind,
+        base_sha=data.base_sha,
+        head_sha=data.head_sha,
+        worktree_ref=data.worktree_ref,
+        summary=data.summary,
+        files_changed=data.files_changed,
+        tests_run=data.tests_run,
+        test_result=data.test_result,
+        risks=data.risks,
+        diff_text=data.diff_text,
+        command_results=[
+            _command_result_from_create(result)
+            for result in data.command_results
+        ],
+        test_command_results=[
+            _command_result_from_create(result)
+            for result in data.test_command_results
+        ],
+        failure_reason=data.failure_reason,
+    )
+
+
+def complete_cloud_run_lease(
+    session: Session,
+    *,
+    lease_id: str,
+    worker_id: str,
+    result: CloudRunExecutionResultCreate,
+) -> CloudRunResultRead:
+    cloud_run = _get_current_cloud_run_lease_or_409(
+        session,
+        lease_id=lease_id,
+        worker_id=worker_id,
+    )
+    execution_result = _sandbox_execution_result_from_create(result)
+    repository = get_repository(session, cloud_run.repo_id)
+    secrets = _redaction_secrets({}, repository.repo_url, None)
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="worker_completed",
+        message="Cloud run worker completion received.",
+        payload={
+            "worker_id": worker_id,
+            "lease_id_suffix": lease_id[-6:],
+            "status": execution_result.status,
+            "runner_kind": execution_result.runner_kind,
+        },
+    )
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    return _finalize_claimed_cloud_run_result(
+        session,
+        cloud_run=cloud_run,
+        execution_result=execution_result,
+        secrets=secrets,
+    )
 
 
 def process_cloud_run(
@@ -752,9 +829,24 @@ def _execute_claimed_cloud_run(
     except Exception:
         execution_result = _executor_exception_result(cloud_run.sandbox_kind)
 
-    cloud_run_id = cloud_run.id
-    task_id = task.id
     secrets = _redaction_secrets(sandbox_env, repository.repo_url, github_token)
+    return _finalize_claimed_cloud_run_result(
+        session,
+        cloud_run=cloud_run,
+        execution_result=execution_result,
+        secrets=secrets,
+    )
+
+
+def _finalize_claimed_cloud_run_result(
+    session: Session,
+    *,
+    cloud_run: CloudRun,
+    execution_result: SandboxExecutionResult,
+    secrets: list[str],
+) -> CloudRunResultRead:
+    cloud_run_id = cloud_run.id
+    task_id = cloud_run.task_id
     cloud_run, task, repository, local_run = _reload_claimed_cloud_run(
         session,
         cloud_run_id=cloud_run_id,

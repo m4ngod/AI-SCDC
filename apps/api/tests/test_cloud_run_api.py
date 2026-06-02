@@ -668,6 +668,110 @@ def test_cloud_run_lease_heartbeat_rejects_stale_or_wrong_worker(
     assert stale_lease.json()["detail"] == "Cloud run lease is not current"
 
 
+def remote_stub_completion_payload(cloud_run_id: str) -> dict:
+    return {
+        "worker_id": "remote-worker-1",
+        "result": {
+            "status": "patch_ready",
+            "runner_kind": "remote_stub",
+            "base_sha": "base123",
+            "head_sha": "head456",
+            "worktree_ref": f"remote-stub://{cloud_run_id}",
+            "summary": "Remote stub produced a patch artifact.",
+            "files_changed": ["AI_SCDC_REMOTE_STUB.md"],
+            "tests_run": [],
+            "test_result": "not_run",
+            "risks": [],
+            "diff_text": "diff --git a/AI_SCDC_REMOTE_STUB.md b/AI_SCDC_REMOTE_STUB.md\n+remote\n",
+            "command_results": [],
+            "test_command_results": [],
+            "failure_reason": None,
+        },
+    }
+
+
+def test_complete_current_cloud_run_lease_creates_patch_artifact(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    ).json()
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=remote_stub_completion_payload(queued["id"]),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cloud_run"]["status"] == "patch_ready"
+    assert body["cloud_run"]["lease_id"] == lease["lease_id"]
+    assert body["cloud_run"]["remote_worker_kind"] == "remote_stub"
+    assert body["patch_artifact"]["files_changed"] == ["AI_SCDC_REMOTE_STUB.md"]
+    assert body["patch_artifact"]["test_result"] == "not_run"
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        task_after_completion = session.get(Task, task_id)
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+        log_events = [
+            entry.event
+            for entry in session.exec(
+                select(CloudRunLogEntry)
+                .where(CloudRunLogEntry.cloud_run_id == queued["id"])
+                .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+            ).all()
+        ]
+    assert task_after_completion is not None
+    assert local_run is not None
+    assert task_after_completion.status == TaskStatus.PATCH_READY
+    assert local_run.status == "patch_ready"
+    assert "worker_completed" in log_events
+    assert "patch_ready" in log_events
+
+
+def test_complete_stale_cloud_run_lease_is_rejected_without_artifact(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    response = client.post(
+        "/cloud-run-worker/leases/not-current/complete",
+        json=remote_stub_completion_payload(queued["id"]),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Cloud run lease is not current"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        artifacts = session.exec(select(PatchArtifact)).all()
+    assert artifacts == []
+
+
 def test_process_specific_docker_cloud_run_preserves_artifact_semantics(
     tmp_path: Path,
     monkeypatch,

@@ -354,6 +354,37 @@ class CloudRunLeaseHeartbeat(BaseModel):
     lease_seconds: int = Field(default=60, ge=1, le=3600)
 
 
+class CloudRunCommandResultCreate(BaseModel):
+    command: str
+    exit_code: int | None
+    stdout: str = ""
+    stderr: str = ""
+    duration_ms: int = 0
+    timed_out: bool = False
+
+
+class CloudRunExecutionResultCreate(BaseModel):
+    status: str
+    runner_kind: str
+    base_sha: str | None = None
+    head_sha: str | None = None
+    worktree_ref: str | None = None
+    summary: str = ""
+    files_changed: list[str] = Field(default_factory=list)
+    tests_run: list[str] = Field(default_factory=list)
+    test_result: str = "not_run"
+    risks: list[str] = Field(default_factory=list)
+    diff_text: str = ""
+    command_results: list[CloudRunCommandResultCreate] = Field(default_factory=list)
+    test_command_results: list[CloudRunCommandResultCreate] = Field(default_factory=list)
+    failure_reason: str | None = None
+
+
+class CloudRunLeaseComplete(BaseModel):
+    worker_id: str = Field(min_length=1)
+    result: CloudRunExecutionResultCreate
+
+
 class CloudRunLeaseRead(BaseModel):
     cloud_run: CloudRunRead
     lease_id: str

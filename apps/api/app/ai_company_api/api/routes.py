@@ -7,6 +7,7 @@ from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     AgentRole,
     CloudRunCreate,
+    CloudRunLeaseComplete,
     CloudRunLeaseCreate,
     CloudRunLeaseHeartbeat,
     CloudRunLeaseRead,
@@ -55,6 +56,7 @@ from ai_company_api.schemas.api import (
 from ai_company_api.services.cloud_runner import (
     cancel_cloud_run,
     claim_next_cloud_run_lease,
+    complete_cloud_run_lease,
     get_cloud_run_read,
     heartbeat_cloud_run_lease,
     list_cloud_run_logs,
@@ -527,6 +529,23 @@ def post_cloud_run_worker_lease_heartbeat(
         lease_id=lease_id,
         worker_id=data.worker_id,
         lease_seconds=data.lease_seconds,
+    )
+
+
+@router.post(
+    "/cloud-run-worker/leases/{lease_id}/complete",
+    response_model=CloudRunResultRead,
+)
+def post_cloud_run_worker_lease_complete(
+    lease_id: str,
+    data: CloudRunLeaseComplete,
+    session: SessionDep,
+) -> CloudRunResultRead:
+    return complete_cloud_run_lease(
+        session,
+        lease_id=lease_id,
+        worker_id=data.worker_id,
+        result=data.result,
     )
 
 
