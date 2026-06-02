@@ -27,6 +27,10 @@ from ai_company_api.services.cloud_sandbox_executor import (
     SandboxExecutionRequest,
     SandboxExecutionResult,
 )
+from ai_company_api.services.object_storage import (
+    ObjectStorageWrite,
+    get_object_storage_provider,
+)
 from ai_company_api.services.secret_vault import DevSecretVault
 from ai_company_api.services.task_state import TaskStatus
 
@@ -947,6 +951,128 @@ def test_complete_current_cloud_run_lease_creates_patch_artifact(
     assert local_run.status == "patch_ready"
     assert "worker_completed" in log_events
     assert "patch_ready" in log_events
+
+
+def test_complete_cloud_run_lease_uses_diff_artifact_ref(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "storage_provider": "local_inline"},
+    ).json()["cloud_run"]
+    diff_text = "diff --git a/app.py b/app.py\n+print('artifact')\n"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        ref = get_object_storage_provider("local_inline").put_text(
+            session,
+            ObjectStorageWrite(
+                workspace_id=queued["workspace_id"],
+                cloud_run_id=queued["id"],
+                kind="diff",
+                content=diff_text,
+                content_type="text/x-diff",
+            ),
+        )
+        session.commit()
+
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    ).json()
+    payload = remote_stub_completion_payload(queued["id"])
+    payload["result"]["diff_text"] = "diff --git a/ignored.py b/ignored.py\n+ignored\n"
+    payload["result"]["artifact_refs"] = [
+        {
+            "kind": ref.kind,
+            "uri": ref.uri,
+            "sha256": ref.sha256,
+            "size_bytes": ref.size_bytes,
+            "content_type": ref.content_type,
+        }
+    ]
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cloud_run"]["status"] == "patch_ready"
+    assert body["patch_artifact"]["diff_text"] == diff_text
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        log_messages = [
+            entry.message
+            for entry in session.exec(
+                select(CloudRunLogEntry)
+                .where(CloudRunLogEntry.cloud_run_id == queued["id"])
+                .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+            ).all()
+        ]
+    assert any("artifact_ref" in message for message in log_messages)
+
+
+def test_complete_cloud_run_lease_rejects_invalid_artifact_ref_without_artifact(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "storage_provider": "local_inline"},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    ).json()
+    payload = remote_stub_completion_payload(queued["id"])
+    payload["result"]["diff_text"] = ""
+    payload["result"]["artifact_refs"] = [
+        {
+            "kind": "diff",
+            "uri": "local-inline://cloud-run-objects/00000000000000000000000000000000",
+            "sha256": "0" * 64,
+            "size_bytes": 10,
+            "content_type": "text/x-diff",
+        }
+    ]
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=payload,
+    )
+
+    assert response.status_code == 400
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        artifacts = session.exec(select(PatchArtifact)).all()
+        cloud_run = session.get(CloudRun, queued["id"])
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+    assert artifacts == []
+    assert cloud_run is not None
+    assert cloud_run.patch_artifact_id is None
+    assert local_run is not None
+    assert local_run.patch_artifact_id is None
 
 
 def test_complete_lease_after_cancel_request_finishes_cancelled_without_artifact(

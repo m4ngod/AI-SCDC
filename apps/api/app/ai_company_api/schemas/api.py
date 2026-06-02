@@ -398,6 +398,7 @@ class CloudRunExecutionResultCreate(BaseModel):
     test_result: str = "not_run"
     risks: list[str] = Field(default_factory=list)
     diff_text: str = ""
+    artifact_refs: list[CloudRunArtifactRefCreate] = Field(default_factory=list)
     command_results: list[CloudRunCommandResultCreate] = Field(default_factory=list)
     test_command_results: list[CloudRunCommandResultCreate] = Field(default_factory=list)
     failure_reason: str | None = None

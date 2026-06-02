@@ -19,6 +19,7 @@ from ai_company_api.models.entities import (
 )
 from ai_company_api.schemas.api import (
     CloudRunCreate,
+    CloudRunArtifactRefCreate,
     CloudRunExecutionResultCreate,
     CloudRunLeaseRead,
     CloudRunLogEntryRead,
@@ -37,6 +38,11 @@ from ai_company_api.services.cloud_sandbox_executor import (
 from ai_company_api.services.github_repository import (
     get_active_github_credential,
     validate_github_repository_url,
+)
+from ai_company_api.services.object_storage import (
+    ObjectStorageReadError,
+    ObjectStorageRef,
+    get_object_storage_provider,
 )
 from ai_company_api.services.repository import create_task_event, get_repository, get_task
 from ai_company_api.services.sandbox_profiles import validate_sandbox_profile_for_repo
@@ -451,6 +457,72 @@ def _sandbox_execution_result_from_create(
     )
 
 
+def _object_storage_provider_name_from_uri(uri: str) -> str:
+    if uri.startswith("local-inline://"):
+        return "local_inline"
+    scheme = uri.split("://", 1)[0] if "://" in uri else ""
+    raise HTTPException(
+        status_code=400,
+        detail=f"Unsupported object storage artifact URI scheme: {scheme or 'missing'}",
+    )
+
+
+def _object_storage_ref_from_create(ref: CloudRunArtifactRefCreate) -> ObjectStorageRef:
+    return ObjectStorageRef(
+        kind=ref.kind,
+        uri=ref.uri,
+        sha256=ref.sha256,
+        size_bytes=ref.size_bytes,
+        content_type=ref.content_type,
+    )
+
+
+def _resolve_cloud_run_completion_artifacts(
+    session: Session,
+    *,
+    cloud_run: CloudRun,
+    result: CloudRunExecutionResultCreate,
+) -> CloudRunExecutionResultCreate:
+    if not result.artifact_refs:
+        return result
+
+    diff_text: str | None = None
+    for artifact_ref in result.artifact_refs:
+        provider = get_object_storage_provider(
+            _object_storage_provider_name_from_uri(artifact_ref.uri)
+        )
+        try:
+            content = provider.read_text(
+                session,
+                _object_storage_ref_from_create(artifact_ref),
+            )
+        except ObjectStorageReadError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if artifact_ref.kind == "diff" and diff_text is None:
+            diff_text = content
+
+    if diff_text is None:
+        return result
+
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="artifact_ref_resolved",
+        message="Cloud run completion diff resolved from artifact_ref.",
+        payload={"kind": "diff"},
+    )
+    if result.diff_text:
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="artifact_ref_inline_diff_ignored",
+            message="Inline diff_text ignored because diff artifact_ref was provided.",
+            payload={"kind": "diff"},
+        )
+    return result.model_copy(update={"diff_text": diff_text})
+
+
 def complete_cloud_run_lease(
     session: Session,
     *,
@@ -462,6 +534,11 @@ def complete_cloud_run_lease(
         session,
         lease_id=lease_id,
         worker_id=worker_id,
+    )
+    result = _resolve_cloud_run_completion_artifacts(
+        session,
+        cloud_run=cloud_run,
+        result=result,
     )
     execution_result = _sandbox_execution_result_from_create(result)
     repository = get_repository(session, cloud_run.repo_id)
