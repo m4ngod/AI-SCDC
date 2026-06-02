@@ -1,10 +1,11 @@
 # AI-SCDC Project Status
 
-Last verified: 2026-06-02
+Last verified: 2026-06-03
 
 ## Current Phase
 
-The project is through Phase 10A: remote worker control-plane contract.
+The project is through Phase 10B: provider-neutral remote execution-plane
+contract.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -40,6 +41,11 @@ tests, README smoke instructions, and git history.
 11. Phase 10A remote worker control plane: local queue adapter, renewable
     worker leases, heartbeats, stale completion rejection, expired lease
     requeue, and remote stub completion contract.
+12. Phase 10B provider-neutral remote execution plane: queue provider
+    selection, `local_db` dispatch, `external_stub` queue metadata,
+    `local_inline` object storage, remote completion artifact refs,
+    `remote_stub` runtime submission, external metadata redaction, and payload
+    size guards.
 
 ## Verification
 
@@ -54,8 +60,10 @@ git diff --check
 
 Results:
 
-- `pytest apps/api/tests`: passed, 295 tests, 1 existing Starlette/httpx warning.
-- Desktop client/App tests: passed, 66 tests.
+- `pytest apps/api/tests`: passed, 314 tests, 1 existing Starlette/httpx warning.
+- `pytest apps/api/tests/test_cloud_run_api.py`: passed, 81 tests, 1 existing Starlette/httpx warning.
+- `pytest apps/api/tests/test_cloud_object_storage.py`: passed, 3 tests.
+- Desktop client/App tests: passed, 67 tests.
 - Root `pnpm typecheck`: passed.
 - `git diff --check`: passed.
 
@@ -91,11 +99,11 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Known Limits
 
-- The Phase 10A worker lease contract is exposed through API endpoints; there
-  is no desktop-managed daemon loop or external queue runtime yet.
-- Docker execution is still local-first; Phase 10A adds a `remote_stub`
-  contract but does not add remote cloud runtime, object storage, or live log
-  streaming.
+- The Phase 10B provider contracts are implemented with deterministic local
+  providers only. There is no real external queue, remote VM/container runtime,
+  cloud object storage bucket, or live log streaming provider yet.
+- Docker execution is still local-first; `remote_stub`, `external_stub`, and
+  `local_inline` are development adapters for the provider-neutral contract.
 - Docker Hub image pulls failed in the local environment with an EOF response
   from `registry-1.docker.io`, so the smoke used an already cached image.
 - Real GitHub PR publishing still requires starting the API with
@@ -108,15 +116,20 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Recommended Next Phase
 
-Phase 10B should be production remote cloud sandbox workers:
+Phase 10C should attach concrete production providers to the Phase 10B
+contracts:
 
-1. Replace the local queue provider with a real external queue runtime.
-2. Add remote cloud VM/container workers.
-3. Add object storage contracts for large logs, diffs, and artifacts.
-4. Add live log streaming on top of the Phase 9 polling/log contract.
-5. Keep fake, `docker_local`, and `remote_stub` executors as development
-   adapters while remote workers become the production execution path.
+1. Implement a real external queue provider behind the queue contract.
+2. Implement a real remote VM/container runtime provider behind the runtime
+   contract.
+3. Implement real object storage for large logs, diffs, manifests, and command
+   results.
+4. Add live log streaming on top of the existing provider-neutral log URI and
+   Phase 9 polling/log contract.
+5. Keep fake, `docker_local`, `remote_stub`, `external_stub`, and
+   `local_inline` as deterministic development adapters.
 
-The production remote-worker step should come before model-backed
+The concrete production-provider step should come before model-backed
 reviewer/debugger agents or commercial beta work, because the execution plane
-still needs a production queue, storage, and streaming contract.
+now has provider-neutral contracts but still lacks real production provider
+implementations.

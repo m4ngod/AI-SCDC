@@ -116,6 +116,33 @@ Phase 10A keeps the Phase 9 fake and `docker_local` development adapters and
 does not add a production queue dependency, cloud runtime, object storage,
 credential broker, automatic PR creation, or automatic merge.
 
+## Phase 10B Boundary
+
+Phase 10B adds provider-neutral contracts for the remote execution plane without
+integrating a real cloud vendor. Cloud runs now record queue, storage, runtime,
+artifact manifest, log stream, external status, and external error metadata.
+Standard cloud-run read responses expose only non-sensitive provider metadata
+and never expose queue receipts.
+
+The queue provider boundary includes `local_db`, which preserves the Phase 10A
+lease, heartbeat, completion, and expired-lease behavior, and `external_stub`,
+which records deterministic message IDs, receipts, and external statuses for
+claim, requeue, and completion flows. The storage provider boundary includes
+`local_inline`, which stores text artifacts in the local database behind
+`local-inline://` URIs and validates kind, SHA-256, and byte size before reads.
+Remote completion payloads can reference stored diff artifacts through
+`artifact_refs`; invalid references are rejected before patch artifact creation.
+
+The runtime provider boundary includes `remote_stub`, which records a
+deterministic runtime job ID and writes local-inline manifest/log references at
+cloud-run creation time. Phase 10B also redacts external URI query strings,
+external token-like errors, and enforces remote completion payload size limits.
+
+Phase 10B does not add real cloud SDKs, cloud credentials, external queues,
+remote VMs or containers, live log streaming, automatic PR creation, or
+automatic merge. Concrete production providers can implement these contracts in
+a later phase.
+
 ## Roadmap
 
 Completed:
@@ -131,9 +158,10 @@ Completed:
 9. Docker local sandbox executor with GitHub repository cloning, sandbox profiles, command whitelists, redacted logs, Docker failure codes, and patch/test artifact capture.
 10. Local cloud-run queue worker boundary with queued enqueue, explicit worker processing, cancellation, ordered redacted logs, and desktop Process/Cancel controls.
 11. Remote worker control-plane contract with local queue adapter, renewable leases, heartbeats, stale completion rejection, expired lease requeue, and remote stub completion.
+12. Provider-neutral remote execution-plane contract with queue, local-inline object storage, remote runtime stub, artifact refs, external metadata redaction, and payload size guards.
 
 Future:
 
-1. Production remote cloud sandbox workers with external queue runtime, object storage, and live log streaming.
+1. Concrete production cloud providers for the Phase 10B queue, runtime, object storage, and live log streaming contracts.
 2. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
 3. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.
