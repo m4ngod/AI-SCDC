@@ -633,6 +633,42 @@ def test_cloud_run_lease_heartbeat_extends_current_lease(tmp_path: Path) -> None
     assert heartbeat["heartbeat_at"] >= lease["heartbeat_at"]
 
 
+def test_heartbeat_reports_running_cancel_request(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    ).json()
+    cancel = client.post(f"/cloud-runs/{queued['id']}/cancel")
+
+    heartbeat = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/heartbeat",
+        json={"worker_id": "remote-worker-1", "lease_seconds": 60},
+    )
+
+    assert cancel.status_code == 200
+    assert cancel.json()["cancel_requested"] is True
+    assert heartbeat.status_code == 200
+    assert heartbeat.json()["cancel_requested"] is True
+    assert heartbeat.json()["cloud_run"]["cancel_requested"] is True
+
+
 def test_cloud_run_lease_heartbeat_rejects_stale_or_wrong_worker(
     tmp_path: Path,
 ) -> None:
@@ -852,6 +888,50 @@ def test_complete_current_cloud_run_lease_creates_patch_artifact(
     assert local_run.status == "patch_ready"
     assert "worker_completed" in log_events
     assert "patch_ready" in log_events
+
+
+def test_complete_lease_after_cancel_request_finishes_cancelled_without_artifact(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    ).json()
+    client.post(f"/cloud-runs/{queued['id']}/cancel")
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=remote_stub_completion_payload(queued["id"]),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cloud_run"]["status"] == "cancelled"
+    assert body["cloud_run"]["cancel_requested"] is True
+    assert body["cloud_run"]["cancelled_at"] is not None
+    assert body["patch_artifact"] is None
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        artifacts = session.exec(select(PatchArtifact)).all()
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+    assert artifacts == []
+    assert local_run is not None
+    assert local_run.status == "cancelled"
 
 
 def test_complete_stale_cloud_run_lease_is_rejected_without_artifact(
