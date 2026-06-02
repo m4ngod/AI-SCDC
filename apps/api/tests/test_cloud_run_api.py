@@ -295,7 +295,6 @@ def test_start_cloud_run_accepts_phase_10b_provider_metadata(
         json={
             "repo_id": repo_id,
             "queue_provider": "local_db",
-            "runtime_provider": "remote_stub",
             "storage_provider": "local_inline",
         },
     )
@@ -304,7 +303,7 @@ def test_start_cloud_run_accepts_phase_10b_provider_metadata(
     payload = response.json()
     cloud_run = payload["cloud_run"]
     assert cloud_run["queue_provider"] == "local_db"
-    assert cloud_run["runtime_provider"] == "remote_stub"
+    assert cloud_run["runtime_provider"] is None
     assert cloud_run["storage_provider"] == "local_inline"
     assert cloud_run["queue_message_id"] is None
     assert cloud_run["runtime_job_id"] is None
@@ -319,7 +318,7 @@ def test_start_cloud_run_accepts_phase_10b_provider_metadata(
 
     assert persisted_cloud_run is not None
     assert persisted_cloud_run.queue_provider == "local_db"
-    assert persisted_cloud_run.runtime_provider == "remote_stub"
+    assert persisted_cloud_run.runtime_provider is None
     assert persisted_cloud_run.storage_provider == "local_inline"
     assert persisted_cloud_run.queue_receipt is None
 
@@ -823,6 +822,37 @@ def test_external_stub_completion_clears_receipt_and_marks_completed(
         cloud_run = session.get(CloudRun, run["id"])
     assert cloud_run is not None
     assert cloud_run.queue_receipt is None
+
+
+def test_remote_stub_runtime_submission_records_job_metadata(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "queue_provider": "external_stub",
+            "runtime_provider": "remote_stub",
+            "storage_provider": "local_inline",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()["cloud_run"]
+    assert payload["runtime_provider"] == "remote_stub"
+    assert payload["runtime_job_id"].startswith("remote-stub-job-")
+    assert payload["external_status"] == "submitted"
+    assert payload["log_stream_uri"].startswith("local-inline://cloud-run-objects/")
+    assert payload["artifact_manifest_uri"].startswith(
+        "local-inline://cloud-run-objects/"
+    )
 
 
 def test_claim_next_cloud_run_lease_retries_after_claim_race(
