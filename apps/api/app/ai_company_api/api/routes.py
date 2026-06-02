@@ -8,6 +8,7 @@ from ai_company_api.schemas.api import (
     AgentRole,
     CloudRunCreate,
     CloudRunLeaseCreate,
+    CloudRunLeaseHeartbeat,
     CloudRunLeaseRead,
     CloudRunLogEntryRead,
     CloudRunRead,
@@ -55,6 +56,7 @@ from ai_company_api.services.cloud_runner import (
     cancel_cloud_run,
     claim_next_cloud_run_lease,
     get_cloud_run_read,
+    heartbeat_cloud_run_lease,
     list_cloud_run_logs,
     list_cloud_runs,
     process_cloud_run,
@@ -509,6 +511,23 @@ def post_cloud_run_worker_lease(
     if lease is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     return lease
+
+
+@router.post(
+    "/cloud-run-worker/leases/{lease_id}/heartbeat",
+    response_model=CloudRunLeaseRead,
+)
+def post_cloud_run_worker_lease_heartbeat(
+    lease_id: str,
+    data: CloudRunLeaseHeartbeat,
+    session: SessionDep,
+) -> CloudRunLeaseRead:
+    return heartbeat_cloud_run_lease(
+        session,
+        lease_id=lease_id,
+        worker_id=data.worker_id,
+        lease_seconds=data.lease_seconds,
+    )
 
 
 @router.post(

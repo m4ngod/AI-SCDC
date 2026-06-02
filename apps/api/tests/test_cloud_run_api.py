@@ -601,6 +601,73 @@ def test_claim_next_cloud_run_lease_skips_cancelled_and_exhausted_runs(
     assert response.status_code == 204
 
 
+def test_cloud_run_lease_heartbeat_extends_current_lease(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    client.post(f"/tasks/{task_id}/cloud-runs", json={"repo_id": repo_id})
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 30,
+        },
+    ).json()
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/heartbeat",
+        json={"worker_id": "remote-worker-1", "lease_seconds": 120},
+    )
+
+    assert response.status_code == 200
+    heartbeat = response.json()
+    assert heartbeat["lease_id"] == lease["lease_id"]
+    assert heartbeat["cloud_run"]["status"] == "running"
+    assert heartbeat["cloud_run"]["worker_id"] == "remote-worker-1"
+    assert heartbeat["lease_expires_at"] > lease["lease_expires_at"]
+    assert heartbeat["heartbeat_at"] >= lease["heartbeat_at"]
+
+
+def test_cloud_run_lease_heartbeat_rejects_stale_or_wrong_worker(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    client.post(f"/tasks/{task_id}/cloud-runs", json={"repo_id": repo_id})
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 30,
+        },
+    ).json()
+
+    wrong_worker = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/heartbeat",
+        json={"worker_id": "remote-worker-2", "lease_seconds": 120},
+    )
+    stale_lease = client.post(
+        "/cloud-run-worker/leases/not-current/heartbeat",
+        json={"worker_id": "remote-worker-1", "lease_seconds": 120},
+    )
+
+    assert wrong_worker.status_code == 409
+    assert wrong_worker.json()["detail"] == "Cloud run lease is not current"
+    assert stale_lease.status_code == 409
+    assert stale_lease.json()["detail"] == "Cloud run lease is not current"
+
+
 def test_process_specific_docker_cloud_run_preserves_artifact_semantics(
     tmp_path: Path,
     monkeypatch,

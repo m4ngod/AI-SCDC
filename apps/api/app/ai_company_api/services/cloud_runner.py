@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 from typing import Any
 
@@ -289,6 +289,48 @@ def claim_next_cloud_run_lease(
         return _cloud_run_lease_read(cloud_run)
 
     return None
+
+
+def heartbeat_cloud_run_lease(
+    session: Session,
+    *,
+    lease_id: str,
+    worker_id: str,
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+) -> CloudRunLeaseRead:
+    cloud_run = _get_current_cloud_run_lease_or_409(
+        session,
+        lease_id=lease_id,
+        worker_id=worker_id,
+    )
+    now = utc_now()
+    lease_expires_at = cloud_run.lease_expires_at
+    if lease_expires_at is not None and lease_expires_at.tzinfo is None:
+        lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+    if lease_expires_at is None or lease_expires_at < now:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cloud run lease is not current",
+        )
+    cloud_run.heartbeat_at = now
+    cloud_run.lease_expires_at = now + timedelta(seconds=lease_seconds)
+    cloud_run.updated_at = now
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="lease_heartbeat",
+        message="Cloud run lease heartbeat accepted.",
+        payload={
+            "worker_id": worker_id,
+            "lease_id_suffix": lease_id[-6:],
+            "lease_seconds": lease_seconds,
+            "cancel_requested": cloud_run.cancel_requested,
+        },
+    )
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    return _cloud_run_lease_read(cloud_run)
 
 
 def process_cloud_run(
@@ -1025,6 +1067,28 @@ def _get_cloud_run_or_404(session: Session, cloud_run_id: str) -> CloudRun:
     cloud_run = session.get(CloudRun, cloud_run_id)
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
+    return cloud_run
+
+
+def _get_current_cloud_run_lease_or_409(
+    session: Session,
+    *,
+    lease_id: str,
+    worker_id: str,
+) -> CloudRun:
+    cloud_run = session.exec(
+        select(CloudRun).where(
+            CloudRun.lease_id == lease_id,
+            CloudRun.worker_id == worker_id,
+            CloudRun.status == "running",
+            CloudRun.completed_at.is_(None),
+        )
+    ).first()
+    if cloud_run is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cloud run lease is not current",
+        )
     return cloud_run
 
 
