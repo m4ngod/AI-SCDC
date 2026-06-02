@@ -21,6 +21,7 @@ def build_engine(database_url: str):
 def init_db(engine) -> None:
     _upgrade_sqlite_cloud_run_phase_9_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10a_columns(engine)
+    _upgrade_sqlite_cloud_run_phase_10b_columns(engine)
     SQLModel.metadata.create_all(engine)
     _upgrade_sqlite_repository_phase_7_columns(engine)
     _upgrade_sqlite_cloud_run_phase_8_columns(engine)
@@ -204,6 +205,57 @@ def _upgrade_sqlite_cloud_run_phase_10a_columns(engine) -> None:
             "remote_worker_kind",
             "lease_id",
             "lease_expires_at",
+        ):
+            connection.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_cloud_run_{column_name} "
+                    f"ON cloud_run ({column_name})"
+                )
+            )
+
+
+def _upgrade_sqlite_cloud_run_phase_10b_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    cloud_run_columns = {
+        "queue_message_id": "VARCHAR",
+        "queue_receipt": "VARCHAR",
+        "runtime_provider": "VARCHAR",
+        "runtime_job_id": "VARCHAR",
+        "storage_provider": "VARCHAR",
+        "artifact_manifest_uri": "VARCHAR",
+        "log_stream_uri": "VARCHAR",
+        "external_status": "VARCHAR",
+        "external_error": "VARCHAR",
+    }
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "cloud_run" not in existing_tables:
+            return
+
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(text("PRAGMA table_info(cloud_run)")).mappings()
+        }
+        for column_name, column_type in cloud_run_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    text(f"ALTER TABLE cloud_run ADD COLUMN {column_name} {column_type}")
+                )
+
+        for column_name in (
+            "queue_message_id",
+            "runtime_provider",
+            "runtime_job_id",
+            "storage_provider",
+            "external_status",
         ):
             connection.execute(
                 text(

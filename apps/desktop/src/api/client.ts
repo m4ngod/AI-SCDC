@@ -99,6 +99,9 @@ export type CloudRunInput = {
   sandbox_profile_id?: string;
   patch_command_key?: string;
   test_command_keys?: string[];
+  queue_provider?: string;
+  runtime_provider?: string | null;
+  storage_provider?: string | null;
 };
 
 export type LocalTaskRunCard = {
@@ -222,6 +225,14 @@ export type CloudRunCard = {
   attempt_count: number;
   max_attempts: number;
   last_queue_error: string | null;
+  queue_message_id?: string | null;
+  runtime_provider?: string | null;
+  runtime_job_id?: string | null;
+  storage_provider?: string | null;
+  artifact_manifest_uri?: string | null;
+  log_stream_uri?: string | null;
+  external_status?: string | null;
+  external_error?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -526,7 +537,7 @@ function fakeCloudRunFromInput(taskId: string, input: CloudRunInput = {}): Cloud
     worker_id: null,
     claimed_at: null,
     completed_at: null,
-    queue_provider: "local_db",
+    queue_provider: input.queue_provider ?? "local_db",
     remote_worker_kind: null,
     lease_id: null,
     lease_expires_at: null,
@@ -534,6 +545,14 @@ function fakeCloudRunFromInput(taskId: string, input: CloudRunInput = {}): Cloud
     attempt_count: 0,
     max_attempts: 3,
     last_queue_error: null,
+    queue_message_id: null,
+    runtime_provider: input.runtime_provider ?? null,
+    runtime_job_id: null,
+    storage_provider: input.storage_provider ?? null,
+    artifact_manifest_uri: null,
+    log_stream_uri: null,
+    external_status: null,
+    external_error: null,
     created_at: "2026-05-29T00:00:00Z",
     updated_at: "2026-05-29T00:00:00Z"
   };
@@ -1255,6 +1274,14 @@ function mapCloudRunCard(cloudRun: ApiCloudRun): CloudRunCard {
     attempt_count: cloudRun.attempt_count,
     max_attempts: cloudRun.max_attempts,
     last_queue_error: cloudRun.last_queue_error,
+    queue_message_id: cloudRun.queue_message_id,
+    runtime_provider: cloudRun.runtime_provider,
+    runtime_job_id: cloudRun.runtime_job_id,
+    storage_provider: cloudRun.storage_provider,
+    artifact_manifest_uri: cloudRun.artifact_manifest_uri,
+    log_stream_uri: cloudRun.log_stream_uri,
+    external_status: cloudRun.external_status,
+    external_error: cloudRun.external_error,
     created_at: cloudRun.created_at,
     updated_at: cloudRun.updated_at
   };

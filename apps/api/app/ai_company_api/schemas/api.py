@@ -224,6 +224,9 @@ class CloudRunCreate(BaseModel):
     sandbox_profile_id: str | None = Field(default=None, min_length=1)
     patch_command_key: str | None = Field(default=None, min_length=1)
     test_command_keys: list[str] = Field(default_factory=list)
+    queue_provider: str = Field(default="local_db", min_length=1)
+    runtime_provider: str | None = Field(default=None, min_length=1)
+    storage_provider: str | None = Field(default=None, min_length=1)
 
 
 class TaskRead(BaseModel):
@@ -324,6 +327,14 @@ class CloudRunRead(BaseModel):
     attempt_count: int
     max_attempts: int
     last_queue_error: str | None
+    queue_message_id: str | None
+    runtime_provider: str | None
+    runtime_job_id: str | None
+    storage_provider: str | None
+    artifact_manifest_uri: str | None
+    log_stream_uri: str | None
+    external_status: str | None
+    external_error: str | None
     created_at: datetime
     updated_at: datetime
 

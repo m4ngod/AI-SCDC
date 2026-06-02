@@ -170,6 +170,9 @@ def enqueue_cloud_run(
         sandbox_profile_id=sandbox_profile_id,
         patch_command_key=patch_command_key,
         test_command_keys=test_command_keys,
+        queue_provider=data.queue_provider,
+        runtime_provider=data.runtime_provider,
+        storage_provider=data.storage_provider,
     )
     session.add(cloud_run)
     session.flush()
@@ -201,6 +204,9 @@ def enqueue_cloud_run(
             "sandbox_profile_id": sandbox_profile_id,
             "patch_command_key": patch_command_key,
             "test_command_keys": test_command_keys,
+            "queue_provider": data.queue_provider,
+            "runtime_provider": data.runtime_provider,
+            "storage_provider": data.storage_provider,
         },
     )
     session.add(local_run)
@@ -1536,6 +1542,14 @@ def _cloud_run_read(cloud_run: CloudRun) -> CloudRunRead:
         attempt_count=cloud_run.attempt_count,
         max_attempts=cloud_run.max_attempts,
         last_queue_error=cloud_run.last_queue_error,
+        queue_message_id=cloud_run.queue_message_id,
+        runtime_provider=cloud_run.runtime_provider,
+        runtime_job_id=cloud_run.runtime_job_id,
+        storage_provider=cloud_run.storage_provider,
+        artifact_manifest_uri=cloud_run.artifact_manifest_uri,
+        log_stream_uri=cloud_run.log_stream_uri,
+        external_status=cloud_run.external_status,
+        external_error=cloud_run.external_error,
         created_at=cloud_run.created_at,
         updated_at=cloud_run.updated_at,
     )

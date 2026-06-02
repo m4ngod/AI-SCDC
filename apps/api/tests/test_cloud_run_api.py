@@ -262,6 +262,64 @@ def test_start_cloud_run_enqueues_fake_run_without_executor_work(
     assert [entry.event for entry in log_entries] == ["queued"]
 
 
+def test_start_cloud_run_accepts_phase_10b_provider_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "queue_provider": "local_db",
+            "runtime_provider": "remote_stub",
+            "storage_provider": "local_inline",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    cloud_run = payload["cloud_run"]
+    assert cloud_run["queue_provider"] == "local_db"
+    assert cloud_run["runtime_provider"] == "remote_stub"
+    assert cloud_run["storage_provider"] == "local_inline"
+    assert cloud_run["queue_message_id"] is None
+    assert cloud_run["runtime_job_id"] is None
+    assert cloud_run["artifact_manifest_uri"] is None
+    assert cloud_run["log_stream_uri"] is None
+    assert cloud_run["external_status"] is None
+    assert cloud_run["external_error"] is None
+    assert "queue_receipt" not in cloud_run
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        persisted_cloud_run = session.get(CloudRun, cloud_run["id"])
+
+    assert persisted_cloud_run is not None
+    assert persisted_cloud_run.queue_provider == "local_db"
+    assert persisted_cloud_run.runtime_provider == "remote_stub"
+    assert persisted_cloud_run.storage_provider == "local_inline"
+    assert persisted_cloud_run.queue_receipt is None
+
+
 def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(
     tmp_path: Path,
     monkeypatch,
@@ -3284,6 +3342,90 @@ def test_init_db_adds_phase_10a_cloud_run_lease_columns(
     assert ("remote_worker_kind",) in indexes
     assert ("lease_id",) in indexes
     assert ("lease_expires_at",) in indexes
+
+
+def test_init_db_adds_phase_10b_cloud_run_provider_columns(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "phase10b.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    SQLModel.metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE cloud_run RENAME TO cloud_run_old")
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE cloud_run (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                workspace_id VARCHAR NOT NULL,
+                project_id VARCHAR NOT NULL,
+                task_id VARCHAR NOT NULL,
+                repo_id VARCHAR NOT NULL,
+                local_run_id VARCHAR,
+                base_branch VARCHAR NOT NULL,
+                head_branch VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                sandbox_kind VARCHAR NOT NULL,
+                cancel_requested BOOLEAN NOT NULL DEFAULT 0,
+                worker_id VARCHAR,
+                claimed_at DATETIME,
+                completed_at DATETIME,
+                queue_provider VARCHAR NOT NULL DEFAULT 'local_db',
+                remote_worker_kind VARCHAR,
+                lease_id VARCHAR,
+                lease_expires_at DATETIME,
+                heartbeat_at DATETIME,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
+                last_queue_error VARCHAR,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO cloud_run (
+                id, workspace_id, project_id, task_id, repo_id, local_run_id,
+                base_branch, head_branch, status, sandbox_kind, cancel_requested,
+                worker_id, claimed_at, completed_at, queue_provider,
+                remote_worker_kind, lease_id, lease_expires_at, heartbeat_at,
+                attempt_count, max_attempts, last_queue_error, created_at, updated_at
+            )
+            SELECT id, workspace_id, project_id, task_id, repo_id, local_run_id,
+                base_branch, head_branch, status, sandbox_kind, cancel_requested,
+                worker_id, claimed_at, completed_at, queue_provider,
+                remote_worker_kind, lease_id, lease_expires_at, heartbeat_at,
+                attempt_count, max_attempts, last_queue_error, created_at, updated_at
+            FROM cloud_run_old
+            """
+        )
+        connection.exec_driver_sql("DROP TABLE cloud_run_old")
+
+    init_db(engine)
+
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("cloud_run")}
+    assert {
+        "queue_message_id",
+        "queue_receipt",
+        "runtime_provider",
+        "runtime_job_id",
+        "storage_provider",
+        "artifact_manifest_uri",
+        "log_stream_uri",
+        "external_status",
+        "external_error",
+    }.issubset(columns)
+    indexes = {
+        tuple(index["column_names"])
+        for index in inspector.get_indexes("cloud_run")
+    }
+    assert ("queue_message_id",) in indexes
+    assert ("runtime_provider",) in indexes
+    assert ("runtime_job_id",) in indexes
+    assert ("storage_provider",) in indexes
+    assert ("external_status",) in indexes
 
 
 def test_init_db_allows_cloud_test_run_without_patch_artifact(

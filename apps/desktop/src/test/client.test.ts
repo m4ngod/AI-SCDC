@@ -1301,6 +1301,76 @@ describe("desktop API clients", () => {
     expect(result.cloud_run.last_queue_error).toBeNull();
   });
 
+  it("normalizes phase 10b cloud run provider metadata", async () => {
+    const cloudRun = {
+      id: "cloud_run_1",
+      workspace_id: "dev_workspace",
+      project_id: "project_1",
+      task_id: "task_1",
+      repo_id: "repo_1",
+      local_run_id: "local_run_1",
+      sandbox_profile_id: null,
+      patch_command_key: null,
+      test_command_keys: [],
+      command_results: [],
+      base_branch: "main",
+      head_branch: "ai-scdc/task-task_1-cloud_run_1",
+      status: "queued",
+      sandbox_kind: "fake",
+      patch_artifact_id: null,
+      failure_reason: null,
+      cancel_requested: false,
+      cancel_requested_at: null,
+      cancelled_at: null,
+      worker_id: null,
+      claimed_at: null,
+      completed_at: null,
+      queue_provider: "local_db",
+      remote_worker_kind: null,
+      lease_id: null,
+      lease_expires_at: null,
+      heartbeat_at: null,
+      attempt_count: 0,
+      max_attempts: 3,
+      last_queue_error: null,
+      queue_message_id: "message-1",
+      runtime_provider: "remote_stub",
+      runtime_job_id: "job-1",
+      storage_provider: "local_inline",
+      artifact_manifest_uri: "local-inline://cloud-run-objects/manifest",
+      log_stream_uri: "local-inline://cloud-run-objects/log",
+      external_status: "submitted",
+      external_error: "redacted error",
+      created_at: "2026-06-03T00:00:00Z",
+      updated_at: "2026-06-03T00:00:30Z",
+    };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({
+        cloud_run: cloudRun,
+        patch_artifact: null,
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo",
+    });
+
+    const result = await client.processCloudRun("cloud_run_1");
+
+    expect(result.cloud_run.queue_message_id).toBe("message-1");
+    expect(result.cloud_run.runtime_provider).toBe("remote_stub");
+    expect(result.cloud_run.runtime_job_id).toBe("job-1");
+    expect(result.cloud_run.storage_provider).toBe("local_inline");
+    expect(result.cloud_run.artifact_manifest_uri).toBe(
+      "local-inline://cloud-run-objects/manifest"
+    );
+    expect(result.cloud_run.log_stream_uri).toBe("local-inline://cloud-run-objects/log");
+    expect(result.cloud_run.external_status).toBe("submitted");
+    expect(result.cloud_run.external_error).toBe("redacted error");
+  });
+
   it("HTTP client starts no-input cloud runs with an internally selected repository only", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

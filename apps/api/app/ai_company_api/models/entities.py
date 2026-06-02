@@ -516,6 +516,15 @@ class CloudRun(SQLModel, table=True):
     attempt_count: int = Field(default=0)
     max_attempts: int = Field(default=3)
     last_queue_error: str | None = None
+    queue_message_id: str | None = Field(default=None, index=True)
+    queue_receipt: str | None = None
+    runtime_provider: str | None = Field(default=None, index=True)
+    runtime_job_id: str | None = Field(default=None, index=True)
+    storage_provider: str | None = Field(default=None, index=True)
+    artifact_manifest_uri: str | None = None
+    log_stream_uri: str | None = None
+    external_status: str | None = Field(default=None, index=True)
+    external_error: str | None = None
     created_at: datetime = Field(default_factory=utc_now, index=True)
     updated_at: datetime = Field(default_factory=utc_now)
 
