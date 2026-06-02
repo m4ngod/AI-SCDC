@@ -692,6 +692,139 @@ def test_local_db_requeue_filters_by_queue_provider(
     assert external_run.worker_id == "external-worker"
 
 
+def test_external_stub_queue_provider_claims_with_external_metadata(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    run = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "queue_provider": "external_stub"},
+    ).json()["cloud_run"]
+
+    response = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "worker-external",
+            "worker_kind": "remote_stub",
+            "queue_provider": "external_stub",
+        },
+    )
+
+    assert response.status_code == 201
+    lease = response.json()
+    assert lease["cloud_run"]["id"] == run["id"]
+    assert lease["queue_provider"] == "external_stub"
+    assert lease["queue_message_id"].startswith("external-stub-message-")
+    assert lease["cloud_run"]["queue_message_id"] == lease["queue_message_id"]
+    assert lease["cloud_run"]["external_status"] == "claimed"
+
+    read_response = client.get(f"/cloud-runs/{run['id']}")
+    assert read_response.status_code == 200
+    payload = read_response.json()
+    assert payload["queue_message_id"] == lease["queue_message_id"]
+    assert payload["external_status"] == "claimed"
+    assert "queue_receipt" not in payload
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, run["id"])
+    assert cloud_run is not None
+    assert cloud_run.queue_receipt is not None
+    assert cloud_run.queue_receipt.startswith("external-stub-receipt-")
+
+
+def test_external_stub_requeue_marks_external_status_without_leaking_receipt(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    run = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "queue_provider": "external_stub"},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "worker-external",
+            "worker_kind": "remote_stub",
+            "queue_provider": "external_stub",
+            "lease_seconds": 1,
+        },
+    ).json()
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, lease["cloud_run"]["id"])
+        assert cloud_run is not None
+        cloud_run.lease_expires_at = datetime(2026, 6, 2, tzinfo=timezone.utc)
+        session.add(cloud_run)
+        session.commit()
+
+    response = client.post(
+        "/cloud-run-worker/leases/requeue-expired",
+        json={"worker_id": "worker-external", "queue_provider": "external_stub"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body] == [run["id"]]
+    assert body[0]["external_status"] == "requeued"
+    assert "queue_receipt" not in body[0]
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, run["id"])
+    assert cloud_run is not None
+    assert cloud_run.queue_receipt is None
+
+
+def test_external_stub_completion_clears_receipt_and_marks_completed(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    run = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "queue_provider": "external_stub"},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "queue_provider": "external_stub",
+        },
+    ).json()
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=remote_stub_completion_payload(run["id"]),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cloud_run"]["status"] == "patch_ready"
+    assert body["cloud_run"]["external_status"] == "completed"
+    assert "queue_receipt" not in body["cloud_run"]
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, run["id"])
+    assert cloud_run is not None
+    assert cloud_run.queue_receipt is None
+
+
 def test_claim_next_cloud_run_lease_retries_after_claim_race(
     tmp_path: Path,
     monkeypatch,

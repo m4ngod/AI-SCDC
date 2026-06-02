@@ -74,6 +74,9 @@ SENSITIVE_PAYLOAD_KEYS = {
 SENSITIVE_PAYLOAD_KEY_PARTS = ("token", "secret", "password", "authorization")
 CLOUD_RUN_TERMINAL_STATUSES = {"patch_ready", "failed", "cancelled"}
 DEFAULT_QUEUE_PROVIDER = "local_db"
+EXTERNAL_STUB_QUEUE_PROVIDER = "external_stub"
+EXTERNAL_STUB_MESSAGE_PREFIX = "external-stub-message-"
+EXTERNAL_STUB_RECEIPT_PREFIX = "external-stub-receipt-"
 DEFAULT_LEASE_SECONDS = 60
 DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT = 25
 
@@ -204,6 +207,9 @@ def enqueue_cloud_run(
         queue_provider=data.queue_provider,
         runtime_provider=data.runtime_provider,
         storage_provider=data.storage_provider,
+        external_status="queued"
+        if data.queue_provider == EXTERNAL_STUB_QUEUE_PROVIDER
+        else None,
     )
     session.add(cloud_run)
     session.flush()
@@ -311,6 +317,14 @@ def claim_next_cloud_run_lease(
             continue
 
         session.refresh(cloud_run)
+        if queue_provider == EXTERNAL_STUB_QUEUE_PROVIDER:
+            if cloud_run.queue_message_id is None:
+                cloud_run.queue_message_id = (
+                    f"{EXTERNAL_STUB_MESSAGE_PREFIX}{cloud_run.id}"
+                )
+            cloud_run.queue_receipt = f"{EXTERNAL_STUB_RECEIPT_PREFIX}{lease_id}"
+            cloud_run.external_status = "claimed"
+            cloud_run.updated_at = now
         local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
         local_run.status = "running"
         local_run.updated_at = now
@@ -326,6 +340,7 @@ def claim_next_cloud_run_lease(
                 "lease_seconds": lease_seconds,
                 "attempt_count": cloud_run.attempt_count,
                 "queue_provider": queue_provider,
+                "queue_message_id": cloud_run.queue_message_id,
             },
         )
         session.add(local_run)
@@ -419,6 +434,9 @@ def requeue_expired_cloud_run_leases(
             cloud_run.status = "failed"
             cloud_run.failure_reason = "lease_attempts_exhausted"
             cloud_run.last_queue_error = "lease_attempts_exhausted"
+            if cloud_run.queue_provider == EXTERNAL_STUB_QUEUE_PROVIDER:
+                cloud_run.queue_receipt = None
+                cloud_run.external_status = "failed"
             cloud_run.completed_at = completed_at
             cloud_run.updated_at = completed_at
             local_run.status = "failed"
@@ -439,6 +457,9 @@ def requeue_expired_cloud_run_leases(
             cloud_run.lease_expires_at = None
             cloud_run.heartbeat_at = None
             cloud_run.last_queue_error = None
+            if cloud_run.queue_provider == EXTERNAL_STUB_QUEUE_PROVIDER:
+                cloud_run.queue_receipt = None
+                cloud_run.external_status = "requeued"
             cloud_run.updated_at = utc_now()
             local_run.status = "queued"
             local_run.updated_at = cloud_run.updated_at
@@ -581,6 +602,12 @@ def complete_cloud_run_lease(
         result=result,
     )
     execution_result = _sandbox_execution_result_from_create(result)
+    if cloud_run.queue_provider == EXTERNAL_STUB_QUEUE_PROVIDER:
+        cloud_run.queue_receipt = None
+        cloud_run.external_status = (
+            "completed" if execution_result.status == "patch_ready" else "failed"
+        )
+        cloud_run.updated_at = utc_now()
     repository = get_repository(session, cloud_run.repo_id)
     secrets = _redaction_secrets({}, repository.repo_url, None)
     _append_cloud_run_log(
@@ -712,7 +739,6 @@ def _claim_cloud_run_lease(
         )
         .values(
             status="running",
-            queue_provider=DEFAULT_QUEUE_PROVIDER,
             remote_worker_kind=worker_kind,
             worker_id=worker_id,
             lease_id=lease_id,
