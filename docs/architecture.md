@@ -95,6 +95,14 @@ The first cloud sandbox is a control-plane fake worker, not a real container ser
 
 Phase 8 adds the first real sandbox executor by running GitHub cloud tasks inside local Docker. The executor is still local-first and synchronous, but it establishes the sandbox profile, command whitelist, GitHub clone credential boundary, redacted logs, Docker failure codes, timeout cleanup, and artifact capture contract needed for future remote cloud workers.
 
+## Phase 9 Boundary
+
+Phase 9 moves cloud-run execution out of the synchronous enqueue request path. `POST /tasks/{task_id}/cloud-runs` now validates inputs, creates `CloudRun` and companion `LocalTaskRun` records in `queued`, stores sandbox profile and command choices, appends a redacted log entry, and returns immediately without running the fake or Docker executor.
+
+A local worker boundary claims queued runs through `POST /cloud-run-worker/process-next` or `POST /cloud-runs/{cloud_run_id}/process`, marks claimed runs as `running`, executes the selected fake or `docker_local` backend, records logs, stores patch artifacts when produced, and moves the run to `patch_ready`, `failed`, or `cancelled`. `POST /cloud-runs/{cloud_run_id}/cancel` supports queued cancellation and running cancellation requests. `GET /cloud-runs/{cloud_run_id}/logs` exposes ordered, redacted log records for polling. The desktop task board now shows queued cloud runs, explicit `Process` and `Cancel` controls, and compact cloud logs.
+
+The Phase 9 worker remains local-first and explicitly triggered. It does not add Redis, Celery, a daemon process, remote VMs, object storage, live streaming, automatic PR creation, or automatic merges.
+
 ## Roadmap
 
 Completed:
@@ -108,9 +116,10 @@ Completed:
 7. Human patch approval boundary with compact diff preview, durable approval records, `MERGE_READY` and `HUMAN_APPROVAL` transitions, and no automatic git merge.
 8. GitHub-only cloud-run and pull-request boundary with PAT metadata, fake cloud sandbox artifacts, explicit `Create PR`, durable PR records, and no automatic merge.
 9. Docker local sandbox executor with GitHub repository cloning, sandbox profiles, command whitelists, redacted logs, Docker failure codes, and patch/test artifact capture.
+10. Local cloud-run queue worker boundary with queued enqueue, explicit worker processing, cancellation, ordered redacted logs, and desktop Process/Cancel controls.
 
 Future:
 
-1. Remote cloud sandbox workers with queueing, object storage, cancellation, and live log streaming.
+1. Remote cloud sandbox workers with external queue runtime, object storage, and live log streaming.
 2. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
 3. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.

@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, and Phase 8 Docker local sandbox executor for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, and Phase 9 local cloud-run queue worker boundary for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -391,7 +391,11 @@ $cloudRun = Invoke-RestMethod `
   -ContentType "application/json" `
   -Body (JsonBody @{ repo_id = $repository.id })
 
-$artifact = $cloudRun.patch_artifact
+$processedCloudRun = Invoke-RestMethod `
+  -Uri "$base/cloud-runs/$($cloudRun.cloud_run.id)/process" `
+  -Method Post
+
+$artifact = $processedCloudRun.patch_artifact
 
 $testRun = Invoke-RestMethod `
   -Uri "$base/patch-artifacts/$($artifact.id)/test-runs" `
@@ -414,7 +418,8 @@ $pr = Invoke-RestMethod `
   -Method Post
 
 [ordered]@{
-  cloud_run_status = $cloudRun.cloud_run.status
+  cloud_run_enqueue_status = $cloudRun.cloud_run.status
+  cloud_run_status = $processedCloudRun.cloud_run.status
   test_status = $testRun.test_run.status
   review_verdict = $review.review.verdict
   approved_status = $approval.task.status
@@ -434,9 +439,9 @@ PR_CREATED
 
 When the API is not started with `AI_SCDC_GITHUB_PR_ADAPTER=real`, the final `Create PR` request stays in fake adapter mode and no remote GitHub PR is created. The API returns only credential metadata.
 
-## Phase 8 Docker Local Sandbox PowerShell Smoke Test
+## Phase 9 Queued Docker Local Sandbox PowerShell Smoke Test
 
-Phase 8 keeps the fake cloud runner as the default. Start the API with `AI_SCDC_CLOUD_RUNNER=docker_local` only when you want a real local Docker sandbox to clone a GitHub repository and run whitelisted profile commands. Keep the default fake PR adapter for this smoke test; set `AI_SCDC_GITHUB_PR_ADAPTER=real` only for a final, intentional real GitHub PR creation after human approval.
+Phase 9 keeps the fake cloud runner as the default and processes cloud runs through an explicit worker endpoint. Start the API with `AI_SCDC_CLOUD_RUNNER=docker_local` only when you want the local worker to clone a GitHub repository and run whitelisted profile commands in Docker. Keep the default fake PR adapter for this smoke test; set `AI_SCDC_GITHUB_PR_ADAPTER=real` only for a final, intentional real GitHub PR creation after human approval.
 
 Do not paste PATs into docs, commits, logs, chat, or shell history, and do not put PATs in repository URLs. The GitHub repository `repo_url` in this smoke test is a normal non-token URL. For `docker_local` runs, the API opens the registered GitHub credential only for the clone step and passes it through a temporary container-local `GIT_ASKPASS` helper; it is redacted from command payloads and is not added to the sandbox profile environment.
 
@@ -456,7 +461,7 @@ pnpm dev:api
 
 Keep `allowed_env_vars` empty unless a sandbox profile command explicitly needs a server-process environment variable. Private repository cloning uses the registered GitHub credential and does not require whitelisting a token into the patch or test command environment.
 
-In another PowerShell session, create the credential, GitHub repository, sandbox profile, task, and cloud run:
+In another PowerShell session, create the credential, GitHub repository, sandbox profile, task, enqueue a cloud run, and then explicitly process it:
 
 ```powershell
 $base = "http://127.0.0.1:8000"
@@ -559,13 +564,23 @@ try {
       test_command_keys = @("python-version")
     })
 
+  $processedCloudRun = Invoke-RestMethod `
+    -Uri "$base/cloud-runs/$($cloudRun.cloud_run.id)/process" `
+    -Method Post
+
+  $cloudRunLogs = Invoke-RestMethod `
+    -Uri "$base/cloud-runs/$($cloudRun.cloud_run.id)/logs" `
+    -Method Get
+
   [ordered]@{
-    cloud_run_status = $cloudRun.cloud_run.status
-    sandbox_kind = $cloudRun.cloud_run.sandbox_kind
-    failure_reason = $cloudRun.cloud_run.failure_reason
-    command_result_count = @($cloudRun.cloud_run.command_results).Count
-    files_changed = if ($cloudRun.patch_artifact) { $cloudRun.patch_artifact.files_changed -join ", " } else { "" }
-    test_result = if ($cloudRun.patch_artifact) { $cloudRun.patch_artifact.test_result } else { "" }
+    cloud_run_enqueue_status = $cloudRun.cloud_run.status
+    cloud_run_status = $processedCloudRun.cloud_run.status
+    sandbox_kind = $processedCloudRun.cloud_run.sandbox_kind
+    failure_reason = $processedCloudRun.cloud_run.failure_reason
+    log_events = @($cloudRunLogs | ForEach-Object { $_.event }) -join ", "
+    command_result_count = @($processedCloudRun.cloud_run.command_results).Count
+    files_changed = if ($processedCloudRun.patch_artifact) { $processedCloudRun.patch_artifact.files_changed -join ", " } else { "" }
+    test_result = if ($processedCloudRun.patch_artifact) { $processedCloudRun.patch_artifact.test_result } else { "" }
   }
 }
 finally {
@@ -573,16 +588,17 @@ finally {
 }
 ```
 
-Expected successful smoke output shows `cloud_run_status` as `patch_ready`, `sandbox_kind` as `docker_local`, `files_changed` as `AI_SCDC_DOCKER_SMOKE.md`, and `test_result` as `passed`. If setup fails before an artifact is captured, inspect `failure_reason` and the redacted cloud run command results:
+Expected successful smoke output shows `cloud_run_enqueue_status` as `queued`, `cloud_run_status` as `patch_ready`, `sandbox_kind` as `docker_local`, `files_changed` as `AI_SCDC_DOCKER_SMOKE.md`, and `test_result` as `passed`. If setup fails before an artifact is captured, inspect `failure_reason`, `log_events`, and the redacted cloud run command results:
 
 ```powershell
-$cloudRun.cloud_run.command_results | ConvertTo-Json -Depth 8
+$processedCloudRun.cloud_run.command_results | ConvertTo-Json -Depth 8
 ```
 
-Focused verification commands used for Phase 7 and its Phase 6/Phase 5 prerequisite workflow:
+Focused verification commands used for Phase 9 and its prerequisite workflows:
 
 ```bash
 pytest apps/api/tests/test_github_repository_api.py apps/api/tests/test_cloud_run_api.py apps/api/tests/test_pull_request_api.py -v
+pytest apps/api/tests/test_api_endpoints.py -v
 pytest apps/worker/tests/test_test_runner.py -v
 pytest apps/api/tests/test_test_review_debug_api.py -v
 pytest apps/api/tests/test_patch_approval_api.py -v

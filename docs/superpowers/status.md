@@ -4,7 +4,7 @@ Last verified: 2026-06-02
 
 ## Current Phase
 
-The project is through Phase 8: Docker local sandbox executor.
+The project is through Phase 9: local cloud-run queue worker boundary.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -34,27 +34,27 @@ tests, README smoke instructions, and git history.
 9. Phase 8 Docker local sandbox executor: sandbox profiles, command whitelists,
    GitHub clone credential boundary, redacted command payloads, Docker failure
    codes, timeout cleanup, and patch/test artifact capture.
+10. Phase 9 local cloud-run queue worker: enqueue-only cloud-run creation,
+    explicit worker processing endpoints, queued/running cancellation, ordered
+    redacted cloud-run logs, and desktop Process/Cancel/log controls.
 
 ## Verification
 
 Latest automated verification:
 
 ```bash
+pytest apps/api/tests
+pnpm --filter @ai-scdc/desktop test -- src/test/client.test.ts src/test/App.test.tsx
 pnpm typecheck
-pnpm test:js
-pytest apps/api/tests apps/worker/tests services/llm-gateway/tests -q
 git diff --check
 ```
 
 Results:
 
-- `pnpm typecheck`: passed.
-- `pnpm test:js`: passed, including desktop and agent protocol tests.
-- Python tests: passed, 295 tests.
+- `pytest apps/api/tests`: passed, 276 tests, 1 existing Starlette/httpx warning.
+- Desktop client/App tests: passed, 65 tests.
+- Root `pnpm typecheck`: passed.
 - `git diff --check`: passed.
-
-Note: a single combined `pnpm test` invocation timed out in the Codex tool after
-124 seconds, but its split JS and Python test commands completed successfully.
 
 ## Phase 8 Smoke
 
@@ -88,8 +88,10 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Known Limits
 
-- The Docker local sandbox is synchronous and local-first; it is not a remote
-  cloud worker.
+- The Phase 9 worker is explicitly triggered through API endpoints; there is no
+  desktop-managed daemon loop or external queue runtime yet.
+- Docker execution is still local-first; Phase 9 does not add remote cloud
+  workers, object storage, or live log streaming.
 - Docker Hub image pulls failed in the local environment with an EOF response
   from `registry-1.docker.io`, so the smoke used an already cached image.
 - Real GitHub PR publishing still requires starting the API with
@@ -102,15 +104,15 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Recommended Next Phase
 
-Phase 9 should be remote cloud sandbox workers:
+Phase 10 should be remote cloud sandbox workers:
 
-1. Put `CloudRun` execution behind a queue and worker boundary.
-2. Add durable run cancellation.
-3. Add live log streaming or event polling.
-4. Add object storage contracts for large logs, diffs, and artifacts.
-5. Keep fake and `docker_local` executors as selectable adapters while moving
-   execution out of the synchronous API request path.
+1. Replace the local/manual worker trigger with a real external queue runtime.
+2. Add remote cloud VM/container workers.
+3. Add object storage contracts for large logs, diffs, and artifacts.
+4. Add live log streaming on top of the Phase 9 polling/log contract.
+5. Keep fake and `docker_local` executors as development adapters while remote
+   workers become the production execution path.
 
-This should come before model-backed reviewer/debugger agents or commercial
-beta work, because the execution plane needs an asynchronous, inspectable worker
-contract first.
+The remote-worker step should come before model-backed reviewer/debugger agents
+or commercial beta work, because the execution plane still needs a production
+queue, storage, and streaming contract.
