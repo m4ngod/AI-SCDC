@@ -597,12 +597,18 @@ $processedCloudRun.cloud_run.command_results | ConvertTo-Json -Depth 8
 ## Phase 10A Remote Worker Lease API Smoke
 
 Phase 10A keeps the default `local_db` queue provider and adds worker lease
-endpoints for remote-worker control-plane testing. After enqueueing a queued
-cloud run, claim a lease, heartbeat it, and complete it with a `remote_stub`
+endpoints for remote-worker control-plane testing. First run the Phase 9 or
+Phase 8 enqueue setup through the `$cloudRun = Invoke-RestMethod ...` step, but
+do not run the `$processedCloudRun = ... /process` step. With one cloud run
+still queued, claim a lease, heartbeat it, and complete it with a `remote_stub`
 result:
 
 ```powershell
 $ApiBase = "http://127.0.0.1:8000"
+
+function JsonBody($value) {
+  $value | ConvertTo-Json -Depth 12 -Compress
+}
 
 $lease = Invoke-RestMethod `
   -Method Post `
@@ -613,6 +619,8 @@ $lease = Invoke-RestMethod `
     worker_kind = "remote_stub"
     lease_seconds = 60
   })
+
+if (-not $lease) { throw "No queued cloud run was available to lease." }
 
 $heartbeat = Invoke-RestMethod `
   -Method Post `
@@ -648,7 +656,7 @@ $completion = Invoke-RestMethod `
   })
 ```
 
-Focused verification commands used for Phase 9 and its prerequisite workflows:
+Focused verification commands used for Phase 10A and prerequisite workflows:
 
 ```bash
 pytest apps/api/tests/test_github_repository_api.py apps/api/tests/test_cloud_run_api.py apps/api/tests/test_pull_request_api.py -v
