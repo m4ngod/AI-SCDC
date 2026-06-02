@@ -35,6 +35,24 @@ def build_client(database_path: Path) -> TestClient:
     return TestClient(create_app(database_url=database_url))
 
 
+def enqueue_and_process_cloud_run(
+    client: TestClient,
+    task_id: str,
+    request_body: dict,
+) -> dict:
+    enqueue_response = client.post(f"/tasks/{task_id}/cloud-runs", json=request_body)
+    assert enqueue_response.status_code == 201
+    queued_result = enqueue_response.json()
+    assert queued_result["cloud_run"]["status"] == "queued"
+    assert queued_result["patch_artifact"] is None
+
+    process_response = client.post(
+        f"/cloud-runs/{queued_result['cloud_run']['id']}/process"
+    )
+    assert process_response.status_code == 200
+    return process_response.json()
+
+
 def create_cloud_task(
     session: Session,
     *,
@@ -788,13 +806,12 @@ def test_docker_cloud_run_redacts_github_token_from_persisted_results(
         repo_id = repository.id
         profile_id = profile.id
 
-    response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
-
-    assert response.status_code == 201
-    payload = response.json()["cloud_run"]["command_results"][0]
+    payload = result["cloud_run"]["command_results"][0]
     assert "ghp_cloud_runner_secret1234" not in str(payload)
     assert payload["command"] == "git clone [redacted]"
     assert payload["stdout"] == "stdout [redacted]"
@@ -1020,18 +1037,17 @@ def test_docker_cloud_run_uses_default_profile_commands(
         repo_id = repository.id
         profile_id = profile.id
 
-    response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
-
-    assert response.status_code == 201
     assert captured_requests[0].patch_command is not None
     assert captured_requests[0].patch_command.key == "patch_default"
     assert [command.key for command in captured_requests[0].test_commands] == ["unit"]
     assert getattr(captured_requests[0], "github_token", None) == "ghp_cloud_runner_secret1234"
-    assert response.json()["cloud_run"]["patch_command_key"] == "patch_default"
-    assert response.json()["cloud_run"]["test_command_keys"] == ["unit"]
+    assert result["cloud_run"]["patch_command_key"] == "patch_default"
+    assert result["cloud_run"]["test_command_keys"] == ["unit"]
 
 
 def test_docker_cloud_run_records_docker_unavailable(
@@ -1092,18 +1108,16 @@ def test_docker_cloud_run_records_docker_unavailable(
         repo_id = repository.id
         profile_id = profile.id
 
-    response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={
+    result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {
             "repo_id": repo_id,
             "sandbox_profile_id": profile_id,
             "patch_command_key": "patch",
             "test_command_keys": ["test"],
         },
     )
-
-    assert response.status_code == 201
-    result = response.json()
     assert result["patch_artifact"] is None
     assert result["cloud_run"]["status"] == "failed"
     assert result["cloud_run"]["failure_reason"] == "docker_unavailable"
@@ -1199,12 +1213,13 @@ def test_docker_cloud_run_started_state_is_committed_before_executor_runs(
         repo_id = repository.id
         profile_id = profile.id
 
-    response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
 
-    assert response.status_code == 201
+    assert result["cloud_run"]["status"] == "failed"
     assert observed["cloud_run_status"] == "running"
     assert observed["local_run_id"] is not None
     assert observed["local_run_status"] == "running"
@@ -1242,13 +1257,12 @@ def test_docker_cloud_run_executor_exception_marks_persisted_run_failed(
         repo_id = repository.id
         profile_id = profile.id
 
-    response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
 
-    assert response.status_code == 201
-    result = response.json()
     assert result["patch_artifact"] is None
     assert result["cloud_run"]["status"] == "failed"
     assert result["cloud_run"]["failure_reason"] == "executor_failed"
@@ -1353,20 +1367,21 @@ def test_docker_cloud_run_can_retry_after_setup_failure(
         repo_id = repository.id
         profile_id = profile.id
 
-    first_response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    first_result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
-    second_response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    second_result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
 
-    assert first_response.status_code == 201
-    assert first_response.json()["patch_artifact"] is None
-    assert second_response.status_code == 201
-    assert second_response.json()["cloud_run"]["status"] == "patch_ready"
-    assert second_response.json()["patch_artifact"] is not None
+    assert first_result["patch_artifact"] is None
+    assert first_result["cloud_run"]["status"] == "failed"
+    assert second_result["cloud_run"]["status"] == "patch_ready"
+    assert second_result["patch_artifact"] is not None
 
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
         persisted_task = session.get(Task, task_id)
@@ -1374,10 +1389,10 @@ def test_docker_cloud_run_can_retry_after_setup_failure(
     assert persisted_task is not None
     assert persisted_task.status == TaskStatus.PATCH_READY
     assert persisted_task.branch_name == (
-        f"ai-scdc/task-{task_id}-{second_response.json()['cloud_run']['id']}"
+        f"ai-scdc/task-{task_id}-{second_result['cloud_run']['id']}"
     )
     assert persisted_task.worktree_ref == (
-        f"cloud://docker-local/{second_response.json()['cloud_run']['id']}"
+        f"cloud://docker-local/{second_result['cloud_run']['id']}"
     )
 
 
@@ -1435,13 +1450,14 @@ def test_docker_cloud_run_setup_failure_preserves_existing_patch_ready_task(
         repo_id = repository.id
         profile_id = profile.id
 
-    response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
 
-    assert response.status_code == 201
-    assert response.json()["patch_artifact"] is None
+    assert result["patch_artifact"] is None
+    assert result["cloud_run"]["status"] == "failed"
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
         persisted_task = session.get(Task, task_id)
 
@@ -1511,14 +1527,14 @@ def test_docker_cloud_run_allowed_env_vars_whitelist_and_redact_results(
         repo_id = repository.id
         profile_id = profile.id
 
-    response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
 
-    assert response.status_code == 201
     assert captured_requests[0].env == {"SANDBOX_TOKEN": "secret-token-value"}
-    command_result = response.json()["cloud_run"]["command_results"][0]
+    command_result = result["cloud_run"]["command_results"][0]
     assert command_result["command"] == "echo [redacted]"
     assert command_result["stdout"] == "saw [redacted]"
     assert command_result["stderr"] == "failed [redacted]"
@@ -1645,10 +1661,12 @@ def test_start_cloud_run_creates_patch_artifact_and_bridge_local_run(tmp_path: P
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
         _project, repository, task = create_cloud_task(session)
 
-    response = client.post(f"/tasks/{task.id}/cloud-runs", json={"repo_id": repository.id})
+    result = enqueue_and_process_cloud_run(
+        client,
+        task.id,
+        {"repo_id": repository.id},
+    )
 
-    assert response.status_code == 201
-    result = response.json()
     assert result["cloud_run"]["status"] == "patch_ready"
     assert result["cloud_run"]["sandbox_kind"] == "fake"
     assert result["cloud_run"]["head_branch"] == (
@@ -1733,13 +1751,12 @@ def test_start_cloud_run_persists_executor_test_results(
         repo_id = repository.id
         profile_id = profile.id
 
-    response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
 
-    assert response.status_code == 201
-    result = response.json()
     assert result["cloud_run"]["command_results"][0]["command"] == (
         "git clone https://[redacted]@github.com/example/demo"
     )
@@ -1819,15 +1836,15 @@ def test_docker_cloud_run_persisted_passing_tests_can_review_without_rerun(
         repo_id = repository.id
         profile_id = profile.id
 
-    cloud_response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    cloud_result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
-    patch_artifact_id = cloud_response.json()["patch_artifact"]["id"]
+    patch_artifact_id = cloud_result["patch_artifact"]["id"]
     test_response = client.post(f"/patch-artifacts/{patch_artifact_id}/test-runs")
     review_response = client.post(f"/patch-artifacts/{patch_artifact_id}/reviews")
 
-    assert cloud_response.status_code == 201
     assert test_response.status_code == 201
     assert test_response.json()["task"]["status"] == "REVIEWING"
     assert test_response.json()["test_run"]["status"] == "passed"
@@ -1892,16 +1909,16 @@ def test_docker_cloud_run_without_tests_can_review_after_synthetic_test_bridge(
         repo_id = repository.id
         profile_id = profile.id
 
-    cloud_response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    cloud_result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
-    patch_artifact_id = cloud_response.json()["patch_artifact"]["id"]
+    patch_artifact_id = cloud_result["patch_artifact"]["id"]
     test_response = client.post(f"/patch-artifacts/{patch_artifact_id}/test-runs")
     review_response = client.post(f"/patch-artifacts/{patch_artifact_id}/reviews")
 
-    assert cloud_response.status_code == 201
-    assert cloud_response.json()["patch_artifact"]["test_result"] == "not_run"
+    assert cloud_result["patch_artifact"]["test_result"] == "not_run"
     assert test_response.status_code == 201
     assert test_response.json()["task"]["status"] == "REVIEWING"
     assert test_response.json()["patch_artifact"]["test_result"] == "passed"
@@ -1972,13 +1989,12 @@ def test_docker_cloud_run_test_failure_keeps_patch_artifact(
         repo_id = repository.id
         profile_id = profile.id
 
-    response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
 
-    assert response.status_code == 201
-    result = response.json()
     assert result["cloud_run"]["status"] == "failed"
     assert result["cloud_run"]["failure_reason"] == "test_failed"
     assert result["patch_artifact"] is not None
@@ -2083,15 +2099,15 @@ def test_docker_cloud_run_persisted_failed_tests_request_fix_without_rerun(
         repo_id = repository.id
         profile_id = profile.id
 
-    cloud_response = client.post(
-        f"/tasks/{task_id}/cloud-runs",
-        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    cloud_result = enqueue_and_process_cloud_run(
+        client,
+        task_id,
+        {"repo_id": repo_id, "sandbox_profile_id": profile_id},
     )
-    patch_artifact_id = cloud_response.json()["patch_artifact"]["id"]
+    patch_artifact_id = cloud_result["patch_artifact"]["id"]
     test_response = client.post(f"/patch-artifacts/{patch_artifact_id}/test-runs")
     review_response = client.post(f"/patch-artifacts/{patch_artifact_id}/reviews")
 
-    assert cloud_response.status_code == 201
     assert test_response.status_code == 201
     assert test_response.json()["task"]["status"] == "FIX_REQUESTED"
     assert test_response.json()["test_run"]["status"] == "failed"
@@ -2556,7 +2572,11 @@ def test_cloud_fake_patch_can_run_synthetic_tests_and_review(tmp_path: Path) -> 
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
         _project, repository, task = create_cloud_task(session)
 
-    cloud_result = client.post(f"/tasks/{task.id}/cloud-runs", json={"repo_id": repository.id}).json()
+    cloud_result = enqueue_and_process_cloud_run(
+        client,
+        task.id,
+        {"repo_id": repository.id},
+    )
     patch_artifact_id = cloud_result["patch_artifact"]["id"]
     test_response = client.post(f"/patch-artifacts/{patch_artifact_id}/test-runs")
     review_response = client.post(f"/patch-artifacts/{patch_artifact_id}/reviews")
@@ -2581,10 +2601,11 @@ def test_cloud_fake_test_run_records_result_for_each_required_command(
             required_tests=required_tests,
         )
 
-    cloud_result = client.post(
-        f"/tasks/{task.id}/cloud-runs",
-        json={"repo_id": repository.id},
-    ).json()
+    cloud_result = enqueue_and_process_cloud_run(
+        client,
+        task.id,
+        {"repo_id": repository.id},
+    )
     patch_artifact_id = cloud_result["patch_artifact"]["id"]
     test_response = client.post(f"/patch-artifacts/{patch_artifact_id}/test-runs")
 
@@ -2607,10 +2628,11 @@ def test_cloud_fake_test_run_persists_fallback_command_when_required_tests_empty
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
         _project, repository, task = create_cloud_task(session, required_tests=[])
 
-    cloud_result = client.post(
-        f"/tasks/{task.id}/cloud-runs",
-        json={"repo_id": repository.id},
-    ).json()
+    cloud_result = enqueue_and_process_cloud_run(
+        client,
+        task.id,
+        {"repo_id": repository.id},
+    )
     patch_artifact_id = cloud_result["patch_artifact"]["id"]
     test_response = client.post(f"/patch-artifacts/{patch_artifact_id}/test-runs")
 
