@@ -1292,10 +1292,13 @@ describe("desktop API clients", () => {
     const result = await client.processCloudRun("cloud_run_1");
 
     expect(result.cloud_run.lease_id).toBe("lease_123");
+    expect(result.cloud_run.lease_expires_at).toBe("2026-06-02T00:01:00Z");
+    expect(result.cloud_run.heartbeat_at).toBe("2026-06-02T00:00:30Z");
     expect(result.cloud_run.queue_provider).toBe("local_db");
     expect(result.cloud_run.remote_worker_kind).toBe("remote_stub");
     expect(result.cloud_run.attempt_count).toBe(1);
     expect(result.cloud_run.max_attempts).toBe(3);
+    expect(result.cloud_run.last_queue_error).toBeNull();
   });
 
   it("HTTP client starts no-input cloud runs with an internally selected repository only", async () => {

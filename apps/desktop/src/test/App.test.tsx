@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import type { ConsoleApiClient, PlannerRunDraft, TaskCard } from "../api/client";
+import type { CloudRunCard, ConsoleApiClient, PlannerRunDraft, TaskCard } from "../api/client";
 import { fakeApiClient } from "../api/client";
 
 function plannerRunFixture(goal = "Build model route settings"): PlannerRunDraft {
@@ -148,7 +148,7 @@ function mergeReadyTaskFixture(): TaskCard {
   };
 }
 
-function cloudRunFixture() {
+function cloudRunFixture(): CloudRunCard {
   return {
     id: "cloud_run_test",
     workspace_id: "workspace_test",
@@ -168,6 +168,14 @@ function cloudRunFixture() {
     worker_id: "desktop_test_worker",
     claimed_at: "2026-05-29T00:00:00Z",
     completed_at: "2026-05-29T00:00:00Z",
+    queue_provider: "local_db",
+    remote_worker_kind: null,
+    lease_id: null,
+    lease_expires_at: null,
+    heartbeat_at: null,
+    attempt_count: 0,
+    max_attempts: 3,
+    last_queue_error: null,
     created_at: "2026-05-29T00:00:00Z",
     updated_at: "2026-05-29T00:00:00Z"
   };
@@ -363,6 +371,14 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
         worker_id: "desktop_test_worker",
         claimed_at: "2026-05-29T00:00:00Z",
         completed_at: "2026-05-29T00:00:00Z",
+        queue_provider: "local_db",
+        remote_worker_kind: null,
+        lease_id: null,
+        lease_expires_at: null,
+        heartbeat_at: null,
+        attempt_count: 0,
+        max_attempts: 3,
+        last_queue_error: null,
         created_at: "2026-05-29T00:00:00Z",
         updated_at: "2026-05-29T00:00:00Z"
       },
