@@ -59,6 +59,7 @@ SENSITIVE_PAYLOAD_KEY_PARTS = ("token", "secret", "password", "authorization")
 CLOUD_RUN_TERMINAL_STATUSES = {"patch_ready", "failed", "cancelled"}
 DEFAULT_QUEUE_PROVIDER = "local_db"
 DEFAULT_LEASE_SECONDS = 60
+DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT = 25
 
 
 def _is_sensitive_payload_key(key: str) -> bool:
@@ -241,6 +242,7 @@ def claim_next_cloud_run_lease(
             CloudRun.attempt_count < CloudRun.max_attempts,
         )
         .order_by(CloudRun.created_at, CloudRun.id)
+        .limit(DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT)
     ).all()
 
     for cloud_run_id in candidate_ids:

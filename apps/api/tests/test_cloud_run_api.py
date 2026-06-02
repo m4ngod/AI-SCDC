@@ -496,6 +496,61 @@ def test_claim_next_cloud_run_lease_retries_after_claim_race(
     assert attempted_cloud_run_ids == [first["id"], second["id"]]
 
 
+def test_claim_next_cloud_run_lease_retry_scan_is_bounded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    candidate_limit = cloud_runner.DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, first_task = create_cloud_task(session)
+        tasks = [first_task]
+        for index in range(candidate_limit + 3):
+            task = Task(
+                project_id=first_task.project_id,
+                title=f"Queued run {index}",
+                role_required="backend",
+                status=TaskStatus.CREATED,
+                allowed_paths=["AI_SCDC_CLOUD_RUN.md"],
+                required_tests=[],
+            )
+            session.add(task)
+            tasks.append(task)
+        session.commit()
+        task_ids = [task.id for task in tasks]
+        repo_id = repository.id
+
+    for task_id in task_ids:
+        response = client.post(
+            f"/tasks/{task_id}/cloud-runs",
+            json={"repo_id": repo_id},
+        )
+        assert response.status_code == 201
+
+    attempted_cloud_run_ids: list[str] = []
+
+    def miss_candidate(*args, **kwargs):
+        attempted_cloud_run_ids.append(kwargs["cloud_run_id"])
+        return False
+
+    monkeypatch.setattr(cloud_runner, "_claim_cloud_run_lease", miss_candidate)
+
+    response = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    )
+
+    assert response.status_code == 204
+    assert len(attempted_cloud_run_ids) == candidate_limit
+
+
 def test_claim_next_cloud_run_lease_skips_cancelled_and_exhausted_runs(
     tmp_path: Path,
 ) -> None:
