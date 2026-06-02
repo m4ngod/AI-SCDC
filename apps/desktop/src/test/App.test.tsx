@@ -162,6 +162,12 @@ function cloudRunFixture() {
     sandbox_kind: "fake",
     patch_artifact_id: "patch_cloud_test",
     failure_reason: null,
+    cancel_requested: false,
+    cancel_requested_at: null,
+    cancelled_at: null,
+    worker_id: "desktop_test_worker",
+    claimed_at: "2026-05-29T00:00:00Z",
+    completed_at: "2026-05-29T00:00:00Z",
     created_at: "2026-05-29T00:00:00Z",
     updated_at: "2026-05-29T00:00:00Z"
   };
@@ -340,6 +346,12 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
         sandbox_kind: "fake",
         patch_artifact_id: "patch_cloud_test",
         failure_reason: null,
+        cancel_requested: false,
+        cancel_requested_at: null,
+        cancelled_at: null,
+        worker_id: "desktop_test_worker",
+        claimed_at: "2026-05-29T00:00:00Z",
+        completed_at: "2026-05-29T00:00:00Z",
         created_at: "2026-05-29T00:00:00Z",
         updated_at: "2026-05-29T00:00:00Z"
       },
@@ -353,6 +365,19 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
         test_result: "not_run"
       }
     }),
+    processCloudRun: vi.fn().mockResolvedValue({
+      cloud_run: cloudRunFixture(),
+      patch_artifact: cloudPatchArtifactFixture()
+    }),
+    cancelCloudRun: vi.fn().mockResolvedValue({
+      ...cloudRunFixture(),
+      status: "cancelled",
+      cancel_requested: true,
+      cancel_requested_at: "2026-05-29T00:01:00Z",
+      cancelled_at: "2026-05-29T00:01:00Z",
+      patch_artifact_id: null
+    }),
+    listCloudRunLogs: vi.fn().mockResolvedValue([]),
     createPullRequest: vi.fn().mockResolvedValue({
       task: {
         ...mergeReadyTaskFixture(),

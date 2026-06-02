@@ -207,31 +207,62 @@ describe("desktop API clients", () => {
 
     expect(cloud.cloud_run).toMatchObject({
       repo_id: "repo_github_demo",
+      status: "queued",
       sandbox_kind: "docker_local",
       sandbox_profile_id: profile.id,
       patch_command_key: "write-note",
       test_command_keys: ["python-version"],
-      command_results: []
+      command_results: [],
+      patch_artifact_id: null
     });
+    expect(cloud.patch_artifact).toBeUndefined();
   });
 
-  it("fake client runs cloud workflow and creates pull requests", async () => {
-    const cloud = await fakeApiClient.startCloudRun("task_demo_created");
+  it("fake client queues, processes cloud workflow, and creates pull requests", async () => {
+    const queued = await fakeApiClient.startCloudRun("task_demo_created");
 
-    expect(cloud).toMatchObject({
+    expect(queued).toMatchObject({
+      cloud_run: {
+        id: "cloud_run_task_demo_created",
+        task_id: "task_demo_created",
+        status: "queued",
+        cancel_requested: false,
+        worker_id: null,
+        patch_artifact_id: null
+      }
+    });
+    expect(queued.patch_artifact).toBeUndefined();
+
+    await expect(fakeApiClient.listCloudRunLogs(queued.cloud_run.id)).resolves.toEqual([
+      expect.objectContaining({
+        cloud_run_id: queued.cloud_run.id,
+        event: "queued"
+      })
+    ]);
+
+    const processed = await fakeApiClient.processCloudRun(queued.cloud_run.id);
+
+    expect(processed).toMatchObject({
       cloud_run: {
         id: "cloud_run_task_demo_created",
         task_id: "task_demo_created",
         status: "patch_ready",
-        patch_artifact_id: "patch_cloud_task_demo_created"
+        worker_id: "desktop_fake_worker",
+        patch_artifact_id: "patch_cloud_task_demo_created",
+        completed_at: "2026-05-29T00:02:00Z"
       },
       patch_artifact: {
         id: "patch_cloud_task_demo_created",
         task_id: "task_demo_created"
       }
     });
+    await expect(fakeApiClient.listCloudRunLogs(queued.cloud_run.id)).resolves.toEqual([
+      expect.objectContaining({ event: "queued" }),
+      expect.objectContaining({ event: "claimed" }),
+      expect.objectContaining({ event: "completed" })
+    ]);
 
-    const approval = await fakeApiClient.approvePatch(cloud.patch_artifact!.id);
+    const approval = await fakeApiClient.approvePatch(processed.patch_artifact!.id);
     const human = await fakeApiClient.requestHumanApproval(approval.approval.id);
     const pullRequest = await fakeApiClient.createPullRequest(human.approval.id);
 
@@ -244,6 +275,25 @@ describe("desktop API clients", () => {
         url: "https://github.com/example/demo/pull/1"
       }
     });
+  });
+
+  it("fake client cancels queued cloud runs and records logs", async () => {
+    const queued = await fakeApiClient.startCloudRun("task_cancel_demo");
+
+    const cancelled = await fakeApiClient.cancelCloudRun(queued.cloud_run.id);
+
+    expect(cancelled).toMatchObject({
+      id: queued.cloud_run.id,
+      status: "cancelled",
+      cancel_requested: true,
+      cancel_requested_at: "2026-05-29T00:01:00Z",
+      cancelled_at: "2026-05-29T00:01:00Z",
+      patch_artifact_id: null
+    });
+    await expect(fakeApiClient.listCloudRunLogs(queued.cloud_run.id)).resolves.toEqual([
+      expect.objectContaining({ event: "queued" }),
+      expect.objectContaining({ event: "cancelled" })
+    ]);
   });
 
   it("fake client creates deterministic planner drafts", async () => {
@@ -866,26 +916,22 @@ describe("desktop API clients", () => {
               id: "cloud_run_api",
               task_id: "task_api",
               repo_id: "repo_github_api",
-              status: "patch_ready",
+              status: "queued",
               head_branch: "codex/task-api",
               sandbox_kind: "docker_local",
               sandbox_profile_id: "sandbox_profile_api",
               patch_command_key: "write-note",
               test_command_keys: ["python-version"],
               command_results: [],
-              patch_artifact_id: "patch_cloud_api",
+              patch_artifact_id: null,
               failure_reason: null,
+              cancel_requested: false,
+              cancel_requested_at: null,
+              cancelled_at: null,
+              worker_id: null,
+              claimed_at: null,
+              completed_at: null,
               created_at: "2026-05-30T02:00:00Z"
-            },
-            patch_artifact: {
-              id: "patch_cloud_api",
-              task_id: "task_api",
-              local_run_id: "cloud_run_api",
-              summary: "Prepared cloud patch.",
-              files_changed: ["README.md"],
-              tests_run: ["pnpm test"],
-              test_result: "passed",
-              diff_text: "diff --git a/README.md b/README.md\n+cloud"
             }
           },
           { status: 201 }
@@ -1030,9 +1076,12 @@ describe("desktop API clients", () => {
         patch_command_key: "write-note",
         test_command_keys: ["python-version"],
         command_results: [],
-        patch_artifact_id: "patch_cloud_api"
+        patch_artifact_id: null,
+        cancel_requested: false,
+        worker_id: null
       }
     });
+    expect(cloud.patch_artifact).toBeUndefined();
     expect(pullRequest).toMatchObject({
       task: {
         id: "task_api",
@@ -1042,6 +1091,154 @@ describe("desktop API clients", () => {
         url: "https://github.com/example/demo/pull/7"
       }
     });
+  });
+
+  it("HTTP client processes, cancels, and lists cloud run logs", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          cloud_run: {
+            id: "cloud_run_api",
+            workspace_id: "workspace_api",
+            project_id: "project_demo",
+            task_id: "task_api",
+            repo_id: "repo_github_api",
+            local_run_id: "cloud_run_api",
+            status: "patch_ready",
+            head_branch: "codex/task-api",
+            sandbox_kind: "docker_local",
+            sandbox_profile_id: "sandbox_profile_api",
+            patch_command_key: "write-note",
+            test_command_keys: ["python-version"],
+            command_results: [],
+            patch_artifact_id: "patch_cloud_api",
+            failure_reason: null,
+            cancel_requested: false,
+            cancel_requested_at: null,
+            cancelled_at: null,
+            worker_id: "worker_api",
+            claimed_at: "2026-05-30T02:01:00Z",
+            completed_at: "2026-05-30T02:02:00Z",
+            created_at: "2026-05-30T02:00:00Z",
+            updated_at: "2026-05-30T02:02:00Z"
+          },
+          patch_artifact: {
+            id: "patch_cloud_api",
+            task_id: "task_api",
+            local_run_id: "cloud_run_api",
+            summary: "Prepared cloud patch.",
+            files_changed: ["README.md"],
+            tests_run: ["pnpm test"],
+            test_result: "passed",
+            diff_text: "diff --git a/README.md b/README.md\n+cloud"
+          }
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: "cloud_run_api",
+          workspace_id: "workspace_api",
+          project_id: "project_demo",
+          task_id: "task_api",
+          repo_id: "repo_github_api",
+          local_run_id: "cloud_run_api",
+          status: "patch_ready",
+          head_branch: "codex/task-api",
+          sandbox_kind: "docker_local",
+          sandbox_profile_id: "sandbox_profile_api",
+          patch_command_key: "write-note",
+          test_command_keys: ["python-version"],
+          command_results: [],
+          patch_artifact_id: "patch_cloud_api",
+          failure_reason: null,
+          cancel_requested: false,
+          cancel_requested_at: null,
+          cancelled_at: null,
+          worker_id: "worker_api",
+          claimed_at: "2026-05-30T02:01:00Z",
+          completed_at: "2026-05-30T02:02:00Z",
+          created_at: "2026-05-30T02:00:00Z",
+          updated_at: "2026-05-30T02:02:00Z"
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "log_queued",
+            cloud_run_id: "cloud_run_api",
+            level: "info",
+            event: "queued",
+            message: "Cloud run queued.",
+            payload: { repo_id: "repo_github_api" },
+            created_at: "2026-05-30T02:00:00Z"
+          },
+          {
+            id: "log_completed",
+            cloud_run_id: "cloud_run_api",
+            level: "info",
+            event: "completed",
+            message: "Cloud run completed.",
+            payload: { patch_artifact_id: "patch_cloud_api" },
+            created_at: "2026-05-30T02:02:00Z"
+          }
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+    const processed = await client.processCloudRun("cloud_run_api");
+    const cancelled = await client.cancelCloudRun("cloud_run_api");
+    const logs = await client.listCloudRunLogs("cloud_run_api");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/process",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/cancel",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/logs"
+    );
+    expect(processed).toMatchObject({
+      cloud_run: {
+        id: "cloud_run_api",
+        status: "patch_ready",
+        worker_id: "worker_api",
+        claimed_at: "2026-05-30T02:01:00Z",
+        completed_at: "2026-05-30T02:02:00Z",
+        cancel_requested: false
+      },
+      patch_artifact: {
+        id: "patch_cloud_api",
+        diff_text: "diff --git a/README.md b/README.md\n+cloud"
+      }
+    });
+    expect(cancelled).toMatchObject({
+      id: "cloud_run_api",
+      status: "patch_ready",
+      patch_artifact_id: "patch_cloud_api"
+    });
+    expect(logs).toEqual([
+      expect.objectContaining({
+        id: "log_queued",
+        event: "queued",
+        payload: { repo_id: "repo_github_api" }
+      }),
+      expect.objectContaining({
+        id: "log_completed",
+        event: "completed",
+        payload: { patch_artifact_id: "patch_cloud_api" }
+      })
+    ]);
   });
 
   it("HTTP client starts no-input cloud runs with an internally selected repository only", async () => {
@@ -1086,26 +1283,22 @@ describe("desktop API clients", () => {
               project_id: "project_demo",
               task_id: "task_api",
               repo_id: "repo_selected_api",
-              status: "patch_ready",
+              status: "queued",
               head_branch: "codex/task-api",
               sandbox_kind: "fake",
               sandbox_profile_id: null,
               patch_command_key: null,
               test_command_keys: [],
               command_results: [],
-              patch_artifact_id: "patch_cloud_no_input_api",
+              patch_artifact_id: null,
               failure_reason: null,
+              cancel_requested: false,
+              cancel_requested_at: null,
+              cancelled_at: null,
+              worker_id: null,
+              claimed_at: null,
+              completed_at: null,
               created_at: "2026-05-30T02:00:00Z"
-            },
-            patch_artifact: {
-              id: "patch_cloud_no_input_api",
-              task_id: "task_api",
-              local_run_id: "cloud_run_no_input_api",
-              summary: "Prepared cloud patch.",
-              files_changed: ["README.md"],
-              tests_run: [],
-              test_result: "not_run",
-              diff_text: "diff --git a/README.md b/README.md\n+cloud"
             }
           },
           { status: 201 }
@@ -1144,14 +1337,12 @@ describe("desktop API clients", () => {
         patch_command_key: null,
         test_command_keys: [],
         command_results: [],
-        patch_artifact_id: "patch_cloud_no_input_api"
-      },
-      patch_artifact: {
-        id: "patch_cloud_no_input_api",
-        task_id: "task_api",
-        diff_text: "diff --git a/README.md b/README.md\n+cloud"
+        patch_artifact_id: null,
+        cancel_requested: false,
+        worker_id: null
       }
     });
+    expect(cloud.patch_artifact).toBeUndefined();
   });
 
   it("HTTP client formats FastAPI JSON detail errors", async () => {

@@ -207,8 +207,24 @@ export type CloudRunCard = {
   command_results?: CommandResultCard[];
   patch_artifact_id?: string | null;
   failure_reason?: string | null;
+  cancel_requested: boolean;
+  cancel_requested_at: string | null;
+  cancelled_at: string | null;
+  worker_id: string | null;
+  claimed_at: string | null;
+  completed_at: string | null;
   created_at?: string;
   updated_at?: string;
+};
+
+export type CloudRunLogEntryCard = {
+  id: string;
+  cloud_run_id: string;
+  level: string;
+  event: string;
+  message: string;
+  payload?: Record<string, unknown> | null;
+  created_at: string;
 };
 
 export type PullRequestCard = {
@@ -317,6 +333,9 @@ export type ConsoleApiClient = {
   ) => Promise<SandboxProfileCard>;
   listSandboxProfiles: (projectId: string) => Promise<SandboxProfileCard[]>;
   startCloudRun: (taskId: string, input?: CloudRunInput) => Promise<CloudRunResult>;
+  processCloudRun: (cloudRunId: string) => Promise<CloudRunResult>;
+  cancelCloudRun: (cloudRunId: string) => Promise<CloudRunCard>;
+  listCloudRunLogs: (cloudRunId: string) => Promise<CloudRunLogEntryCard[]>;
   createPullRequest: (approvalId: string) => Promise<PullRequestResult>;
   startLocalRun: (taskId: string) => Promise<LocalRunResult>;
   runPatchTests: (patchArtifactId: string) => Promise<PatchTestRunResult>;
@@ -350,6 +369,8 @@ type ApiSandboxProfile = SandboxProfileCard;
 type ApiLocalTaskRun = LocalTaskRunCard;
 
 type ApiCloudRun = CloudRunCard;
+
+type ApiCloudRunLogEntry = CloudRunLogEntryCard;
 
 type ApiPatchArtifact = PatchArtifactCard & {
   workspace_id?: string;
@@ -466,6 +487,79 @@ function fakeLocalRunId(taskId: string) {
 }
 
 const fakeSandboxProfilesByProject = new Map<string, SandboxProfileCard[]>();
+const fakeCloudRunsById = new Map<string, CloudRunCard>();
+const fakeCloudRunLogsById = new Map<string, CloudRunLogEntryCard[]>();
+
+function fakeCloudRunFromInput(taskId: string, input: CloudRunInput = {}): CloudRunCard {
+  const cloudRunId = `cloud_run_${taskId}`;
+  const usesSandboxProfile = Boolean(input.sandbox_profile_id);
+  const repoId = input.repo_id ?? "repo_github_demo";
+  return {
+    id: cloudRunId,
+    workspace_id: "workspace_demo",
+    project_id: "project_demo",
+    task_id: taskId,
+    repo_id: repoId,
+    local_run_id: cloudRunId,
+    base_branch: "main",
+    head_branch: `ai-scdc/${taskId}`,
+    status: "queued",
+    sandbox_kind: usesSandboxProfile ? "docker_local" : "fake",
+    sandbox_profile_id: input.sandbox_profile_id ?? null,
+    patch_command_key: input.patch_command_key ?? null,
+    test_command_keys: input.test_command_keys ?? [],
+    command_results: [],
+    patch_artifact_id: null,
+    failure_reason: null,
+    cancel_requested: false,
+    cancel_requested_at: null,
+    cancelled_at: null,
+    worker_id: null,
+    claimed_at: null,
+    completed_at: null,
+    created_at: "2026-05-29T00:00:00Z",
+    updated_at: "2026-05-29T00:00:00Z"
+  };
+}
+
+function fakeCloudPatchArtifact(cloudRun: CloudRunCard): PatchArtifactCard {
+  return {
+    id: `patch_cloud_${cloudRun.task_id}`,
+    task_id: cloudRun.task_id,
+    local_run_id: cloudRun.id,
+    summary: "Prepared cloud runner patch.",
+    files_changed: ["README.md"],
+    tests_run: [],
+    test_result: "not_run"
+  };
+}
+
+function setFakeCloudRun(cloudRun: CloudRunCard) {
+  fakeCloudRunsById.set(cloudRun.id, cloudRun);
+  return cloudRun;
+}
+
+function appendFakeCloudRunLog(
+  cloudRunId: string,
+  event: string,
+  message: string,
+  payload: Record<string, unknown> | null = null
+) {
+  const entries = fakeCloudRunLogsById.get(cloudRunId) ?? [];
+  const minute = String(entries.length).padStart(2, "0");
+  fakeCloudRunLogsById.set(cloudRunId, [
+    ...entries,
+    {
+      id: `${cloudRunId}_${event}_${entries.length + 1}`,
+      cloud_run_id: cloudRunId,
+      level: "info",
+      event,
+      message,
+      payload,
+      created_at: `2026-05-29T00:${minute}:00Z`
+    }
+  ]);
+}
 
 function fakeTaskFromPatchArtifact(patchArtifactId: string) {
   const demoTask = demoTasks.find((item) => item.patch_artifact?.id === patchArtifactId);
@@ -650,41 +744,68 @@ export const fakeApiClient: ConsoleApiClient = {
     return [...(fakeSandboxProfilesByProject.get(projectId) ?? [])];
   },
   async startCloudRun(taskId: string, input: CloudRunInput = {}) {
-    const cloudRunId = `cloud_run_${taskId}`;
-    const patchArtifactId = `patch_cloud_${taskId}`;
-    const usesSandboxProfile = Boolean(input.sandbox_profile_id);
-    const repoId = input.repo_id ?? "repo_github_demo";
+    const cloudRun = setFakeCloudRun(fakeCloudRunFromInput(taskId, input));
+    fakeCloudRunLogsById.set(cloudRun.id, []);
+    appendFakeCloudRunLog(cloudRun.id, "queued", "Cloud run queued.", {
+      repo_id: cloudRun.repo_id,
+      sandbox_kind: cloudRun.sandbox_kind ?? "fake"
+    });
     return {
-      cloud_run: {
-        id: cloudRunId,
-        workspace_id: "workspace_demo",
-        project_id: "project_demo",
-        task_id: taskId,
-        repo_id: repoId,
-        local_run_id: cloudRunId,
-        base_branch: "main",
-        head_branch: `ai-scdc/${taskId}`,
-        status: "patch_ready",
-        sandbox_kind: usesSandboxProfile ? "docker_local" : "fake",
-        sandbox_profile_id: input.sandbox_profile_id ?? null,
-        patch_command_key: input.patch_command_key ?? null,
-        test_command_keys: input.test_command_keys ?? [],
-        command_results: [],
-        patch_artifact_id: patchArtifactId,
-        failure_reason: null,
-        created_at: "2026-05-29T00:00:00Z",
-        updated_at: "2026-05-29T00:00:00Z"
-      },
-      patch_artifact: {
-        id: patchArtifactId,
-        task_id: taskId,
-        local_run_id: cloudRunId,
-        summary: "Prepared cloud runner patch.",
-        files_changed: ["README.md"],
-        tests_run: [],
-        test_result: "not_run"
-      }
+      cloud_run: cloudRun
     };
+  },
+  async processCloudRun(cloudRunId: string) {
+    const cloudRun = fakeCloudRunsById.get(cloudRunId);
+    if (!cloudRun) {
+      throw new Error(`Cloud run not found: ${cloudRunId}`);
+    }
+    if (cloudRun.status === "cancelled") {
+      return { cloud_run: cloudRun };
+    }
+
+    appendFakeCloudRunLog(cloudRun.id, "claimed", "Cloud run claimed by fake worker.", {
+      worker_id: "desktop_fake_worker"
+    });
+    const patchArtifact = fakeCloudPatchArtifact(cloudRun);
+    const processed = setFakeCloudRun({
+      ...cloudRun,
+      status: "patch_ready",
+      patch_artifact_id: patchArtifact.id,
+      worker_id: "desktop_fake_worker",
+      claimed_at: "2026-05-29T00:01:00Z",
+      completed_at: "2026-05-29T00:02:00Z",
+      updated_at: "2026-05-29T00:02:00Z"
+    });
+    appendFakeCloudRunLog(cloudRun.id, "completed", "Cloud run completed.", {
+      patch_artifact_id: patchArtifact.id
+    });
+    return {
+      cloud_run: processed,
+      patch_artifact: patchArtifact
+    };
+  },
+  async cancelCloudRun(cloudRunId: string) {
+    const cloudRun = fakeCloudRunsById.get(cloudRunId);
+    if (!cloudRun) {
+      throw new Error(`Cloud run not found: ${cloudRunId}`);
+    }
+    if (cloudRun.status !== "queued" && cloudRun.status !== "running") {
+      return cloudRun;
+    }
+
+    const cancelled = setFakeCloudRun({
+      ...cloudRun,
+      status: "cancelled",
+      cancel_requested: true,
+      cancel_requested_at: "2026-05-29T00:01:00Z",
+      cancelled_at: "2026-05-29T00:01:00Z",
+      updated_at: "2026-05-29T00:01:00Z"
+    });
+    appendFakeCloudRunLog(cloudRun.id, "cancelled", "Cloud run cancelled.");
+    return cancelled;
+  },
+  async listCloudRunLogs(cloudRunId: string) {
+    return [...(fakeCloudRunLogsById.get(cloudRunId) ?? [])];
   },
   async createPullRequest(approvalId: string) {
     const patchArtifactId = approvalId.replace(/^patch_approval_/, "");
@@ -1103,8 +1224,26 @@ function mapCloudRunCard(cloudRun: ApiCloudRun): CloudRunCard {
     command_results: cloudRun.command_results,
     patch_artifact_id: cloudRun.patch_artifact_id,
     failure_reason: cloudRun.failure_reason,
+    cancel_requested: cloudRun.cancel_requested,
+    cancel_requested_at: cloudRun.cancel_requested_at,
+    cancelled_at: cloudRun.cancelled_at,
+    worker_id: cloudRun.worker_id,
+    claimed_at: cloudRun.claimed_at,
+    completed_at: cloudRun.completed_at,
     created_at: cloudRun.created_at,
     updated_at: cloudRun.updated_at
+  };
+}
+
+function mapCloudRunLogEntryCard(logEntry: ApiCloudRunLogEntry): CloudRunLogEntryCard {
+  return {
+    id: logEntry.id,
+    cloud_run_id: logEntry.cloud_run_id,
+    level: logEntry.level,
+    event: logEntry.event,
+    message: logEntry.message,
+    payload: logEntry.payload,
+    created_at: logEntry.created_at
   };
 }
 
@@ -1480,6 +1619,36 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         `POST /tasks/${taskId}/cloud-runs`
       );
       return mapCloudRunResult(result);
+    },
+    async processCloudRun(cloudRunId: string) {
+      const response = await fetch(apiUrl(options.baseUrl, `/cloud-runs/${cloudRunId}/process`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      const result = await readJsonResponse<ApiCloudRunResult>(
+        response,
+        `POST /cloud-runs/${cloudRunId}/process`
+      );
+      return mapCloudRunResult(result);
+    },
+    async cancelCloudRun(cloudRunId: string) {
+      const response = await fetch(apiUrl(options.baseUrl, `/cloud-runs/${cloudRunId}/cancel`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      const cloudRun = await readJsonResponse<ApiCloudRun>(
+        response,
+        `POST /cloud-runs/${cloudRunId}/cancel`
+      );
+      return mapCloudRunCard(cloudRun);
+    },
+    async listCloudRunLogs(cloudRunId: string) {
+      const response = await fetch(apiUrl(options.baseUrl, `/cloud-runs/${cloudRunId}/logs`));
+      const logs = await readJsonResponse<ApiCloudRunLogEntry[]>(
+        response,
+        `GET /cloud-runs/${cloudRunId}/logs`
+      );
+      return logs.map(mapCloudRunLogEntryCard);
     },
     async createPullRequest(approvalId: string) {
       const response = await fetch(
