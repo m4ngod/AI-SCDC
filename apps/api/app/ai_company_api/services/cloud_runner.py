@@ -3,7 +3,7 @@ import os
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlmodel import Session, select
 
 from ai_company_api.models.entities import (
@@ -12,6 +12,7 @@ from ai_company_api.models.entities import (
     LocalTaskRun,
     LocalTestRun,
     PatchArtifact,
+    Repository,
     Task,
     utc_now,
 )
@@ -355,6 +356,58 @@ def _mark_claimed_cloud_run_failed(
     return CloudRunResultRead(cloud_run=_cloud_run_read(cloud_run), patch_artifact=None)
 
 
+def _mark_claimed_cloud_run_cancelled(
+    session: Session,
+    *,
+    cloud_run: CloudRun,
+    local_run: LocalTaskRun,
+    execution_result: SandboxExecutionResult,
+    secrets: list[str],
+    log_clock: "_EventClock",
+) -> CloudRunResultRead:
+    completed_at = utc_now()
+    local_run.status = "cancelled"
+    local_run.patch_artifact_id = None
+    local_run.failure_reason = None
+    local_run.updated_at = completed_at
+    cloud_run.status = "cancelled"
+    cloud_run.patch_artifact_id = None
+    cloud_run.command_results = _command_result_payloads(
+        [
+            *execution_result.command_results,
+            *execution_result.test_command_results,
+        ],
+        secrets=secrets,
+    )
+    cloud_run.failure_reason = None
+    cloud_run.cancel_requested = True
+    cloud_run.cancel_requested_at = cloud_run.cancel_requested_at or completed_at
+    cloud_run.cancelled_at = cloud_run.cancelled_at or completed_at
+    cloud_run.completed_at = completed_at
+    cloud_run.updated_at = completed_at
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="cancelled",
+        message="Running cloud run cancelled after execution finished.",
+        payload={"status": "cancelled"},
+        created_at=log_clock.next(),
+    )
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="completed",
+        message="Cloud run processing completed.",
+        payload={"status": "cancelled"},
+        created_at=log_clock.next(),
+    )
+    session.add(local_run)
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    return CloudRunResultRead(cloud_run=_cloud_run_read(cloud_run), patch_artifact=None)
+
+
 def cancel_cloud_run(session: Session, *, cloud_run_id: str) -> CloudRunRead:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
     if cloud_run.status in CLOUD_RUN_TERMINAL_STATUSES:
@@ -369,19 +422,11 @@ def cancel_cloud_run(session: Session, *, cloud_run_id: str) -> CloudRunRead:
             if cloud_run.status in CLOUD_RUN_TERMINAL_STATUSES:
                 return _cloud_run_read(cloud_run)
             now = utc_now()
-            cloud_run.cancel_requested = True
-            cloud_run.cancel_requested_at = cloud_run.cancel_requested_at or now
-            cloud_run.updated_at = now
-            _append_cloud_run_log(
+            return _request_running_cloud_run_cancel_and_log(
                 session,
-                cloud_run=cloud_run,
-                event="cancel_requested",
-                message="Cancellation requested.",
+                cloud_run_id=cloud_run.id,
+                now=now,
             )
-            session.add(cloud_run)
-            session.commit()
-            session.refresh(cloud_run)
-            return _cloud_run_read(cloud_run)
         session.refresh(cloud_run)
         local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
         local_run.status = "cancelled"
@@ -394,14 +439,10 @@ def cancel_cloud_run(session: Session, *, cloud_run_id: str) -> CloudRunRead:
             message="Queued cloud run cancelled.",
         )
     else:
-        cloud_run.cancel_requested = True
-        cloud_run.cancel_requested_at = cloud_run.cancel_requested_at or now
-        cloud_run.updated_at = now
-        _append_cloud_run_log(
+        return _request_running_cloud_run_cancel_and_log(
             session,
-            cloud_run=cloud_run,
-            event="cancel_requested",
-            message="Cancellation requested.",
+            cloud_run_id=cloud_run.id,
+            now=now,
         )
 
     session.add(cloud_run)
@@ -431,6 +472,52 @@ def _cancel_queued_cloud_run(
     return result.rowcount == 1
 
 
+def _request_running_cloud_run_cancel_and_log(
+    session: Session,
+    *,
+    cloud_run_id: str,
+    now: datetime,
+) -> CloudRunRead:
+    if not _request_running_cloud_run_cancel(session, cloud_run_id=cloud_run_id, now=now):
+        session.rollback()
+        cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+        return _cloud_run_read(cloud_run)
+    cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    session.refresh(cloud_run)
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="cancel_requested",
+        message="Cancellation requested.",
+    )
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    return _cloud_run_read(cloud_run)
+
+
+def _request_running_cloud_run_cancel(
+    session: Session,
+    *,
+    cloud_run_id: str,
+    now: datetime,
+) -> bool:
+    result = session.exec(
+        update(CloudRun)
+        .where(
+            CloudRun.id == cloud_run_id,
+            CloudRun.status == "running",
+            CloudRun.completed_at.is_(None),
+        )
+        .values(
+            cancel_requested=True,
+            cancel_requested_at=func.coalesce(CloudRun.cancel_requested_at, now),
+            updated_at=now,
+        )
+    )
+    return result.rowcount == 1
+
+
 def list_cloud_run_logs(
     session: Session,
     *,
@@ -453,8 +540,6 @@ def _execute_claimed_cloud_run(
     task = get_task(session, cloud_run.task_id)
     repository = get_repository(session, cloud_run.repo_id)
     local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
-    event_clock = _EventClock()
-    log_clock = _EventClock()
     executor = select_cloud_sandbox_executor()
     docker_image: str | None = None
     patch_command: SandboxCommandSelection | None = None
@@ -521,13 +606,72 @@ def _execute_claimed_cloud_run(
     except Exception:
         execution_result = _executor_exception_result(cloud_run.sandbox_kind)
 
-    local_run.runner_kind = execution_result.runner_kind
-    local_run.base_sha = execution_result.base_sha
-    local_run.head_sha = execution_result.head_sha
-    local_run.worktree_path = execution_result.worktree_ref
-
+    cloud_run_id = cloud_run.id
+    task_id = task.id
     secrets = _redaction_secrets(sandbox_env, repository.repo_url, github_token)
-    if not _should_create_patch_artifact(execution_result):
+    cloud_run, task, repository, local_run = _reload_claimed_cloud_run(
+        session,
+        cloud_run_id=cloud_run_id,
+        task_id=task_id,
+        execution_result=execution_result,
+    )
+    event_clock = _EventClock()
+    log_clock = _EventClock()
+
+    if cloud_run.cancel_requested:
+        return _mark_claimed_cloud_run_cancelled(
+            session,
+            cloud_run=cloud_run,
+            local_run=local_run,
+            execution_result=execution_result,
+            secrets=secrets,
+            log_clock=log_clock,
+        )
+
+    should_create_patch_artifact = _should_create_patch_artifact(execution_result)
+    cloud_run, task, repository, local_run = _reload_claimed_cloud_run(
+        session,
+        cloud_run_id=cloud_run_id,
+        task_id=task_id,
+        execution_result=execution_result,
+    )
+    event_clock = _EventClock()
+    log_clock = _EventClock()
+    if cloud_run.cancel_requested:
+        return _mark_claimed_cloud_run_cancelled(
+            session,
+            cloud_run=cloud_run,
+            local_run=local_run,
+            execution_result=execution_result,
+            secrets=secrets,
+            log_clock=log_clock,
+        )
+    if not _claim_cloud_run_finalization(
+        session,
+        cloud_run_id=cloud_run_id,
+        now=utc_now(),
+    ):
+        session.rollback()
+        cloud_run, task, repository, local_run = _reload_claimed_cloud_run(
+            session,
+            cloud_run_id=cloud_run_id,
+            task_id=task_id,
+            execution_result=execution_result,
+        )
+        log_clock = _EventClock()
+        if cloud_run.cancel_requested:
+            return _mark_claimed_cloud_run_cancelled(
+                session,
+                cloud_run=cloud_run,
+                local_run=local_run,
+                execution_result=execution_result,
+                secrets=secrets,
+                log_clock=log_clock,
+            )
+        return _existing_cloud_run_result(session, cloud_run=cloud_run)
+    session.refresh(cloud_run)
+
+    if not should_create_patch_artifact:
         failure_command_results = [
             *execution_result.command_results,
             *execution_result.test_command_results,
@@ -706,6 +850,60 @@ def _execute_claimed_cloud_run(
     return CloudRunResultRead(
         cloud_run=_cloud_run_read(cloud_run),
         patch_artifact=_patch_artifact_read(artifact),
+    )
+
+
+def _claim_cloud_run_finalization(
+    session: Session,
+    *,
+    cloud_run_id: str,
+    now: datetime,
+) -> bool:
+    result = session.exec(
+        update(CloudRun)
+        .where(
+            CloudRun.id == cloud_run_id,
+            CloudRun.status == "running",
+            CloudRun.completed_at.is_(None),
+            CloudRun.cancel_requested.is_(False),
+        )
+        .values(updated_at=now)
+    )
+    return result.rowcount == 1
+
+
+def _reload_claimed_cloud_run(
+    session: Session,
+    *,
+    cloud_run_id: str,
+    task_id: str,
+    execution_result: SandboxExecutionResult,
+) -> tuple[CloudRun, Task, Repository, LocalTaskRun]:
+    session.rollback()
+    cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    task = get_task(session, task_id)
+    repository = get_repository(session, cloud_run.repo_id)
+    local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
+    local_run.runner_kind = execution_result.runner_kind
+    local_run.base_sha = execution_result.base_sha
+    local_run.head_sha = execution_result.head_sha
+    local_run.worktree_path = execution_result.worktree_ref
+    return cloud_run, task, repository, local_run
+
+
+def _existing_cloud_run_result(
+    session: Session,
+    *,
+    cloud_run: CloudRun,
+) -> CloudRunResultRead:
+    artifact = (
+        session.get(PatchArtifact, cloud_run.patch_artifact_id)
+        if cloud_run.patch_artifact_id is not None
+        else None
+    )
+    return CloudRunResultRead(
+        cloud_run=_cloud_run_read(cloud_run),
+        patch_artifact=_patch_artifact_read(artifact) if artifact is not None else None,
     )
 
 

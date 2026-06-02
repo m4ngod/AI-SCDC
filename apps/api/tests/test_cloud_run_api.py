@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -646,6 +647,345 @@ def test_cancel_running_cloud_run_records_cancel_request(tmp_path: Path) -> None
             ).all()
         ]
     assert "cancel_requested" in log_events
+
+
+def test_running_cancel_request_prevents_artifact_when_worker_finishes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+
+    class CancellingExecutor:
+        sandbox_kind = "fake"
+
+        def run(self, request):
+            with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+                cancelled = cloud_runner.cancel_cloud_run(
+                    session,
+                    cloud_run_id=request.cloud_run_id,
+                )
+            assert cancelled.status == "running"
+            assert cancelled.cancel_requested is True
+            return SandboxExecutionResult(
+                status="patch_ready",
+                runner_kind="cloud_fake",
+                base_sha="base123",
+                head_sha="head456",
+                worktree_ref=f"cloud://fake/{request.cloud_run_id}",
+                summary="Executor finished after cancellation was requested.",
+                files_changed=["AI_SCDC_CLOUD_RUN.md"],
+                tests_run=["python -V"],
+                test_result="passed",
+                risks=[],
+                diff_text="diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n+patch\n",
+                command_results=[
+                    CommandResult(
+                        command="apply patch",
+                        exit_code=0,
+                        stdout="patched",
+                        stderr="",
+                        duration_ms=10,
+                    )
+                ],
+                test_command_results=[],
+                failure_reason=None,
+            )
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: CancellingExecutor(),
+    )
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    response = client.post(f"/cloud-runs/{queued['id']}/process")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["patch_artifact"] is None
+    assert result["cloud_run"]["status"] == "cancelled"
+    assert result["cloud_run"]["patch_artifact_id"] is None
+    assert result["cloud_run"]["cancel_requested"] is True
+    assert result["cloud_run"]["cancelled_at"] is not None
+    assert result["cloud_run"]["completed_at"] is not None
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        persisted = session.get(CloudRun, queued["id"])
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+        artifacts = session.exec(select(PatchArtifact)).all()
+        log_events = [
+            entry.event
+            for entry in session.exec(
+                select(CloudRunLogEntry)
+                .where(CloudRunLogEntry.cloud_run_id == queued["id"])
+                .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+            ).all()
+        ]
+    assert persisted is not None
+    assert local_run is not None
+    assert persisted.status == "cancelled"
+    assert persisted.patch_artifact_id is None
+    assert local_run.status == "cancelled"
+    assert local_run.patch_artifact_id is None
+    assert artifacts == []
+    assert "cancel_requested" in log_events
+    assert "cancelled" in log_events
+    assert "patch_ready" not in log_events
+    assert log_events.index("cancel_requested") < log_events.index("cancelled")
+    assert log_events.index("cancelled") < log_events.index("completed")
+
+
+def test_cancel_during_finalization_prevents_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+
+    class PatchReadyExecutor:
+        sandbox_kind = "fake"
+
+        def run(self, request):
+            return SandboxExecutionResult(
+                status="patch_ready",
+                runner_kind="cloud_fake",
+                base_sha="base123",
+                head_sha="head456",
+                worktree_ref=f"cloud://fake/{request.cloud_run_id}",
+                summary="Executor finished before cancellation was requested.",
+                files_changed=["AI_SCDC_CLOUD_RUN.md"],
+                tests_run=["python -V"],
+                test_result="passed",
+                risks=[],
+                diff_text="diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n+patch\n",
+                command_results=[],
+                test_command_results=[],
+                failure_reason=None,
+            )
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: PatchReadyExecutor(),
+    )
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    original_should_create_patch_artifact = cloud_runner._should_create_patch_artifact
+
+    def cancel_before_artifact_creation(execution_result):
+        with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+            cancelled = cloud_runner.cancel_cloud_run(
+                session,
+                cloud_run_id=queued["id"],
+            )
+        assert cancelled.status == "running"
+        assert cancelled.cancel_requested is True
+        return original_should_create_patch_artifact(execution_result)
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "_should_create_patch_artifact",
+        cancel_before_artifact_creation,
+    )
+
+    response = client.post(f"/cloud-runs/{queued['id']}/process")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["patch_artifact"] is None
+    assert result["cloud_run"]["status"] == "cancelled"
+    assert result["cloud_run"]["patch_artifact_id"] is None
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+        artifacts = session.exec(select(PatchArtifact)).all()
+        log_events = [
+            entry.event
+            for entry in session.exec(
+                select(CloudRunLogEntry)
+                .where(CloudRunLogEntry.cloud_run_id == queued["id"])
+                .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+            ).all()
+        ]
+    assert local_run is not None
+    assert local_run.status == "cancelled"
+    assert local_run.patch_artifact_id is None
+    assert artifacts == []
+    assert "cancelled" in log_events
+    assert "patch_ready" not in log_events
+
+
+def test_cancel_after_finalization_lock_does_not_mutate_terminal_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    original_flush = Session.flush
+    original_get_cloud_run_or_404 = cloud_runner._get_cloud_run_or_404
+    worker_thread_id = None
+    cancel_observed_running = threading.Event()
+    cancel_finished = threading.Event()
+    cancel_results = []
+    cancel_errors = []
+    cancel_thread_started = False
+
+    def get_cloud_run_with_cancel_signal(session, cloud_run_id):
+        cloud_run = original_get_cloud_run_or_404(session, cloud_run_id)
+        if (
+            worker_thread_id is not None
+            and threading.get_ident() != worker_thread_id
+            and cloud_run_id == queued["id"]
+            and cloud_run.status == "running"
+        ):
+            cancel_observed_running.set()
+        return cloud_run
+
+    def request_cancel_after_worker_flush():
+        try:
+            with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+                cancel_results.append(
+                    cloud_runner.cancel_cloud_run(session, cloud_run_id=queued["id"])
+                )
+        except Exception as exc:  # pragma: no cover - surfaced by assertions below
+            cancel_errors.append(exc)
+        finally:
+            cancel_finished.set()
+
+    def flush_with_cancel_race(self, *args, **kwargs):
+        nonlocal cancel_thread_started, worker_thread_id
+        should_start_cancel = (
+            not cancel_thread_started
+            and any(
+                isinstance(item, LocalTaskRun)
+                and item.id == queued["local_run_id"]
+                and item.runner_kind == "cloud_fake"
+                for item in self.dirty
+            )
+            and not any(isinstance(item, PatchArtifact) for item in self.new)
+        )
+        result = original_flush(self, *args, **kwargs)
+        if should_start_cancel:
+            cancel_thread_started = True
+            worker_thread_id = threading.get_ident()
+            thread = threading.Thread(target=request_cancel_after_worker_flush)
+            thread.start()
+            assert cancel_observed_running.wait(timeout=2)
+        return result
+
+    monkeypatch.setattr(cloud_runner, "_get_cloud_run_or_404", get_cloud_run_with_cancel_signal)
+    monkeypatch.setattr(Session, "flush", flush_with_cancel_race)
+
+    response = client.post(f"/cloud-runs/{queued['id']}/process")
+
+    assert response.status_code == 200
+    assert cancel_thread_started is True
+    assert cancel_finished.wait(timeout=5)
+    assert cancel_errors == []
+    result = response.json()
+    assert result["cloud_run"]["status"] == "patch_ready"
+    assert result["patch_artifact"] is not None
+    assert cancel_results
+    assert cancel_results[0].status == "patch_ready"
+    assert cancel_results[0].cancel_requested is False
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        persisted = session.get(CloudRun, queued["id"])
+    assert persisted is not None
+    assert persisted.status == "patch_ready"
+    assert persisted.cancel_requested is False
+
+
+def test_cancel_between_recheck_and_finalization_claim_prevents_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    original_reload_claimed_cloud_run = cloud_runner._reload_claimed_cloud_run
+    reload_count = 0
+
+    def reload_then_cancel_on_second_check(*args, **kwargs):
+        nonlocal reload_count
+        result = original_reload_claimed_cloud_run(*args, **kwargs)
+        reload_count += 1
+        if reload_count == 2:
+            with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+                cancelled = cloud_runner.cancel_cloud_run(
+                    session,
+                    cloud_run_id=queued["id"],
+                )
+            assert cancelled.status == "running"
+            assert cancelled.cancel_requested is True
+        return result
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "_reload_claimed_cloud_run",
+        reload_then_cancel_on_second_check,
+    )
+
+    response = client.post(f"/cloud-runs/{queued['id']}/process")
+
+    assert response.status_code == 200
+    assert reload_count >= 2
+    result = response.json()
+    assert result["patch_artifact"] is None
+    assert result["cloud_run"]["status"] == "cancelled"
+    assert result["cloud_run"]["patch_artifact_id"] is None
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+        artifacts = session.exec(select(PatchArtifact)).all()
+    assert local_run is not None
+    assert local_run.status == "cancelled"
+    assert local_run.patch_artifact_id is None
+    assert artifacts == []
 
 
 def test_cancel_queued_cloud_run_claim_race_records_cancel_request(

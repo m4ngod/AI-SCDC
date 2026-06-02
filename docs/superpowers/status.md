@@ -51,7 +51,7 @@ git diff --check
 
 Results:
 
-- `pytest apps/api/tests`: passed, 276 tests, 1 existing Starlette/httpx warning.
+- `pytest apps/api/tests`: passed, 280 tests, 1 existing Starlette/httpx warning.
 - Desktop client/App tests: passed, 65 tests.
 - Root `pnpm typecheck`: passed.
 - `git diff --check`: passed.
