@@ -8,11 +8,15 @@ type TaskBoardProps = {
   approvingPatchTaskId?: string | null;
   requestingHumanApprovalTaskId?: string | null;
   runningCloudTaskId?: string | null;
+  processingCloudRunTaskId?: string | null;
+  cancellingCloudRunTaskId?: string | null;
   creatingPullRequestTaskId?: string | null;
   localRunErrors?: Record<string, string>;
   workflowErrors?: Record<string, string>;
   onStartLocalRun?: (taskId: string) => void;
   onStartCloudRun?: (taskId: string) => void;
+  onProcessCloudRun?: (task: TaskCard) => void;
+  onCancelCloudRun?: (task: TaskCard) => void;
   onRunPatchTests?: (task: TaskCard) => void;
   onReviewPatch?: (task: TaskCard) => void;
   onApprovePatch?: (task: TaskCard) => void;
@@ -28,18 +32,26 @@ export function TaskBoard({
   approvingPatchTaskId = null,
   requestingHumanApprovalTaskId = null,
   runningCloudTaskId = null,
+  processingCloudRunTaskId = null,
+  cancellingCloudRunTaskId = null,
   creatingPullRequestTaskId = null,
   localRunErrors = {},
   workflowErrors = {},
   onStartLocalRun,
   onStartCloudRun,
+  onProcessCloudRun,
+  onCancelCloudRun,
   onRunPatchTests,
   onReviewPatch,
   onApprovePatch,
   onRequestHumanApproval,
   onCreatePullRequest
 }: TaskBoardProps) {
-  const isRunPending = runningTaskId !== null || runningCloudTaskId !== null;
+  const isCloudActionPending =
+    runningCloudTaskId !== null ||
+    processingCloudRunTaskId !== null ||
+    cancellingCloudRunTaskId !== null;
+  const isRunPending = runningTaskId !== null || isCloudActionPending;
 
   return (
     <section className="task-board" aria-label="Task board">
@@ -56,7 +68,7 @@ export function TaskBoard({
             </div>
             <div className="task-row-meta">
               <span className="status-pill">{task.status}</span>
-              {onStartLocalRun && task.status === "CREATED" ? (
+              {onStartLocalRun && task.status === "CREATED" && !task.cloud_run ? (
                 <button
                   type="button"
                   className="task-run-button"
@@ -66,7 +78,7 @@ export function TaskBoard({
                   {runningTaskId === task.id ? "Running" : "Run local"}
                 </button>
               ) : null}
-              {onStartCloudRun && task.status === "CREATED" ? (
+              {onStartCloudRun && task.status === "CREATED" && !task.cloud_run ? (
                 <button
                   type="button"
                   className="task-run-button"
@@ -74,6 +86,27 @@ export function TaskBoard({
                   onClick={() => onStartCloudRun(task.id)}
                 >
                   {runningCloudTaskId === task.id ? "Running cloud" : "Run cloud"}
+                </button>
+              ) : null}
+              {onProcessCloudRun && task.cloud_run?.status === "queued" ? (
+                <button
+                  type="button"
+                  className="task-run-button"
+                  disabled={isCloudActionPending}
+                  onClick={() => onProcessCloudRun(task)}
+                >
+                  {processingCloudRunTaskId === task.id ? "Processing" : "Process"}
+                </button>
+              ) : null}
+              {onCancelCloudRun &&
+              (task.cloud_run?.status === "queued" || task.cloud_run?.status === "running") ? (
+                <button
+                  type="button"
+                  className="task-run-button"
+                  disabled={isCloudActionPending}
+                  onClick={() => onCancelCloudRun(task)}
+                >
+                  {cancellingCloudRunTaskId === task.id ? "Cancelling" : "Cancel"}
                 </button>
               ) : null}
               {onRunPatchTests && task.status === "PATCH_READY" && task.patch_artifact ? (
@@ -160,6 +193,18 @@ export function TaskBoard({
                           {task.cloud_run.failure_reason}
                         </span>
                       ) : null}
+                    </dd>
+                  </div>
+                ) : null}
+                {task.cloud_run_logs?.length ? (
+                  <div>
+                    <dt>Cloud logs</dt>
+                    <dd>
+                      <ol className="task-cloud-log-list">
+                        {task.cloud_run_logs.map((entry) => (
+                          <li key={entry.id}>{`${entry.event}: ${entry.message}`}</li>
+                        ))}
+                      </ol>
                     </dd>
                   </div>
                 ) : null}

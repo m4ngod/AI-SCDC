@@ -95,6 +95,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const [sandboxProfileStatus, setSandboxProfileStatus] = useState<string | null>(null);
   const [isConnectingGitHubRepo, setIsConnectingGitHubRepo] = useState(false);
   const [runningCloudTaskId, setRunningCloudTaskId] = useState<string | null>(null);
+  const [processingCloudRunTaskId, setProcessingCloudRunTaskId] = useState<string | null>(null);
+  const [cancellingCloudRunTaskId, setCancellingCloudRunTaskId] = useState<string | null>(null);
   const [creatingPullRequestTaskId, setCreatingPullRequestTaskId] = useState<string | null>(null);
   const [localRunErrors, setLocalRunErrors] = useState<Record<string, string>>({});
   const [workflowErrors, setWorkflowErrors] = useState<Record<string, string>>({});
@@ -125,6 +127,17 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       cancelled = true;
     };
   }, [apiClient]);
+
+  async function refreshCloudRunLogs(
+    cloudRunId: string,
+    fallbackLogs: TaskCard["cloud_run_logs"] = []
+  ) {
+    try {
+      return await apiClient.listCloudRunLogs(cloudRunId);
+    } catch {
+      return fallbackLogs;
+    }
+  }
 
   async function handleSubmitGoal(goal: string) {
     if (isDecidingPlannerRun) {
@@ -290,7 +303,12 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   }
 
   async function handleStartCloudRun(taskId: string) {
-    if (runningTaskId || runningCloudTaskId) {
+    if (
+      runningTaskId ||
+      runningCloudTaskId ||
+      processingCloudRunTaskId ||
+      cancellingCloudRunTaskId
+    ) {
       return;
     }
 
@@ -309,6 +327,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
             test_command_keys: ["python-version"]
           })
         : await apiClient.startCloudRun(taskId);
+      const cloudRunLogs = await refreshCloudRunLogs(result.cloud_run.id);
       setTasks((currentTasks) =>
         currentTasks.map((task) =>
           task.id === taskId
@@ -318,7 +337,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
                 repo_id: result.cloud_run.repo_id,
                 branch_name: result.cloud_run.head_branch,
                 patch_artifact: result.patch_artifact ?? task.patch_artifact,
-                cloud_run: result.cloud_run
+                cloud_run: result.cloud_run,
+                cloud_run_logs: cloudRunLogs
               }
             : task
         )
@@ -330,6 +350,85 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       }));
     } finally {
       setRunningCloudTaskId(null);
+    }
+  }
+
+  async function handleProcessCloudRun(task: TaskCard) {
+    if (processingCloudRunTaskId || !task.cloud_run) {
+      return;
+    }
+
+    setProcessingCloudRunTaskId(task.id);
+    setWorkflowErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[task.id];
+      return nextErrors;
+    });
+    try {
+      const result = await apiClient.processCloudRun(task.cloud_run.id);
+      const cloudRunLogs = await refreshCloudRunLogs(
+        result.cloud_run.id,
+        task.cloud_run_logs
+      );
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === task.id
+            ? {
+                ...currentTask,
+                status: result.patch_artifact ? "PATCH_READY" : currentTask.status,
+                repo_id: result.cloud_run.repo_id,
+                branch_name: result.cloud_run.head_branch,
+                patch_artifact: result.patch_artifact ?? currentTask.patch_artifact,
+                cloud_run: result.cloud_run,
+                cloud_run_logs: cloudRunLogs
+              }
+            : currentTask
+        )
+      );
+    } catch (error) {
+      setWorkflowErrors((currentErrors) => ({
+        ...currentErrors,
+        [task.id]: errorMessage(error, "Failed to process cloud run")
+      }));
+    } finally {
+      setProcessingCloudRunTaskId(null);
+    }
+  }
+
+  async function handleCancelCloudRun(task: TaskCard) {
+    if (cancellingCloudRunTaskId || !task.cloud_run) {
+      return;
+    }
+
+    setCancellingCloudRunTaskId(task.id);
+    setWorkflowErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[task.id];
+      return nextErrors;
+    });
+    try {
+      const cloudRun = await apiClient.cancelCloudRun(task.cloud_run.id);
+      const cloudRunLogs = await refreshCloudRunLogs(cloudRun.id, task.cloud_run_logs);
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === task.id
+            ? {
+                ...currentTask,
+                repo_id: cloudRun.repo_id,
+                branch_name: cloudRun.head_branch,
+                cloud_run: cloudRun,
+                cloud_run_logs: cloudRunLogs
+              }
+            : currentTask
+        )
+      );
+    } catch (error) {
+      setWorkflowErrors((currentErrors) => ({
+        ...currentErrors,
+        [task.id]: errorMessage(error, "Failed to cancel cloud run")
+      }));
+    } finally {
+      setCancellingCloudRunTaskId(null);
     }
   }
 
@@ -615,11 +714,15 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         approvingPatchTaskId={approvingPatchTaskId}
         requestingHumanApprovalTaskId={requestingHumanApprovalTaskId}
         runningCloudTaskId={runningCloudTaskId}
+        processingCloudRunTaskId={processingCloudRunTaskId}
+        cancellingCloudRunTaskId={cancellingCloudRunTaskId}
         creatingPullRequestTaskId={creatingPullRequestTaskId}
         localRunErrors={localRunErrors}
         workflowErrors={workflowErrors}
         onStartLocalRun={handleStartLocalRun}
         onStartCloudRun={handleStartCloudRun}
+        onProcessCloudRun={handleProcessCloudRun}
+        onCancelCloudRun={handleCancelCloudRun}
         onRunPatchTests={handleRunPatchTests}
         onReviewPatch={handleReviewPatch}
         onApprovePatch={handleApprovePatch}

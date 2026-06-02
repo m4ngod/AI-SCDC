@@ -16,6 +16,7 @@ export type TaskCard = {
   patch_approval?: PatchApprovalCard;
   debug_attempt?: DebugAttemptCard | null;
   cloud_run?: CloudRunCard;
+  cloud_run_logs?: CloudRunLogEntryCard[];
   pull_request?: PullRequestCard;
 };
 

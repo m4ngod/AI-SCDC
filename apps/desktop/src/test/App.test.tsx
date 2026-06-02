@@ -185,6 +185,17 @@ function cloudPatchArtifactFixture() {
   };
 }
 
+function queuedCloudRunFixture() {
+  return {
+    ...cloudRunFixture(),
+    status: "queued",
+    patch_artifact_id: null,
+    worker_id: null,
+    claimed_at: null,
+    completed_at: null
+  };
+}
+
 function humanApprovalTaskFixture(): TaskCard {
   return {
     ...mergeReadyTaskFixture(),
@@ -1267,12 +1278,29 @@ describe("App", () => {
       id: "task_cloud"
     };
     const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({
+      cloud_run: queuedCloudRunFixture(),
+      patch_artifact: undefined
+    });
+    const listCloudRunLogs = vi.fn<ConsoleApiClient["listCloudRunLogs"]>().mockResolvedValue([
+      {
+        id: "log_queued",
+        cloud_run_id: "cloud_run_test",
+        level: "info",
+        event: "queued",
+        message: "Cloud run queued.",
+        payload: { repo_id: "repo_github_test" },
+        created_at: "2026-05-29T00:00:00Z"
+      }
+    ]);
+    const processCloudRun = vi.fn<ConsoleApiClient["processCloudRun"]>().mockResolvedValue({
       cloud_run: cloudRunFixture(),
       patch_artifact: cloudPatchArtifactFixture()
     });
     const apiClient = createMockApiClient({
       listTasks: vi.fn().mockResolvedValue([task]),
-      startCloudRun
+      startCloudRun,
+      processCloudRun,
+      listCloudRunLogs
     });
 
     render(<App apiClient={apiClient} />);
@@ -1282,9 +1310,154 @@ describe("App", () => {
     await user.click(await within(board).findByRole("button", { name: "Run cloud" }));
 
     expect(startCloudRun).toHaveBeenCalledWith("task_cloud");
+    expect(listCloudRunLogs).toHaveBeenCalledWith("cloud_run_test");
+    expect(
+      await within(board).findByText("queued via fake on ai-scdc/task-cloud")
+    ).toBeInTheDocument();
+    expect(within(board).getByText("queued: Cloud run queued.")).toBeInTheDocument();
+    await user.click(within(board).getByRole("button", { name: "Process" }));
+
+    expect(processCloudRun).toHaveBeenCalledWith("cloud_run_test");
     expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
     expect(
       within(board).getByText("patch_ready via fake on ai-scdc/task-cloud")
+    ).toBeInTheDocument();
+  });
+
+  it("cancels queued cloud runs and refreshes cloud logs", async () => {
+    const user = userEvent.setup();
+    const queuedRun = queuedCloudRunFixture();
+    const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({
+      cloud_run: queuedRun,
+      patch_artifact: undefined
+    });
+    const cancelCloudRun = vi.fn<ConsoleApiClient["cancelCloudRun"]>().mockResolvedValue({
+      ...queuedRun,
+      status: "cancelled",
+      cancel_requested: true,
+      cancel_requested_at: "2026-05-29T00:01:00Z",
+      cancelled_at: "2026-05-29T00:01:00Z"
+    });
+    const listCloudRunLogs = vi
+      .fn<ConsoleApiClient["listCloudRunLogs"]>()
+      .mockResolvedValueOnce([
+        {
+          id: "log_queued",
+          cloud_run_id: "cloud_run_test",
+          level: "info",
+          event: "queued",
+          message: "Cloud run queued.",
+          payload: null,
+          created_at: "2026-05-29T00:00:00Z"
+        }
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "log_queued",
+          cloud_run_id: "cloud_run_test",
+          level: "info",
+          event: "queued",
+          message: "Cloud run queued.",
+          payload: null,
+          created_at: "2026-05-29T00:00:00Z"
+        },
+        {
+          id: "log_cancelled",
+          cloud_run_id: "cloud_run_test",
+          level: "info",
+          event: "cancelled",
+          message: "Cloud run cancelled.",
+          payload: null,
+          created_at: "2026-05-29T00:01:00Z"
+        }
+      ]);
+    const apiClient = createMockApiClient({
+      listTasks: vi
+        .fn()
+        .mockResolvedValue([{ ...taskCardFixture("Cancel cloud task"), id: "task_cloud" }]),
+      startCloudRun,
+      cancelCloudRun,
+      listCloudRunLogs
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run cloud" }));
+    await user.click(await within(board).findByRole("button", { name: "Cancel" }));
+
+    expect(cancelCloudRun).toHaveBeenCalledWith("cloud_run_test");
+    expect(listCloudRunLogs).toHaveBeenCalledTimes(2);
+    expect(
+      await within(board).findByText("cancelled via fake on ai-scdc/task-cloud")
+    ).toBeInTheDocument();
+    expect(within(board).getByText("cancelled: Cloud run cancelled.")).toBeInTheDocument();
+  });
+
+  it("keeps successful cloud run updates when log refresh fails", async () => {
+    const user = userEvent.setup();
+    const queuedRun = queuedCloudRunFixture();
+    const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({
+      cloud_run: queuedRun,
+      patch_artifact: undefined
+    });
+    const processCloudRun = vi.fn<ConsoleApiClient["processCloudRun"]>().mockResolvedValue({
+      cloud_run: cloudRunFixture(),
+      patch_artifact: cloudPatchArtifactFixture()
+    });
+    const cancelCloudRun = vi.fn<ConsoleApiClient["cancelCloudRun"]>().mockResolvedValue({
+      ...queuedRun,
+      status: "cancelled",
+      cancel_requested: true,
+      cancel_requested_at: "2026-05-29T00:01:00Z",
+      cancelled_at: "2026-05-29T00:01:00Z"
+    });
+    const listCloudRunLogs = vi
+      .fn<ConsoleApiClient["listCloudRunLogs"]>()
+      .mockRejectedValue(new Error("Log refresh failed"));
+    const apiClient = createMockApiClient({
+      listTasks: vi
+        .fn()
+        .mockResolvedValue([{ ...taskCardFixture("Cloud log failure task"), id: "task_cloud" }]),
+      startCloudRun,
+      processCloudRun,
+      cancelCloudRun,
+      listCloudRunLogs
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run cloud" }));
+    expect(
+      await within(board).findByText("queued via fake on ai-scdc/task-cloud")
+    ).toBeInTheDocument();
+
+    await user.click(within(board).getByRole("button", { name: "Process" }));
+    expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
+    expect(
+      within(board).getByText("patch_ready via fake on ai-scdc/task-cloud")
+    ).toBeInTheDocument();
+
+    const cancelTask: TaskCard = {
+      ...taskCardFixture("Cloud cancel log failure task"),
+      id: "task_cancel_cloud",
+      cloud_run: queuedRun
+    };
+    const cancelOnlyClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([cancelTask]),
+      cancelCloudRun,
+      listCloudRunLogs
+    });
+    render(<App apiClient={cancelOnlyClient} />);
+
+    const boards = screen.getAllByLabelText("Task board");
+    const cancelBoard = boards[boards.length - 1];
+    await user.click(await within(cancelBoard).findByRole("button", { name: "Cancel" }));
+    expect(
+      await within(cancelBoard).findByText("cancelled via fake on ai-scdc/task-cloud")
     ).toBeInTheDocument();
   });
 
@@ -1292,14 +1465,14 @@ describe("App", () => {
     const user = userEvent.setup();
     const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({
       cloud_run: {
-        ...cloudRunFixture(),
+        ...queuedCloudRunFixture(),
         sandbox_kind: "docker_local",
         sandbox_profile_id: "sandbox_profile_test",
         patch_command_key: "write-note",
         test_command_keys: ["python-version"],
         command_results: []
       },
-      patch_artifact: cloudPatchArtifactFixture()
+      patch_artifact: undefined
     });
     const apiClient = createMockApiClient({
       listTasks: vi
@@ -1326,7 +1499,10 @@ describe("App", () => {
       patch_command_key: "write-note",
       test_command_keys: ["python-version"]
     });
-    expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
+    expect(
+      await within(board).findByText("queued via docker_local on ai-scdc/task-cloud")
+    ).toBeInTheDocument();
+    expect(within(board).getByRole("button", { name: "Process" })).toBeInTheDocument();
   });
 
   it("clears stale sandbox profile state when replacement profile creation fails", async () => {
