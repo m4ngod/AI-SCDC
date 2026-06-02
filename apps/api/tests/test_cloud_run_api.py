@@ -436,6 +436,66 @@ def test_claim_next_cloud_run_lease_marks_run_running(tmp_path: Path) -> None:
     assert "lease_claimed" in log_events
 
 
+def test_claim_next_cloud_run_lease_retries_after_claim_race(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, first_task = create_cloud_task(session)
+        second_task = Task(
+            project_id=first_task.project_id,
+            title="Later queued run",
+            role_required="backend",
+            status=TaskStatus.CREATED,
+            allowed_paths=["AI_SCDC_CLOUD_RUN.md"],
+            required_tests=[],
+        )
+        session.add(second_task)
+        session.commit()
+        first_task_id = first_task.id
+        second_task_id = second_task.id
+        repo_id = repository.id
+
+    first = client.post(
+        f"/tasks/{first_task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    second = client.post(
+        f"/tasks/{second_task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    real_claim = cloud_runner._claim_cloud_run_lease
+    attempted_cloud_run_ids: list[str] = []
+
+    def miss_first_candidate(*args, **kwargs):
+        attempted_cloud_run_ids.append(kwargs["cloud_run_id"])
+        if kwargs["cloud_run_id"] == first["id"]:
+            return False
+        return real_claim(*args, **kwargs)
+
+    monkeypatch.setattr(cloud_runner, "_claim_cloud_run_lease", miss_first_candidate)
+
+    response = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["cloud_run"]["id"] == second["id"]
+    assert body["cloud_run"]["status"] == "running"
+    assert attempted_cloud_run_ids == [first["id"], second["id"]]
+
+
 def test_claim_next_cloud_run_lease_skips_cancelled_and_exhausted_runs(
     tmp_path: Path,
 ) -> None:

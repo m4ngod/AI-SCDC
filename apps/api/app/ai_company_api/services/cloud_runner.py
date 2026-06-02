@@ -233,55 +233,60 @@ def claim_next_cloud_run_lease(
     worker_kind: str = "remote_stub",
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> CloudRunLeaseRead | None:
-    cloud_run = session.exec(
-        select(CloudRun)
+    candidate_ids = session.exec(
+        select(CloudRun.id)
         .where(
             CloudRun.status == "queued",
             CloudRun.cancel_requested.is_(False),
             CloudRun.attempt_count < CloudRun.max_attempts,
         )
         .order_by(CloudRun.created_at, CloudRun.id)
-    ).first()
-    if cloud_run is None:
-        return None
+    ).all()
 
-    now = utc_now()
-    lease_id = prefixed_id("lease")
-    lease_expires_at = now + timedelta(seconds=lease_seconds)
-    if not _claim_cloud_run_lease(
-        session,
-        cloud_run_id=cloud_run.id,
-        worker_id=worker_id,
-        worker_kind=worker_kind,
-        lease_id=lease_id,
-        lease_expires_at=lease_expires_at,
-        now=now,
-    ):
-        session.rollback()
-        return None
+    for cloud_run_id in candidate_ids:
+        cloud_run = session.get(CloudRun, cloud_run_id)
+        if cloud_run is None:
+            continue
 
-    session.refresh(cloud_run)
-    local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
-    local_run.status = "running"
-    local_run.updated_at = now
-    _append_cloud_run_log(
-        session,
-        cloud_run=cloud_run,
-        event="lease_claimed",
-        message="Cloud run lease claimed by remote worker.",
-        payload={
-            "worker_id": worker_id,
-            "worker_kind": worker_kind,
-            "lease_id_suffix": lease_id.rsplit("_", 1)[-1],
-            "lease_seconds": lease_seconds,
-            "attempt_count": cloud_run.attempt_count,
-        },
-    )
-    session.add(local_run)
-    session.add(cloud_run)
-    session.commit()
-    session.refresh(cloud_run)
-    return _cloud_run_lease_read(cloud_run)
+        now = utc_now()
+        lease_id = prefixed_id("lease")
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        if not _claim_cloud_run_lease(
+            session,
+            cloud_run_id=cloud_run.id,
+            worker_id=worker_id,
+            worker_kind=worker_kind,
+            lease_id=lease_id,
+            lease_expires_at=lease_expires_at,
+            now=now,
+        ):
+            session.rollback()
+            continue
+
+        session.refresh(cloud_run)
+        local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
+        local_run.status = "running"
+        local_run.updated_at = now
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="lease_claimed",
+            message="Cloud run lease claimed by remote worker.",
+            payload={
+                "worker_id": worker_id,
+                "worker_kind": worker_kind,
+                "lease_id_suffix": lease_id.rsplit("_", 1)[-1],
+                "lease_seconds": lease_seconds,
+                "attempt_count": cloud_run.attempt_count,
+            },
+        )
+        session.add(local_run)
+        session.add(cloud_run)
+        session.commit()
+        session.refresh(cloud_run)
+        return _cloud_run_lease_read(cloud_run)
+
+    return None
 
 
 def process_cloud_run(
