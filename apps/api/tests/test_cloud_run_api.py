@@ -2537,6 +2537,76 @@ def test_init_db_adds_phase_9_cloud_run_columns_and_log_table(
     assert ("created_at",) in log_index_columns
 
 
+def test_init_db_adds_phase_10a_cloud_run_lease_columns(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "phase10a.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    SQLModel.metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE cloud_run RENAME TO cloud_run_old")
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE cloud_run (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                workspace_id VARCHAR NOT NULL,
+                project_id VARCHAR NOT NULL,
+                task_id VARCHAR NOT NULL,
+                repo_id VARCHAR NOT NULL,
+                local_run_id VARCHAR,
+                base_branch VARCHAR NOT NULL,
+                head_branch VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                sandbox_kind VARCHAR NOT NULL,
+                cancel_requested BOOLEAN NOT NULL DEFAULT 0,
+                worker_id VARCHAR,
+                claimed_at DATETIME,
+                completed_at DATETIME,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO cloud_run (
+                id, workspace_id, project_id, task_id, repo_id, local_run_id,
+                base_branch, head_branch, status, sandbox_kind, cancel_requested,
+                worker_id, claimed_at, completed_at, created_at, updated_at
+            )
+            SELECT id, workspace_id, project_id, task_id, repo_id, local_run_id,
+                base_branch, head_branch, status, sandbox_kind, cancel_requested,
+                worker_id, claimed_at, completed_at, created_at, updated_at
+            FROM cloud_run_old
+            """
+        )
+        connection.exec_driver_sql("DROP TABLE cloud_run_old")
+
+    init_db(engine)
+
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("cloud_run")}
+    assert {
+        "queue_provider",
+        "remote_worker_kind",
+        "lease_id",
+        "lease_expires_at",
+        "heartbeat_at",
+        "attempt_count",
+        "max_attempts",
+        "last_queue_error",
+    }.issubset(columns)
+    indexes = {
+        tuple(index["column_names"])
+        for index in inspector.get_indexes("cloud_run")
+    }
+    assert ("queue_provider",) in indexes
+    assert ("remote_worker_kind",) in indexes
+    assert ("lease_id",) in indexes
+    assert ("lease_expires_at",) in indexes
+
+
 def test_init_db_allows_cloud_test_run_without_patch_artifact(
     tmp_path: Path,
 ) -> None:

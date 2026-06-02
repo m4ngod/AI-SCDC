@@ -316,6 +316,14 @@ class CloudRunRead(BaseModel):
     worker_id: str | None
     claimed_at: datetime | None
     completed_at: datetime | None
+    queue_provider: str
+    remote_worker_kind: str | None
+    lease_id: str | None
+    lease_expires_at: datetime | None
+    heartbeat_at: datetime | None
+    attempt_count: int
+    max_attempts: int
+    last_queue_error: str | None
     created_at: datetime
     updated_at: datetime
 

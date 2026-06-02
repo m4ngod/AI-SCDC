@@ -508,6 +508,14 @@ class CloudRun(SQLModel, table=True):
     worker_id: str | None = Field(default=None, index=True)
     claimed_at: datetime | None = None
     completed_at: datetime | None = None
+    queue_provider: str = Field(default="local_db", index=True)
+    remote_worker_kind: str | None = Field(default=None, index=True)
+    lease_id: str | None = Field(default=None, index=True)
+    lease_expires_at: datetime | None = Field(default=None, index=True)
+    heartbeat_at: datetime | None = None
+    attempt_count: int = Field(default=0)
+    max_attempts: int = Field(default=3)
+    last_queue_error: str | None = None
     created_at: datetime = Field(default_factory=utc_now, index=True)
     updated_at: datetime = Field(default_factory=utc_now)
 
