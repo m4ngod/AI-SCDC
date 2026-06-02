@@ -305,14 +305,6 @@ def heartbeat_cloud_run_lease(
         worker_id=worker_id,
     )
     now = utc_now()
-    lease_expires_at = cloud_run.lease_expires_at
-    if lease_expires_at is not None and lease_expires_at.tzinfo is None:
-        lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
-    if lease_expires_at is None or lease_expires_at < now:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cloud run lease is not current",
-        )
     cloud_run.heartbeat_at = now
     cloud_run.lease_expires_at = now + timedelta(seconds=lease_seconds)
     cloud_run.updated_at = now
@@ -1258,6 +1250,14 @@ def _get_current_cloud_run_lease_or_409(
         )
     ).first()
     if cloud_run is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cloud run lease is not current",
+        )
+    lease_expires_at = cloud_run.lease_expires_at
+    if lease_expires_at is not None and lease_expires_at.tzinfo is None:
+        lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+    if lease_expires_at is None or lease_expires_at < utc_now():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cloud run lease is not current",

@@ -1,6 +1,6 @@
 import threading
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect, text
@@ -20,6 +20,7 @@ from ai_company_api.models.entities import (
     Repository,
     SandboxProfile,
     Task,
+    utc_now,
 )
 from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
@@ -932,6 +933,57 @@ def test_complete_lease_after_cancel_request_finishes_cancelled_without_artifact
     assert artifacts == []
     assert local_run is not None
     assert local_run.status == "cancelled"
+
+
+def test_complete_expired_cloud_run_lease_is_rejected_without_artifact(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    ).json()
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        cloud_run.lease_expires_at = utc_now() - timedelta(seconds=1)
+        session.add(cloud_run)
+        session.commit()
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=remote_stub_completion_payload(queued["id"]),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Cloud run lease is not current"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        artifacts = session.exec(select(PatchArtifact)).all()
+        cloud_run = session.get(CloudRun, queued["id"])
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+
+    assert artifacts == []
+    assert cloud_run is not None
+    assert cloud_run.status == "running"
+    assert cloud_run.patch_artifact_id is None
+    assert local_run is not None
+    assert local_run.status == "running"
+    assert local_run.patch_artifact_id is None
 
 
 def test_complete_stale_cloud_run_lease_is_rejected_without_artifact(
