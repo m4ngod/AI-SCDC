@@ -1241,6 +1241,63 @@ describe("desktop API clients", () => {
     ]);
   });
 
+  it("normalizes phase 10a cloud run lease fields", async () => {
+    const cloudRun = {
+      id: "cloud_run_1",
+      workspace_id: "dev_workspace",
+      project_id: "project_1",
+      task_id: "task_1",
+      repo_id: "repo_1",
+      local_run_id: "local_run_1",
+      sandbox_profile_id: null,
+      patch_command_key: null,
+      test_command_keys: [],
+      command_results: [],
+      base_branch: "main",
+      head_branch: "ai-scdc/task-task_1-cloud_run_1",
+      status: "running",
+      sandbox_kind: "fake",
+      patch_artifact_id: null,
+      failure_reason: null,
+      cancel_requested: false,
+      cancel_requested_at: null,
+      cancelled_at: null,
+      worker_id: "remote-worker-1",
+      claimed_at: "2026-06-02T00:00:00Z",
+      completed_at: null,
+      queue_provider: "local_db",
+      remote_worker_kind: "remote_stub",
+      lease_id: "lease_123",
+      lease_expires_at: "2026-06-02T00:01:00Z",
+      heartbeat_at: "2026-06-02T00:00:30Z",
+      attempt_count: 1,
+      max_attempts: 3,
+      last_queue_error: null,
+      created_at: "2026-06-02T00:00:00Z",
+      updated_at: "2026-06-02T00:00:30Z",
+    };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({
+        cloud_run: cloudRun,
+        patch_artifact: null,
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo",
+    });
+
+    const result = await client.processCloudRun("cloud_run_1");
+
+    expect(result.cloud_run.lease_id).toBe("lease_123");
+    expect(result.cloud_run.queue_provider).toBe("local_db");
+    expect(result.cloud_run.remote_worker_kind).toBe("remote_stub");
+    expect(result.cloud_run.attempt_count).toBe(1);
+    expect(result.cloud_run.max_attempts).toBe(3);
+  });
+
   it("HTTP client starts no-input cloud runs with an internally selected repository only", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

@@ -214,6 +214,14 @@ export type CloudRunCard = {
   worker_id: string | null;
   claimed_at: string | null;
   completed_at: string | null;
+  queue_provider: string;
+  remote_worker_kind: string | null;
+  lease_id: string | null;
+  lease_expires_at: string | null;
+  heartbeat_at: string | null;
+  attempt_count: number;
+  max_attempts: number;
+  last_queue_error: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -518,6 +526,14 @@ function fakeCloudRunFromInput(taskId: string, input: CloudRunInput = {}): Cloud
     worker_id: null,
     claimed_at: null,
     completed_at: null,
+    queue_provider: "local_db",
+    remote_worker_kind: null,
+    lease_id: null,
+    lease_expires_at: null,
+    heartbeat_at: null,
+    attempt_count: 0,
+    max_attempts: 3,
+    last_queue_error: null,
     created_at: "2026-05-29T00:00:00Z",
     updated_at: "2026-05-29T00:00:00Z"
   };
@@ -1231,6 +1247,14 @@ function mapCloudRunCard(cloudRun: ApiCloudRun): CloudRunCard {
     worker_id: cloudRun.worker_id,
     claimed_at: cloudRun.claimed_at,
     completed_at: cloudRun.completed_at,
+    queue_provider: cloudRun.queue_provider,
+    remote_worker_kind: cloudRun.remote_worker_kind,
+    lease_id: cloudRun.lease_id,
+    lease_expires_at: cloudRun.lease_expires_at,
+    heartbeat_at: cloudRun.heartbeat_at,
+    attempt_count: cloudRun.attempt_count,
+    max_attempts: cloudRun.max_attempts,
+    last_queue_error: cloudRun.last_queue_error,
     created_at: cloudRun.created_at,
     updated_at: cloudRun.updated_at
   };
