@@ -4,7 +4,7 @@ Last verified: 2026-06-02
 
 ## Current Phase
 
-The project is through Phase 9: local cloud-run queue worker boundary.
+The project is through Phase 10A: remote worker control-plane contract.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -37,6 +37,9 @@ tests, README smoke instructions, and git history.
 10. Phase 9 local cloud-run queue worker: enqueue-only cloud-run creation,
     explicit worker processing endpoints, queued/running cancellation, ordered
     redacted cloud-run logs, and desktop Process/Cancel/log controls.
+11. Phase 10A remote worker control plane: local queue adapter, renewable
+    worker leases, heartbeats, stale completion rejection, expired lease
+    requeue, and remote stub completion contract.
 
 ## Verification
 
@@ -51,8 +54,8 @@ git diff --check
 
 Results:
 
-- `pytest apps/api/tests`: passed, 280 tests, 1 existing Starlette/httpx warning.
-- Desktop client/App tests: passed, 65 tests.
+- `pytest apps/api/tests`: passed, 294 tests, 1 existing Starlette/httpx warning.
+- Desktop client/App tests: passed, 66 tests.
 - Root `pnpm typecheck`: passed.
 - `git diff --check`: passed.
 
@@ -88,10 +91,11 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Known Limits
 
-- The Phase 9 worker is explicitly triggered through API endpoints; there is no
-  desktop-managed daemon loop or external queue runtime yet.
-- Docker execution is still local-first; Phase 9 does not add remote cloud
-  workers, object storage, or live log streaming.
+- The Phase 10A worker lease contract is exposed through API endpoints; there
+  is no desktop-managed daemon loop or external queue runtime yet.
+- Docker execution is still local-first; Phase 10A adds a `remote_stub`
+  contract but does not add remote cloud runtime, object storage, or live log
+  streaming.
 - Docker Hub image pulls failed in the local environment with an EOF response
   from `registry-1.docker.io`, so the smoke used an already cached image.
 - Real GitHub PR publishing still requires starting the API with
@@ -104,15 +108,15 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Recommended Next Phase
 
-Phase 10 should be remote cloud sandbox workers:
+Phase 10B should be production remote cloud sandbox workers:
 
-1. Replace the local/manual worker trigger with a real external queue runtime.
+1. Replace the local queue provider with a real external queue runtime.
 2. Add remote cloud VM/container workers.
 3. Add object storage contracts for large logs, diffs, and artifacts.
 4. Add live log streaming on top of the Phase 9 polling/log contract.
-5. Keep fake and `docker_local` executors as development adapters while remote
-   workers become the production execution path.
+5. Keep fake, `docker_local`, and `remote_stub` executors as development
+   adapters while remote workers become the production execution path.
 
-The remote-worker step should come before model-backed reviewer/debugger agents
-or commercial beta work, because the execution plane still needs a production
-queue, storage, and streaming contract.
+The production remote-worker step should come before model-backed
+reviewer/debugger agents or commercial beta work, because the execution plane
+still needs a production queue, storage, and streaming contract.

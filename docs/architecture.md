@@ -103,6 +103,19 @@ A local worker boundary claims queued runs through `POST /cloud-run-worker/proce
 
 The Phase 9 worker remains local-first and explicitly triggered. It does not add Redis, Celery, a daemon process, remote VMs, object storage, live streaming, automatic PR creation, or automatic merges.
 
+## Phase 10A Boundary
+
+Phase 10A adds a remote-worker control-plane contract for cloud runs. Workers
+can claim a renewable lease, heartbeat while executing, complete a current
+lease with a sandbox execution result, and requeue expired leases. The default
+queue provider remains `local_db`, and the `remote_stub` worker kind exercises
+the contract without provisioning remote VMs, containers, object storage, or
+live streaming.
+
+Phase 10A keeps the Phase 9 fake and `docker_local` development adapters and
+does not add a production queue dependency, cloud runtime, object storage,
+credential broker, automatic PR creation, or automatic merge.
+
 ## Roadmap
 
 Completed:
@@ -117,9 +130,10 @@ Completed:
 8. GitHub-only cloud-run and pull-request boundary with PAT metadata, fake cloud sandbox artifacts, explicit `Create PR`, durable PR records, and no automatic merge.
 9. Docker local sandbox executor with GitHub repository cloning, sandbox profiles, command whitelists, redacted logs, Docker failure codes, and patch/test artifact capture.
 10. Local cloud-run queue worker boundary with queued enqueue, explicit worker processing, cancellation, ordered redacted logs, and desktop Process/Cancel controls.
+11. Remote worker control-plane contract with local queue adapter, renewable leases, heartbeats, stale completion rejection, expired lease requeue, and remote stub completion.
 
 Future:
 
-1. Remote cloud sandbox workers with external queue runtime, object storage, and live log streaming.
+1. Production remote cloud sandbox workers with external queue runtime, object storage, and live log streaming.
 2. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
 3. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.

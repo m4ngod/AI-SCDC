@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, and Phase 9 local cloud-run queue worker boundary for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, and Phase 10A remote worker control-plane contract for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -592,6 +592,60 @@ Expected successful smoke output shows `cloud_run_enqueue_status` as `queued`, `
 
 ```powershell
 $processedCloudRun.cloud_run.command_results | ConvertTo-Json -Depth 8
+```
+
+## Phase 10A Remote Worker Lease API Smoke
+
+Phase 10A keeps the default `local_db` queue provider and adds worker lease
+endpoints for remote-worker control-plane testing. After enqueueing a queued
+cloud run, claim a lease, heartbeat it, and complete it with a `remote_stub`
+result:
+
+```powershell
+$ApiBase = "http://127.0.0.1:8000"
+
+$lease = Invoke-RestMethod `
+  -Method Post `
+  -Uri "$ApiBase/cloud-run-worker/leases" `
+  -ContentType "application/json" `
+  -Body (JsonBody @{
+    worker_id = "remote-worker-smoke"
+    worker_kind = "remote_stub"
+    lease_seconds = 60
+  })
+
+$heartbeat = Invoke-RestMethod `
+  -Method Post `
+  -Uri "$ApiBase/cloud-run-worker/leases/$($lease.lease_id)/heartbeat" `
+  -ContentType "application/json" `
+  -Body (JsonBody @{
+    worker_id = "remote-worker-smoke"
+    lease_seconds = 60
+  })
+
+$completion = Invoke-RestMethod `
+  -Method Post `
+  -Uri "$ApiBase/cloud-run-worker/leases/$($lease.lease_id)/complete" `
+  -ContentType "application/json" `
+  -Body (JsonBody @{
+    worker_id = "remote-worker-smoke"
+    result = @{
+      status = "patch_ready"
+      runner_kind = "remote_stub"
+      base_sha = $null
+      head_sha = $null
+      worktree_ref = "remote-stub://$($lease.cloud_run.id)"
+      summary = "Remote stub smoke patch."
+      files_changed = @("AI_SCDC_REMOTE_STUB.md")
+      tests_run = @()
+      test_result = "not_run"
+      risks = @()
+      diff_text = "diff --git a/AI_SCDC_REMOTE_STUB.md b/AI_SCDC_REMOTE_STUB.md`n+remote smoke`n"
+      command_results = @()
+      test_command_results = @()
+      failure_reason = $null
+    }
+  })
 ```
 
 Focused verification commands used for Phase 9 and its prerequisite workflows:
