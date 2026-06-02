@@ -11,6 +11,7 @@ from ai_company_api.schemas.api import (
     CloudRunLeaseCreate,
     CloudRunLeaseHeartbeat,
     CloudRunLeaseRead,
+    CloudRunLeaseRequeueExpired,
     CloudRunLogEntryRead,
     CloudRunRead,
     CloudRunResultRead,
@@ -63,6 +64,7 @@ from ai_company_api.services.cloud_runner import (
     list_cloud_runs,
     process_cloud_run,
     process_next_cloud_run,
+    requeue_expired_cloud_run_leases,
     start_cloud_run,
 )
 from ai_company_api.services.github_repository import (
@@ -513,6 +515,17 @@ def post_cloud_run_worker_lease(
     if lease is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     return lease
+
+
+@router.post(
+    "/cloud-run-worker/leases/requeue-expired",
+    response_model=list[CloudRunRead],
+)
+def post_cloud_run_worker_requeue_expired_leases(
+    data: CloudRunLeaseRequeueExpired,
+    session: SessionDep,
+) -> list[CloudRunRead]:
+    return requeue_expired_cloud_run_leases(session, limit=data.limit)
 
 
 @router.post(

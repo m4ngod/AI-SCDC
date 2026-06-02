@@ -354,6 +354,10 @@ class CloudRunLeaseHeartbeat(BaseModel):
     lease_seconds: int = Field(default=60, ge=1, le=3600)
 
 
+class CloudRunLeaseRequeueExpired(BaseModel):
+    limit: int = Field(default=25, ge=1, le=100)
+
+
 class CloudRunCommandResultCreate(BaseModel):
     command: str
     exit_code: int | None

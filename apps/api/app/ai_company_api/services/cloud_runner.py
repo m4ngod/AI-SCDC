@@ -334,6 +334,87 @@ def heartbeat_cloud_run_lease(
     return _cloud_run_lease_read(cloud_run)
 
 
+def requeue_expired_cloud_run_leases(
+    session: Session,
+    *,
+    limit: int = 25,
+) -> list[CloudRunRead]:
+    now = utc_now()
+    expired_runs = session.exec(
+        select(CloudRun)
+        .where(
+            CloudRun.status == "running",
+            CloudRun.completed_at.is_(None),
+            CloudRun.lease_expires_at.is_not(None),
+            CloudRun.lease_expires_at < now,
+        )
+        .order_by(CloudRun.lease_expires_at, CloudRun.id)
+        .limit(limit)
+    ).all()
+
+    changed: list[CloudRun] = []
+    for cloud_run in expired_runs:
+        local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="lease_expired",
+            message="Cloud run lease expired.",
+            level="warning",
+            payload={
+                "worker_id": cloud_run.worker_id,
+                "lease_id_suffix": cloud_run.lease_id[-6:]
+                if cloud_run.lease_id
+                else None,
+                "attempt_count": cloud_run.attempt_count,
+                "max_attempts": cloud_run.max_attempts,
+            },
+        )
+        if cloud_run.attempt_count >= cloud_run.max_attempts:
+            completed_at = utc_now()
+            cloud_run.status = "failed"
+            cloud_run.failure_reason = "lease_attempts_exhausted"
+            cloud_run.last_queue_error = "lease_attempts_exhausted"
+            cloud_run.completed_at = completed_at
+            cloud_run.updated_at = completed_at
+            local_run.status = "failed"
+            local_run.failure_reason = "lease_attempts_exhausted"
+            local_run.updated_at = completed_at
+            _append_cloud_run_log(
+                session,
+                cloud_run=cloud_run,
+                event="failed",
+                message="Cloud run exhausted lease attempts.",
+                level="error",
+                payload={"failure_reason": "lease_attempts_exhausted"},
+            )
+        else:
+            cloud_run.status = "queued"
+            cloud_run.worker_id = None
+            cloud_run.lease_id = None
+            cloud_run.lease_expires_at = None
+            cloud_run.heartbeat_at = None
+            cloud_run.last_queue_error = None
+            cloud_run.updated_at = utc_now()
+            local_run.status = "queued"
+            local_run.updated_at = cloud_run.updated_at
+            _append_cloud_run_log(
+                session,
+                cloud_run=cloud_run,
+                event="run_requeued",
+                message="Cloud run requeued after expired lease.",
+                payload={"attempt_count": cloud_run.attempt_count},
+            )
+        session.add(local_run)
+        session.add(cloud_run)
+        changed.append(cloud_run)
+
+    session.commit()
+    for cloud_run in changed:
+        session.refresh(cloud_run)
+    return [_cloud_run_read(cloud_run) for cloud_run in changed]
+
+
 def _command_result_from_create(data) -> CommandResult:
     return CommandResult(
         command=data.command,
