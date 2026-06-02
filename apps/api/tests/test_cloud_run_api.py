@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect, text
@@ -541,6 +542,201 @@ def test_processing_docker_preflight_failure_marks_run_failed(
     assert local_run is not None
     assert persisted.status == "failed"
     assert local_run.status == "failed"
+
+
+def test_cancel_queued_cloud_run_prevents_processing(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    response = client.post(f"/cloud-runs/{queued['id']}/cancel")
+
+    assert response.status_code == 200
+    cancelled = response.json()
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["cancel_requested"] is True
+    assert cancelled["cancel_requested_at"] is not None
+    assert cancelled["cancelled_at"] is not None
+    assert cancelled["completed_at"] is not None
+
+    process = client.post(f"/cloud-runs/{queued['id']}/process")
+    assert process.status_code == 409
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+        log_events = [
+            entry.event
+            for entry in session.exec(
+                select(CloudRunLogEntry)
+                .where(CloudRunLogEntry.cloud_run_id == queued["id"])
+                .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+            ).all()
+        ]
+    assert local_run is not None
+    assert local_run.status == "cancelled"
+    assert "cancelled" in log_events
+
+
+def test_cancel_running_cloud_run_records_cancel_request(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+        assert cloud_run is not None
+        assert local_run is not None
+        cloud_run.status = "running"
+        local_run.status = "running"
+        session.add(cloud_run)
+        session.add(local_run)
+        session.commit()
+
+    response = client.post(f"/cloud-runs/{queued['id']}/cancel")
+
+    assert response.status_code == 200
+    running = response.json()
+    assert running["status"] == "running"
+    assert running["cancel_requested"] is True
+    assert running["cancel_requested_at"] is not None
+    assert running["cancelled_at"] is None
+    assert running["completed_at"] is None
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        log_events = [
+            entry.event
+            for entry in session.exec(
+                select(CloudRunLogEntry)
+                .where(CloudRunLogEntry.cloud_run_id == queued["id"])
+                .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+            ).all()
+        ]
+    assert "cancel_requested" in log_events
+
+
+def test_cancel_queued_cloud_run_claim_race_records_cancel_request(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    def simulate_worker_claim(session: Session, *, cloud_run_id: str, now):
+        with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as observer:
+            cloud_run = observer.get(CloudRun, cloud_run_id)
+            assert cloud_run is not None
+            cloud_run.status = "running"
+            cloud_run.worker_id = "racing-worker"
+            cloud_run.claimed_at = now
+            observer.add(cloud_run)
+            observer.commit()
+        return False
+
+    monkeypatch.setattr(cloud_runner, "_cancel_queued_cloud_run", simulate_worker_claim)
+    response = client.post(f"/cloud-runs/{queued['id']}/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["worker_id"] == "racing-worker"
+    assert body["cancel_requested"] is True
+    assert body["cancel_requested_at"] is not None
+    assert body["cancelled_at"] is None
+
+
+def test_cloud_run_logs_are_ordered_and_redacted(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        from ai_company_api.services.cloud_runner import _append_cloud_run_log
+
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="secret_payload",
+            message="Secret payload captured.",
+            payload={"githubToken": "ghp_should_not_leak"},
+        )
+        same_timestamp = datetime(2026, 6, 2, tzinfo=timezone.utc)
+        session.add(
+            CloudRunLogEntry(
+                id="log_tie_b",
+                cloud_run_id=cloud_run.id,
+                workspace_id=cloud_run.workspace_id,
+                event="same_time_b",
+                message="Second by id.",
+                created_at=same_timestamp,
+            )
+        )
+        session.add(
+            CloudRunLogEntry(
+                id="log_tie_a",
+                cloud_run_id=cloud_run.id,
+                workspace_id=cloud_run.workspace_id,
+                event="same_time_a",
+                message="First by id.",
+                created_at=same_timestamp,
+            )
+        )
+        session.commit()
+
+    client.post(f"/cloud-runs/{queued['id']}/process")
+    response = client.get(f"/cloud-runs/{queued['id']}/logs")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [entry["created_at"] for entry in body] == sorted(
+        entry["created_at"] for entry in body
+    )
+    assert "queued" in {entry["event"] for entry in body}
+    assert "completed" in {entry["event"] for entry in body}
+    assert "ghp_should_not_leak" not in str(body)
+    secret_entry = next(entry for entry in body if entry["event"] == "secret_payload")
+    assert secret_entry["payload"]["githubToken"] == "***REDACTED***"
+    same_time_events = [
+        entry["event"]
+        for entry in body
+        if entry["event"] in {"same_time_a", "same_time_b"}
+    ]
+    assert same_time_events == ["same_time_a", "same_time_b"]
 
 
 def test_docker_cloud_run_redacts_github_token_from_persisted_results(

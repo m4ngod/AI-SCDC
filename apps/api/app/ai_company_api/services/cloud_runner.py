@@ -17,6 +17,7 @@ from ai_company_api.models.entities import (
 )
 from ai_company_api.schemas.api import (
     CloudRunCreate,
+    CloudRunLogEntryRead,
     CloudRunRead,
     CloudRunResultRead,
     PatchArtifactRead,
@@ -52,6 +53,7 @@ SENSITIVE_PAYLOAD_KEYS = {
     "secret",
 }
 SENSITIVE_PAYLOAD_KEY_PARTS = ("token", "secret", "password", "authorization")
+CLOUD_RUN_TERMINAL_STATUSES = {"patch_ready", "failed", "cancelled"}
 
 
 def _is_sensitive_payload_key(key: str) -> bool:
@@ -351,6 +353,96 @@ def _mark_claimed_cloud_run_failed(
     session.commit()
     session.refresh(cloud_run)
     return CloudRunResultRead(cloud_run=_cloud_run_read(cloud_run), patch_artifact=None)
+
+
+def cancel_cloud_run(session: Session, *, cloud_run_id: str) -> CloudRunRead:
+    cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    if cloud_run.status in CLOUD_RUN_TERMINAL_STATUSES:
+        return _cloud_run_read(cloud_run)
+
+    now = utc_now()
+
+    if cloud_run.status == "queued":
+        if not _cancel_queued_cloud_run(session, cloud_run_id=cloud_run.id, now=now):
+            session.rollback()
+            cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+            if cloud_run.status in CLOUD_RUN_TERMINAL_STATUSES:
+                return _cloud_run_read(cloud_run)
+            now = utc_now()
+            cloud_run.cancel_requested = True
+            cloud_run.cancel_requested_at = cloud_run.cancel_requested_at or now
+            cloud_run.updated_at = now
+            _append_cloud_run_log(
+                session,
+                cloud_run=cloud_run,
+                event="cancel_requested",
+                message="Cancellation requested.",
+            )
+            session.add(cloud_run)
+            session.commit()
+            session.refresh(cloud_run)
+            return _cloud_run_read(cloud_run)
+        session.refresh(cloud_run)
+        local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
+        local_run.status = "cancelled"
+        local_run.updated_at = now
+        session.add(local_run)
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="cancelled",
+            message="Queued cloud run cancelled.",
+        )
+    else:
+        cloud_run.cancel_requested = True
+        cloud_run.cancel_requested_at = cloud_run.cancel_requested_at or now
+        cloud_run.updated_at = now
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="cancel_requested",
+            message="Cancellation requested.",
+        )
+
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    return _cloud_run_read(cloud_run)
+
+
+def _cancel_queued_cloud_run(
+    session: Session,
+    *,
+    cloud_run_id: str,
+    now: datetime,
+) -> bool:
+    result = session.exec(
+        update(CloudRun)
+        .where(CloudRun.id == cloud_run_id, CloudRun.status == "queued")
+        .values(
+            status="cancelled",
+            cancel_requested=True,
+            cancel_requested_at=now,
+            cancelled_at=now,
+            completed_at=now,
+            updated_at=now,
+        )
+    )
+    return result.rowcount == 1
+
+
+def list_cloud_run_logs(
+    session: Session,
+    *,
+    cloud_run_id: str,
+) -> list[CloudRunLogEntryRead]:
+    _get_cloud_run_or_404(session, cloud_run_id)
+    entries = session.exec(
+        select(CloudRunLogEntry)
+        .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+        .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+    ).all()
+    return [_cloud_run_log_entry_read(entry) for entry in entries]
 
 
 def _execute_claimed_cloud_run(
@@ -899,6 +991,18 @@ def _cloud_run_read(cloud_run: CloudRun) -> CloudRunRead:
         completed_at=cloud_run.completed_at,
         created_at=cloud_run.created_at,
         updated_at=cloud_run.updated_at,
+    )
+
+
+def _cloud_run_log_entry_read(entry: CloudRunLogEntry) -> CloudRunLogEntryRead:
+    return CloudRunLogEntryRead(
+        id=entry.id,
+        cloud_run_id=entry.cloud_run_id,
+        level=entry.level,
+        event=entry.event,
+        message=entry.message,
+        payload=entry.payload,
+        created_at=entry.created_at,
     )
 
 

@@ -7,6 +7,7 @@ from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     AgentRole,
     CloudRunCreate,
+    CloudRunLogEntryRead,
     CloudRunRead,
     CloudRunResultRead,
     ConversationCreate,
@@ -49,7 +50,9 @@ from ai_company_api.schemas.api import (
     UsageLedgerRead,
 )
 from ai_company_api.services.cloud_runner import (
+    cancel_cloud_run,
     get_cloud_run_read,
+    list_cloud_run_logs,
     list_cloud_runs,
     process_cloud_run,
     process_next_cloud_run,
@@ -507,6 +510,22 @@ def post_cloud_run_process(
     worker_id: str = "local-worker",
 ) -> CloudRunResultRead:
     return process_cloud_run(session, cloud_run_id=cloud_run_id, worker_id=worker_id)
+
+
+@router.post("/cloud-runs/{cloud_run_id}/cancel", response_model=CloudRunRead)
+def post_cloud_run_cancel(
+    cloud_run_id: str,
+    session: SessionDep,
+) -> CloudRunRead:
+    return cancel_cloud_run(session, cloud_run_id=cloud_run_id)
+
+
+@router.get("/cloud-runs/{cloud_run_id}/logs", response_model=list[CloudRunLogEntryRead])
+def get_cloud_run_logs(
+    cloud_run_id: str,
+    session: SessionDep,
+) -> list[CloudRunLogEntryRead]:
+    return list_cloud_run_logs(session, cloud_run_id=cloud_run_id)
 
 
 @router.post(
