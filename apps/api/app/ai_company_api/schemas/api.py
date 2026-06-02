@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, SecretStr
 
@@ -364,7 +364,7 @@ class CloudRunCommandResultCreate(BaseModel):
 
 
 class CloudRunExecutionResultCreate(BaseModel):
-    status: str
+    status: Literal["patch_ready", "failed"]
     runner_kind: str
     base_sha: str | None = None
     head_sha: str | None = None

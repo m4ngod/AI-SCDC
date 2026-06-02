@@ -772,6 +772,48 @@ def test_complete_stale_cloud_run_lease_is_rejected_without_artifact(
     assert artifacts == []
 
 
+def test_invalid_remote_completion_status_is_rejected_without_artifact(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    ).json()
+    payload = remote_stub_completion_payload(queued["id"])
+    payload["result"]["status"] = "running"
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+        artifacts = session.exec(select(PatchArtifact)).all()
+    assert cloud_run is not None
+    assert local_run is not None
+    assert cloud_run.status == "running"
+    assert local_run.status == "running"
+    assert artifacts == []
+
+
 def test_process_specific_docker_cloud_run_preserves_artifact_semantics(
     tmp_path: Path,
     monkeypatch,
