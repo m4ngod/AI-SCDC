@@ -374,8 +374,8 @@ class CloudRunLeaseRequeueExpired(BaseModel):
 class CloudRunCommandResultCreate(BaseModel):
     command: str
     exit_code: int | None
-    stdout: str = ""
-    stderr: str = ""
+    stdout: str = Field(default="", max_length=512 * 1024)
+    stderr: str = Field(default="", max_length=512 * 1024)
     duration_ms: int = 0
     timed_out: bool = False
 
@@ -394,12 +394,12 @@ class CloudRunExecutionResultCreate(BaseModel):
     base_sha: str | None = None
     head_sha: str | None = None
     worktree_ref: str | None = None
-    summary: str = ""
+    summary: str = Field(default="", max_length=16 * 1024)
     files_changed: list[str] = Field(default_factory=list)
     tests_run: list[str] = Field(default_factory=list)
     test_result: str = "not_run"
     risks: list[str] = Field(default_factory=list)
-    diff_text: str = ""
+    diff_text: str = Field(default="", max_length=2 * 1024 * 1024)
     artifact_refs: list[CloudRunArtifactRefCreate] = Field(default_factory=list)
     command_results: list[CloudRunCommandResultCreate] = Field(default_factory=list)
     test_command_results: list[CloudRunCommandResultCreate] = Field(default_factory=list)

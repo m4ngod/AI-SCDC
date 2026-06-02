@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import os
+import re
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, update
@@ -73,6 +75,15 @@ SENSITIVE_PAYLOAD_KEYS = {
     "secret",
 }
 SENSITIVE_PAYLOAD_KEY_PARTS = ("token", "secret", "password", "authorization")
+EXTERNAL_ERROR_KEY_VALUE_PATTERN = re.compile(
+    r"\b(token|access_token|authorization|password|secret|sig)\s*[:=]\s*"
+    r"(?:bearer\s+)?[^\s&]+",
+    re.IGNORECASE,
+)
+EXTERNAL_ERROR_BEARER_PATTERN = re.compile(
+    r"\bBearer\s+[A-Za-z0-9._~+/=-]+",
+    re.IGNORECASE,
+)
 CLOUD_RUN_TERMINAL_STATUSES = {"patch_ready", "failed", "cancelled"}
 DEFAULT_QUEUE_PROVIDER = "local_db"
 EXTERNAL_STUB_QUEUE_PROVIDER = "external_stub"
@@ -100,6 +111,25 @@ def redact_sensitive_values(value: Any) -> Any:
     if isinstance(value, list):
         return [redact_sensitive_values(item) for item in value]
     return value
+
+
+def _redact_external_uri(value: str | None) -> str | None:
+    if value is None:
+        return None
+    parsed = urlsplit(value)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def _redact_external_error(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    def replace_key_value(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return f"{key}=[redacted]"
+
+    redacted = EXTERNAL_ERROR_KEY_VALUE_PATTERN.sub(replace_key_value, value)
+    return EXTERNAL_ERROR_BEARER_PATTERN.sub("Bearer [redacted]", redacted)
 
 
 def _append_cloud_run_log(
@@ -1721,10 +1751,10 @@ def _cloud_run_read(cloud_run: CloudRun) -> CloudRunRead:
         runtime_provider=cloud_run.runtime_provider,
         runtime_job_id=cloud_run.runtime_job_id,
         storage_provider=cloud_run.storage_provider,
-        artifact_manifest_uri=cloud_run.artifact_manifest_uri,
-        log_stream_uri=cloud_run.log_stream_uri,
+        artifact_manifest_uri=_redact_external_uri(cloud_run.artifact_manifest_uri),
+        log_stream_uri=_redact_external_uri(cloud_run.log_stream_uri),
         external_status=cloud_run.external_status,
-        external_error=cloud_run.external_error,
+        external_error=_redact_external_error(cloud_run.external_error),
         created_at=cloud_run.created_at,
         updated_at=cloud_run.updated_at,
     )

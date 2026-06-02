@@ -855,6 +855,45 @@ def test_remote_stub_runtime_submission_records_job_metadata(
     )
 
 
+def test_cloud_run_read_redacts_external_uri_query_and_external_error(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    run = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "queue_provider": "external_stub"},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, run["id"])
+        assert cloud_run is not None
+        cloud_run.log_stream_uri = "local-inline://cloud-run-objects/log?token=secret#frag"
+        cloud_run.artifact_manifest_uri = (
+            "local-inline://cloud-run-objects/manifest?sig=secret"
+        )
+        cloud_run.external_error = (
+            "failed with token=abc123 and Authorization: Bearer secret-token"
+        )
+        session.add(cloud_run)
+        session.commit()
+
+    response = client.get(f"/cloud-runs/{run['id']}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["log_stream_uri"] == "local-inline://cloud-run-objects/log"
+    assert payload["artifact_manifest_uri"] == (
+        "local-inline://cloud-run-objects/manifest"
+    )
+    assert "secret" not in payload["external_error"].lower()
+    assert "token=abc123" not in payload["external_error"]
+
+
 def test_claim_next_cloud_run_lease_retries_after_claim_race(
     tmp_path: Path,
     monkeypatch,
@@ -1429,6 +1468,81 @@ def test_complete_cloud_run_lease_rejects_invalid_artifact_ref_without_artifact(
     assert cloud_run.patch_artifact_id is None
     assert local_run is not None
     assert local_run.patch_artifact_id is None
+
+
+def test_complete_cloud_run_lease_rejects_oversized_summary(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    ).json()
+    payload = remote_stub_completion_payload(queued["id"])
+    payload["result"]["summary"] = "x" * (16 * 1024 + 1)
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+
+
+def test_complete_cloud_run_lease_rejects_oversized_command_output(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    ).json()
+    payload = remote_stub_completion_payload(queued["id"])
+    payload["result"]["command_results"] = [
+        {
+            "command": "echo oversized",
+            "exit_code": 0,
+            "stdout": "x" * (512 * 1024 + 1),
+            "stderr": "",
+            "duration_ms": 1,
+            "timed_out": False,
+        }
+    ]
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=payload,
+    )
+
+    assert response.status_code == 422
 
 
 def test_complete_lease_after_cancel_request_finishes_cancelled_without_artifact(
