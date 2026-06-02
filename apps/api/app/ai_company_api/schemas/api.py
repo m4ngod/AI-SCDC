@@ -357,6 +357,7 @@ class CloudRunResultRead(BaseModel):
 class CloudRunLeaseCreate(BaseModel):
     worker_id: str = Field(min_length=1)
     worker_kind: str = Field(default="remote_stub", min_length=1)
+    queue_provider: str = Field(default="local_db", min_length=1)
     lease_seconds: int = Field(default=60, ge=1, le=3600)
 
 
@@ -366,6 +367,7 @@ class CloudRunLeaseHeartbeat(BaseModel):
 
 
 class CloudRunLeaseRequeueExpired(BaseModel):
+    queue_provider: str = Field(default="local_db", min_length=1)
     limit: int = Field(default=25, ge=1, le=100)
 
 
@@ -411,6 +413,8 @@ class CloudRunLeaseComplete(BaseModel):
 
 class CloudRunLeaseRead(BaseModel):
     cloud_run: CloudRunRead
+    queue_provider: str
+    queue_message_id: str | None
     lease_id: str
     lease_expires_at: datetime
     heartbeat_at: datetime

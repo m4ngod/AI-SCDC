@@ -510,6 +510,7 @@ def post_cloud_run_worker_lease(
         session,
         worker_id=data.worker_id,
         worker_kind=data.worker_kind,
+        queue_provider=data.queue_provider,
         lease_seconds=data.lease_seconds,
     )
     if lease is None:
@@ -525,7 +526,11 @@ def post_cloud_run_worker_requeue_expired_leases(
     data: CloudRunLeaseRequeueExpired,
     session: SessionDep,
 ) -> list[CloudRunRead]:
-    return requeue_expired_cloud_run_leases(session, limit=data.limit)
+    return requeue_expired_cloud_run_leases(
+        session,
+        queue_provider=data.queue_provider,
+        limit=data.limit,
+    )
 
 
 @router.post(

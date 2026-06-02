@@ -542,6 +542,8 @@ def test_claim_next_cloud_run_lease_marks_run_running(tmp_path: Path) -> None:
     assert body["cloud_run"]["remote_worker_kind"] == "remote_stub"
     assert body["cloud_run"]["queue_provider"] == "local_db"
     assert body["cloud_run"]["attempt_count"] == 1
+    assert body["queue_provider"] == "local_db"
+    assert body["queue_message_id"] is None
     assert body["lease_id"] == body["cloud_run"]["lease_id"]
     assert body["lease_expires_at"] == body["cloud_run"]["lease_expires_at"]
     assert body["heartbeat_at"] == body["cloud_run"]["heartbeat_at"]
@@ -570,6 +572,124 @@ def test_claim_next_cloud_run_lease_marks_run_running(tmp_path: Path) -> None:
     assert local_run is not None
     assert local_run.status == "running"
     assert "lease_claimed" in log_events
+
+
+def test_local_db_queue_provider_claim_skips_external_stub_runs(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, first_task = create_cloud_task(session)
+        second_task = Task(
+            project_id=first_task.project_id,
+            title="Local DB queued run",
+            role_required="backend",
+            status=TaskStatus.CREATED,
+            allowed_paths=["AI_SCDC_CLOUD_RUN.md"],
+            required_tests=[],
+        )
+        session.add(second_task)
+        session.commit()
+        first_task_id = first_task.id
+        second_task_id = second_task.id
+        repo_id = repository.id
+
+    external = client.post(
+        f"/tasks/{first_task_id}/cloud-runs",
+        json={"repo_id": repo_id, "queue_provider": "external_stub"},
+    ).json()["cloud_run"]
+    local = client.post(
+        f"/tasks/{second_task_id}/cloud-runs",
+        json={"repo_id": repo_id, "queue_provider": "local_db"},
+    ).json()["cloud_run"]
+
+    response = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "queue_provider": "local_db",
+            "lease_seconds": 60,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["cloud_run"]["id"] == local["id"]
+    assert body["cloud_run"]["queue_provider"] == "local_db"
+    assert body["queue_provider"] == "local_db"
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        external_run = session.get(CloudRun, external["id"])
+    assert external_run is not None
+    assert external_run.status == "queued"
+    assert external_run.worker_id is None
+
+
+def test_local_db_requeue_filters_by_queue_provider(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, first_task = create_cloud_task(session)
+        second_task = Task(
+            project_id=first_task.project_id,
+            title="Local DB expired run",
+            role_required="backend",
+            status=TaskStatus.CREATED,
+            allowed_paths=["AI_SCDC_CLOUD_RUN.md"],
+            required_tests=[],
+        )
+        session.add(second_task)
+        session.commit()
+        first_task_id = first_task.id
+        second_task_id = second_task.id
+        repo_id = repository.id
+
+    external = client.post(
+        f"/tasks/{first_task_id}/cloud-runs",
+        json={"repo_id": repo_id, "queue_provider": "external_stub"},
+    ).json()["cloud_run"]
+    local = client.post(
+        f"/tasks/{second_task_id}/cloud-runs",
+        json={"repo_id": repo_id, "queue_provider": "local_db"},
+    ).json()["cloud_run"]
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        for cloud_run_id, worker_id in (
+            (external["id"], "external-worker"),
+            (local["id"], "local-worker"),
+        ):
+            cloud_run = session.get(CloudRun, cloud_run_id)
+            assert cloud_run is not None
+            cloud_run.status = "running"
+            cloud_run.worker_id = worker_id
+            cloud_run.lease_id = f"lease_{cloud_run_id}"
+            cloud_run.lease_expires_at = datetime(2026, 6, 2, tzinfo=timezone.utc)
+            cloud_run.heartbeat_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+            session.add(cloud_run)
+            local_run = session.get(LocalTaskRun, cloud_run.local_run_id)
+            assert local_run is not None
+            local_run.status = "running"
+            session.add(local_run)
+        session.commit()
+
+    response = client.post(
+        "/cloud-run-worker/leases/requeue-expired",
+        json={"limit": 25, "queue_provider": "local_db"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body] == [local["id"]]
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        external_run = session.get(CloudRun, external["id"])
+    assert external_run is not None
+    assert external_run.status == "running"
+    assert external_run.worker_id == "external-worker"
 
 
 def test_claim_next_cloud_run_lease_retries_after_claim_race(

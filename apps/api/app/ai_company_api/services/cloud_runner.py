@@ -270,12 +270,19 @@ def claim_next_cloud_run_lease(
     *,
     worker_id: str,
     worker_kind: str = "remote_stub",
+    queue_provider: str = DEFAULT_QUEUE_PROVIDER,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> CloudRunLeaseRead | None:
+    try:
+        get_cloud_queue_provider(queue_provider)
+    except CloudQueueProviderNotFound as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     candidate_ids = session.exec(
         select(CloudRun.id)
         .where(
             CloudRun.status == "queued",
+            CloudRun.queue_provider == queue_provider,
             CloudRun.cancel_requested.is_(False),
             CloudRun.attempt_count < CloudRun.max_attempts,
         )
@@ -318,6 +325,7 @@ def claim_next_cloud_run_lease(
                 "lease_id_suffix": lease_id.rsplit("_", 1)[-1],
                 "lease_seconds": lease_seconds,
                 "attempt_count": cloud_run.attempt_count,
+                "queue_provider": queue_provider,
             },
         )
         session.add(local_run)
@@ -366,13 +374,20 @@ def heartbeat_cloud_run_lease(
 def requeue_expired_cloud_run_leases(
     session: Session,
     *,
+    queue_provider: str = DEFAULT_QUEUE_PROVIDER,
     limit: int = 25,
 ) -> list[CloudRunRead]:
+    try:
+        get_cloud_queue_provider(queue_provider)
+    except CloudQueueProviderNotFound as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     now = utc_now()
     expired_runs = session.exec(
         select(CloudRun)
         .where(
             CloudRun.status == "running",
+            CloudRun.queue_provider == queue_provider,
             CloudRun.completed_at.is_(None),
             CloudRun.lease_expires_at.is_not(None),
             CloudRun.lease_expires_at < now,
@@ -1669,6 +1684,8 @@ def _cloud_run_lease_read(cloud_run: CloudRun) -> CloudRunLeaseRead:
         )
     return CloudRunLeaseRead(
         cloud_run=_cloud_run_read(cloud_run),
+        queue_provider=cloud_run.queue_provider,
+        queue_message_id=cloud_run.queue_message_id,
         lease_id=cloud_run.lease_id,
         lease_expires_at=cloud_run.lease_expires_at,
         heartbeat_at=cloud_run.heartbeat_at,
