@@ -542,6 +542,21 @@ class CloudRunLogEntry(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class CloudRunStoredObject(SQLModel, table=True):
+    __tablename__ = "cloud_run_stored_object"
+
+    id: str = Field(default_factory=uuid_hex, primary_key=True)
+    workspace_id: str = Field(index=True)
+    cloud_run_id: str = Field(index=True)
+    kind: str = Field(index=True)
+    uri: str = Field(index=True)
+    sha256: str
+    size_bytes: int
+    content_type: str = "text/plain"
+    text_content: str
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class PatchArtifact(SQLModel, table=True):
     __tablename__ = "patch_artifact"
 

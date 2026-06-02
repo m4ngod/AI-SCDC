@@ -378,6 +378,14 @@ class CloudRunCommandResultCreate(BaseModel):
     timed_out: bool = False
 
 
+class CloudRunArtifactRefCreate(BaseModel):
+    kind: Literal["diff", "log", "command_result", "test_result", "manifest"]
+    uri: str = Field(min_length=1)
+    sha256: str = Field(min_length=64, max_length=64)
+    size_bytes: int = Field(ge=0)
+    content_type: str = "text/plain"
+
+
 class CloudRunExecutionResultCreate(BaseModel):
     status: Literal["patch_ready", "failed"]
     runner_kind: str
