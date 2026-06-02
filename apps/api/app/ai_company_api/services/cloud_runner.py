@@ -35,14 +35,23 @@ from ai_company_api.services.cloud_sandbox_executor import (
     repo_url_redaction_secrets,
     select_cloud_sandbox_executor,
 )
+from ai_company_api.services.cloud_queue_providers import (
+    CloudQueueProviderNotFound,
+    get_cloud_queue_provider,
+)
 from ai_company_api.services.github_repository import (
     get_active_github_credential,
     validate_github_repository_url,
 )
 from ai_company_api.services.object_storage import (
+    ObjectStorageProviderNotFound,
     ObjectStorageReadError,
     ObjectStorageRef,
     get_object_storage_provider,
+)
+from ai_company_api.services.remote_runtime import (
+    RemoteRuntimeProviderNotFound,
+    get_remote_runtime_provider,
 )
 from ai_company_api.services.repository import create_task_event, get_repository, get_task
 from ai_company_api.services.sandbox_profiles import validate_sandbox_profile_for_repo
@@ -120,6 +129,20 @@ def start_cloud_run(
     return enqueue_cloud_run(session, task_id, data)
 
 
+def _validate_cloud_run_provider_selection(data: CloudRunCreate) -> None:
+    try:
+        get_cloud_queue_provider(data.queue_provider)
+        if data.storage_provider is not None:
+            get_object_storage_provider(data.storage_provider)
+        get_remote_runtime_provider(data.runtime_provider)
+    except (
+        CloudQueueProviderNotFound,
+        ObjectStorageProviderNotFound,
+        RemoteRuntimeProviderNotFound,
+    ) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def enqueue_cloud_run(
     session: Session,
     task_id: str,
@@ -136,6 +159,8 @@ def enqueue_cloud_run(
         raise HTTPException(status_code=400, detail="Cloud runs require a GitHub repository")
     if repository.connection_status != "active":
         raise HTTPException(status_code=400, detail="GitHub repository is not active")
+
+    _validate_cloud_run_provider_selection(data)
 
     executor = select_cloud_sandbox_executor()
     sandbox_profile_id: str | None = None

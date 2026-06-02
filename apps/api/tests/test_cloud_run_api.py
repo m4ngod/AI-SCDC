@@ -324,6 +324,79 @@ def test_start_cloud_run_accepts_phase_10b_provider_metadata(
     assert persisted_cloud_run.queue_receipt is None
 
 
+def _post_fake_cloud_run_with_provider_selection(
+    tmp_path: Path,
+    monkeypatch,
+    body: dict,
+):
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    return client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={"repo_id": repository.id, **body},
+    )
+
+
+def test_start_cloud_run_rejects_unknown_provider_queue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response = _post_fake_cloud_run_with_provider_selection(
+        tmp_path,
+        monkeypatch,
+        {"queue_provider": "aws_sqs"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown cloud queue provider: aws_sqs"
+
+
+def test_start_cloud_run_rejects_unknown_provider_storage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response = _post_fake_cloud_run_with_provider_selection(
+        tmp_path,
+        monkeypatch,
+        {"storage_provider": "s3"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown object storage provider: s3"
+
+
+def test_start_cloud_run_rejects_unknown_provider_runtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response = _post_fake_cloud_run_with_provider_selection(
+        tmp_path,
+        monkeypatch,
+        {"runtime_provider": "cloud_run_jobs"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Unknown remote runtime provider: cloud_run_jobs"
+    )
+
+
 def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(
     tmp_path: Path,
     monkeypatch,
