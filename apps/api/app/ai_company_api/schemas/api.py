@@ -343,6 +343,26 @@ class CloudRunResultRead(BaseModel):
     patch_artifact: PatchArtifactRead | None = None
 
 
+class CloudRunLeaseCreate(BaseModel):
+    worker_id: str = Field(min_length=1)
+    worker_kind: str = Field(default="remote_stub", min_length=1)
+    lease_seconds: int = Field(default=60, ge=1, le=3600)
+
+
+class CloudRunLeaseHeartbeat(BaseModel):
+    worker_id: str = Field(min_length=1)
+    lease_seconds: int = Field(default=60, ge=1, le=3600)
+
+
+class CloudRunLeaseRead(BaseModel):
+    cloud_run: CloudRunRead
+    lease_id: str
+    lease_expires_at: datetime
+    heartbeat_at: datetime
+    attempt_count: int
+    cancel_requested: bool
+
+
 class LocalTestRunRead(BaseModel):
     id: str
     workspace_id: str

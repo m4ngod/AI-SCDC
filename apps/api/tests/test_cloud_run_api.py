@@ -376,6 +376,116 @@ def test_process_next_returns_no_content_when_queue_is_empty(tmp_path: Path) -> 
     assert response.content == b""
 
 
+def test_claim_next_cloud_run_lease_marks_run_running(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    response = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["cloud_run"]["id"] == queued["id"]
+    assert body["cloud_run"]["status"] == "running"
+    assert body["cloud_run"]["worker_id"] == "remote-worker-1"
+    assert body["cloud_run"]["remote_worker_kind"] == "remote_stub"
+    assert body["cloud_run"]["queue_provider"] == "local_db"
+    assert body["cloud_run"]["attempt_count"] == 1
+    assert body["lease_id"] == body["cloud_run"]["lease_id"]
+    assert body["lease_expires_at"] == body["cloud_run"]["lease_expires_at"]
+    assert body["heartbeat_at"] == body["cloud_run"]["heartbeat_at"]
+    assert body["cancel_requested"] is False
+
+    second = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-2",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    )
+    assert second.status_code == 204
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        local_run = session.get(LocalTaskRun, queued["local_run_id"])
+        log_events = [
+            entry.event
+            for entry in session.exec(
+                select(CloudRunLogEntry)
+                .where(CloudRunLogEntry.cloud_run_id == queued["id"])
+                .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+            ).all()
+        ]
+    assert local_run is not None
+    assert local_run.status == "running"
+    assert "lease_claimed" in log_events
+
+
+def test_claim_next_cloud_run_lease_skips_cancelled_and_exhausted_runs(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, first_task = create_cloud_task(session)
+        second_task = Task(
+            project_id=first_task.project_id,
+            title="Exhausted queued run",
+            role_required="backend",
+            status=TaskStatus.CREATED,
+            allowed_paths=["AI_SCDC_CLOUD_RUN.md"],
+            required_tests=[],
+        )
+        session.add(second_task)
+        session.commit()
+        first_task_id = first_task.id
+        second_task_id = second_task.id
+        repo_id = repository.id
+
+    cancelled = client.post(
+        f"/tasks/{first_task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    exhausted = client.post(
+        f"/tasks/{second_task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    client.post(f"/cloud-runs/{cancelled['id']}/cancel")
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        exhausted_run = session.get(CloudRun, exhausted["id"])
+        assert exhausted_run is not None
+        exhausted_run.attempt_count = exhausted_run.max_attempts
+        session.add(exhausted_run)
+        session.commit()
+
+    response = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    )
+
+    assert response.status_code == 204
+
+
 def test_process_specific_docker_cloud_run_preserves_artifact_semantics(
     tmp_path: Path,
     monkeypatch,

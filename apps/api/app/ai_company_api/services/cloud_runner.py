@@ -14,10 +14,12 @@ from ai_company_api.models.entities import (
     PatchArtifact,
     Repository,
     Task,
+    prefixed_id,
     utc_now,
 )
 from ai_company_api.schemas.api import (
     CloudRunCreate,
+    CloudRunLeaseRead,
     CloudRunLogEntryRead,
     CloudRunRead,
     CloudRunResultRead,
@@ -55,6 +57,8 @@ SENSITIVE_PAYLOAD_KEYS = {
 }
 SENSITIVE_PAYLOAD_KEY_PARTS = ("token", "secret", "password", "authorization")
 CLOUD_RUN_TERMINAL_STATUSES = {"patch_ready", "failed", "cancelled"}
+DEFAULT_QUEUE_PROVIDER = "local_db"
+DEFAULT_LEASE_SECONDS = 60
 
 
 def _is_sensitive_payload_key(key: str) -> bool:
@@ -222,6 +226,64 @@ def process_next_cloud_run(
     return process_cloud_run(session, cloud_run_id=cloud_run.id, worker_id=worker_id)
 
 
+def claim_next_cloud_run_lease(
+    session: Session,
+    *,
+    worker_id: str,
+    worker_kind: str = "remote_stub",
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+) -> CloudRunLeaseRead | None:
+    cloud_run = session.exec(
+        select(CloudRun)
+        .where(
+            CloudRun.status == "queued",
+            CloudRun.cancel_requested.is_(False),
+            CloudRun.attempt_count < CloudRun.max_attempts,
+        )
+        .order_by(CloudRun.created_at, CloudRun.id)
+    ).first()
+    if cloud_run is None:
+        return None
+
+    now = utc_now()
+    lease_id = prefixed_id("lease")
+    lease_expires_at = now + timedelta(seconds=lease_seconds)
+    if not _claim_cloud_run_lease(
+        session,
+        cloud_run_id=cloud_run.id,
+        worker_id=worker_id,
+        worker_kind=worker_kind,
+        lease_id=lease_id,
+        lease_expires_at=lease_expires_at,
+        now=now,
+    ):
+        session.rollback()
+        return None
+
+    session.refresh(cloud_run)
+    local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
+    local_run.status = "running"
+    local_run.updated_at = now
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="lease_claimed",
+        message="Cloud run lease claimed by remote worker.",
+        payload={
+            "worker_id": worker_id,
+            "worker_kind": worker_kind,
+            "lease_id_suffix": lease_id.rsplit("_", 1)[-1],
+            "lease_seconds": lease_seconds,
+            "attempt_count": cloud_run.attempt_count,
+        },
+    )
+    session.add(local_run)
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    return _cloud_run_lease_read(cloud_run)
+
+
 def process_cloud_run(
     session: Session,
     *,
@@ -302,6 +364,41 @@ def _claim_cloud_run(
             status="running",
             worker_id=worker_id,
             claimed_at=now,
+            updated_at=now,
+        )
+    )
+    return result.rowcount == 1
+
+
+def _claim_cloud_run_lease(
+    session: Session,
+    *,
+    cloud_run_id: str,
+    worker_id: str,
+    worker_kind: str,
+    lease_id: str,
+    lease_expires_at: datetime,
+    now: datetime,
+) -> bool:
+    result = session.exec(
+        update(CloudRun)
+        .where(
+            CloudRun.id == cloud_run_id,
+            CloudRun.status == "queued",
+            CloudRun.cancel_requested.is_(False),
+            CloudRun.attempt_count < CloudRun.max_attempts,
+        )
+        .values(
+            status="running",
+            queue_provider=DEFAULT_QUEUE_PROVIDER,
+            remote_worker_kind=worker_kind,
+            worker_id=worker_id,
+            lease_id=lease_id,
+            lease_expires_at=lease_expires_at,
+            heartbeat_at=now,
+            attempt_count=CloudRun.attempt_count + 1,
+            claimed_at=now,
+            last_queue_error=None,
             updated_at=now,
         )
     )
@@ -1197,6 +1294,26 @@ def _cloud_run_read(cloud_run: CloudRun) -> CloudRunRead:
         last_queue_error=cloud_run.last_queue_error,
         created_at=cloud_run.created_at,
         updated_at=cloud_run.updated_at,
+    )
+
+
+def _cloud_run_lease_read(cloud_run: CloudRun) -> CloudRunLeaseRead:
+    if (
+        cloud_run.lease_id is None
+        or cloud_run.lease_expires_at is None
+        or cloud_run.heartbeat_at is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cloud run lease is incomplete",
+        )
+    return CloudRunLeaseRead(
+        cloud_run=_cloud_run_read(cloud_run),
+        lease_id=cloud_run.lease_id,
+        lease_expires_at=cloud_run.lease_expires_at,
+        heartbeat_at=cloud_run.heartbeat_at,
+        attempt_count=cloud_run.attempt_count,
+        cancel_requested=cloud_run.cancel_requested,
     )
 
 

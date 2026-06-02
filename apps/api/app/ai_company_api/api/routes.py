@@ -7,6 +7,8 @@ from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     AgentRole,
     CloudRunCreate,
+    CloudRunLeaseCreate,
+    CloudRunLeaseRead,
     CloudRunLogEntryRead,
     CloudRunRead,
     CloudRunResultRead,
@@ -51,6 +53,7 @@ from ai_company_api.schemas.api import (
 )
 from ai_company_api.services.cloud_runner import (
     cancel_cloud_run,
+    claim_next_cloud_run_lease,
     get_cloud_run_read,
     list_cloud_run_logs,
     list_cloud_runs,
@@ -486,6 +489,26 @@ def get_cloud_run_by_id(
     session: SessionDep,
 ) -> CloudRunRead:
     return get_cloud_run_read(session, cloud_run_id)
+
+
+@router.post(
+    "/cloud-run-worker/leases",
+    status_code=status.HTTP_201_CREATED,
+    response_model=CloudRunLeaseRead,
+)
+def post_cloud_run_worker_lease(
+    data: CloudRunLeaseCreate,
+    session: SessionDep,
+) -> CloudRunLeaseRead | Response:
+    lease = claim_next_cloud_run_lease(
+        session,
+        worker_id=data.worker_id,
+        worker_kind=data.worker_kind,
+        lease_seconds=data.lease_seconds,
+    )
+    if lease is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return lease
 
 
 @router.post(
