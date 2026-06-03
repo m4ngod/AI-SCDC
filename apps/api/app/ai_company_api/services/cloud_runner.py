@@ -41,6 +41,7 @@ from ai_company_api.services.cloud_sandbox_executor import (
 )
 from ai_company_api.services.cloud_queue_providers import (
     CloudQueueEnqueueRequest,
+    CloudQueueProviderError,
     CloudQueueProviderNotFound,
     get_cloud_queue_provider,
 )
@@ -272,21 +273,81 @@ def enqueue_cloud_run(
     session.flush()
 
     cloud_run.local_run_id = local_run.id
-    queue_result = get_cloud_queue_provider(data.queue_provider).enqueue(
-        CloudQueueEnqueueRequest(
-            workspace_id=cloud_run.workspace_id,
-            project_id=cloud_run.project_id,
-            task_id=cloud_run.task_id,
-            cloud_run_id=cloud_run.id,
-            queue_provider=cloud_run.queue_provider,
-            runtime_provider=cloud_run.runtime_provider,
-            storage_provider=cloud_run.storage_provider,
-        )
+    cloud_run.updated_at = utc_now()
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="queued",
+        message="Cloud run queued.",
+        payload={
+            "repo_id": repository.id,
+            "sandbox_kind": executor.sandbox_kind,
+            "sandbox_profile_id": sandbox_profile_id,
+            "patch_command_key": patch_command_key,
+            "test_command_keys": test_command_keys,
+            "queue_provider": data.queue_provider,
+            "runtime_provider": data.runtime_provider,
+            "storage_provider": data.storage_provider,
+        },
     )
+    session.add(local_run)
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    session.refresh(local_run)
+
+    try:
+        queue_result = get_cloud_queue_provider(data.queue_provider).enqueue(
+            CloudQueueEnqueueRequest(
+                workspace_id=cloud_run.workspace_id,
+                project_id=cloud_run.project_id,
+                task_id=cloud_run.task_id,
+                cloud_run_id=cloud_run.id,
+                queue_provider=cloud_run.queue_provider,
+                runtime_provider=cloud_run.runtime_provider,
+                storage_provider=cloud_run.storage_provider,
+            )
+        )
+    except CloudQueueProviderError as exc:
+        completed_at = utc_now()
+        cloud_run.status = "failed"
+        cloud_run.failure_reason = "queue_enqueue_failed"
+        cloud_run.last_queue_error = "queue_enqueue_failed"
+        cloud_run.external_status = "failed"
+        cloud_run.external_error = str(exc)
+        cloud_run.completed_at = completed_at
+        cloud_run.updated_at = completed_at
+        local_run.status = "failed"
+        local_run.failure_reason = "queue_enqueue_failed"
+        local_run.updated_at = completed_at
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="queue_enqueue_failed",
+            message="Cloud run queue enqueue failed.",
+            level="error",
+            payload={
+                "queue_provider": data.queue_provider,
+                "failure_reason": "queue_enqueue_failed",
+            },
+        )
+        session.add(local_run)
+        session.add(cloud_run)
+        session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
     cloud_run.queue_message_id = queue_result.queue_message_id
     cloud_run.queue_receipt = queue_result.queue_receipt
     if queue_result.external_status is not None:
         cloud_run.external_status = queue_result.external_status
+    cloud_run.updated_at = utc_now()
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+
     runtime_provider = get_remote_runtime_provider(data.runtime_provider)
     if runtime_provider is not None and data.runtime_provider is not None:
         try:
@@ -321,23 +382,6 @@ def enqueue_cloud_run(
                 "log_stream_uri": runtime_submission.log_stream_uri,
             },
         )
-    cloud_run.updated_at = utc_now()
-    _append_cloud_run_log(
-        session,
-        cloud_run=cloud_run,
-        event="queued",
-        message="Cloud run queued.",
-        payload={
-            "repo_id": repository.id,
-            "sandbox_kind": executor.sandbox_kind,
-            "sandbox_profile_id": sandbox_profile_id,
-            "patch_command_key": patch_command_key,
-            "test_command_keys": test_command_keys,
-            "queue_provider": data.queue_provider,
-            "runtime_provider": data.runtime_provider,
-            "storage_provider": data.storage_provider,
-        },
-    )
     session.add(local_run)
     session.add(cloud_run)
     session.commit()

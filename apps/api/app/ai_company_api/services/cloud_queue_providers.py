@@ -15,6 +15,10 @@ class CloudQueueProviderNotFound(Exception):
     pass
 
 
+class CloudQueueProviderError(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class CloudQueueEnqueueRequest:
     workspace_id: str
@@ -93,16 +97,21 @@ class AliyunMnsQueueProvider:
             },
             sort_keys=True,
         )
-        result = get_aliyun_client_bundle(settings).mns.send_message(
-            AliyunMnsSendMessageRequest(
-                queue_name=settings.mns_queue_name or "",
-                cloud_run_id=request.cloud_run_id,
-                workspace_id=request.workspace_id,
-                project_id=request.project_id,
-                task_id=request.task_id,
-                body=body,
+        try:
+            result = get_aliyun_client_bundle(settings).mns.send_message(
+                AliyunMnsSendMessageRequest(
+                    queue_name=settings.mns_queue_name or "",
+                    cloud_run_id=request.cloud_run_id,
+                    workspace_id=request.workspace_id,
+                    project_id=request.project_id,
+                    task_id=request.task_id,
+                    body=body,
+                )
             )
-        )
+        except Exception as exc:
+            raise CloudQueueProviderError(
+                f"Cloud queue provider {self.name} failed to enqueue message"
+            ) from exc
         return CloudQueueEnqueueResult(
             queue_message_id=result.get("message_id"),
             external_status="queued",

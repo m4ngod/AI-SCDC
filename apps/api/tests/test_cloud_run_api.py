@@ -1,4 +1,5 @@
 import threading
+import json
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -410,6 +411,11 @@ class FakeAliyunMnsClient:
         return {"message_id": f"aliyun-mns-message-{request.cloud_run_id}"}
 
 
+class FailingAliyunMnsClient:
+    def send_message(self, request: AliyunMnsSendMessageRequest) -> dict:
+        raise RuntimeError("network failure with secret value")
+
+
 class UnusedAliyunClient:
     pass
 
@@ -501,6 +507,14 @@ def test_phase_10c_complete_aliyun_config_reports_runtime_not_ready(
     monkeypatch,
 ) -> None:
     _set_complete_aliyun_env(monkeypatch)
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
 
     response = _post_fake_cloud_run_with_provider_selection(
         tmp_path,
@@ -572,6 +586,80 @@ def test_aliyun_mns_queue_provider_sends_message_on_enqueue(
     assert len(fake_mns.requests) == 1
     assert fake_mns.requests[0].queue_name == "ai-scdc-cloud-runs-dev"
     assert fake_mns.requests[0].cloud_run_id == cloud_run["id"]
+    message_body = json.loads(fake_mns.requests[0].body)
+    assert message_body == {
+        "workspace_id": cloud_run["workspace_id"],
+        "project_id": cloud_run["project_id"],
+        "task_id": cloud_run["task_id"],
+        "cloud_run_id": cloud_run["id"],
+        "queue_provider": "aliyun_mns",
+        "runtime_provider": None,
+        "storage_provider": None,
+    }
+    assert "secret" not in fake_mns.requests[0].body
+
+
+def test_aliyun_mns_queue_provider_failure_is_controlled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    monkeypatch.setenv("AI_SCDC_ALIYUN_REGION_ID", "cn-hangzhou")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_ID", "ak")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "secret")
+    monkeypatch.setenv(
+        "AI_SCDC_ALIYUN_MNS_ENDPOINT",
+        "https://123456.mns.cn-hangzhou.aliyuncs.com",
+    )
+    monkeypatch.setenv("AI_SCDC_ALIYUN_MNS_QUEUE_NAME", "ai-scdc-cloud-runs-dev")
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FailingAliyunMnsClient(),
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    response = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={
+            "repo_id": repository.id,
+            "queue_provider": "aliyun_mns",
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == (
+        "Cloud queue provider aliyun_mns failed to enqueue message"
+    )
+    assert "secret" not in response.text
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_runs = session.exec(select(CloudRun)).all()
+        assert len(cloud_runs) == 1
+        cloud_run = cloud_runs[0]
+        assert cloud_run.status == "failed"
+        assert cloud_run.failure_reason == "queue_enqueue_failed"
+        assert cloud_run.last_queue_error == "queue_enqueue_failed"
+        assert cloud_run.external_status == "failed"
+        assert "secret" not in (cloud_run.external_error or "")
 
 
 def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(
