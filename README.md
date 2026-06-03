@@ -669,4 +669,75 @@ pnpm --filter @ai-scdc/desktop typecheck
 git diff --check
 ```
 
+## Phase 10C Aliyun Provider MVP Smoke
+
+Phase 10C can submit a cloud run through Aliyun MNS, store provider artifacts in
+Aliyun OSS, and launch a short-lived Aliyun ECI remote worker from an ACR image.
+Do not create a long-lived ECI instance manually in the console. The API creates
+one short-lived container group when `runtime_provider` is `aliyun_eci`.
+
+Required Aliyun services:
+
+- RAM user or role with narrowly scoped MNS, OSS, and ECI permissions.
+- OSS private bucket with lifecycle cleanup for development prefixes.
+- MNS queue in queue mode.
+- ACR private repository containing the remote worker image.
+- ECI enabled in the same region as the selected VPC/VSwitch/security group.
+- Outbound network path for the ECI worker if the API URL or GitHub requires
+  public network access.
+
+Build and push the worker image:
+
+```powershell
+$AcrImage = "<acr-registry>/<namespace>/<repo>:dev"
+docker build -f apps/api/Dockerfile.remote-worker -t $AcrImage apps/api
+docker push $AcrImage
+```
+
+Configure the local API shell:
+
+```powershell
+$env:AI_SCDC_ALIYUN_REGION_ID = "cn-hangzhou"
+$env:AI_SCDC_ALIYUN_ACCESS_KEY_ID = "<set locally>"
+$env:AI_SCDC_ALIYUN_ACCESS_KEY_SECRET = "<set locally>"
+$env:AI_SCDC_ALIYUN_MNS_ENDPOINT = "https://<account-id>.mns.cn-hangzhou.aliyuncs.com"
+$env:AI_SCDC_ALIYUN_MNS_QUEUE_NAME = "ai-scdc-cloud-runs-dev"
+$env:AI_SCDC_ALIYUN_OSS_ENDPOINT = "https://oss-cn-hangzhou.aliyuncs.com"
+$env:AI_SCDC_ALIYUN_OSS_BUCKET = "ai-scdc-dev-artifacts"
+$env:AI_SCDC_ALIYUN_ECI_VSWITCH_ID = "<vsw-id>"
+$env:AI_SCDC_ALIYUN_ECI_SECURITY_GROUP_ID = "<sg-id>"
+$env:AI_SCDC_ALIYUN_ECI_IMAGE = $AcrImage
+$env:AI_SCDC_API_PUBLIC_BASE_URL = "<URL reachable from ECI>"
+```
+
+Start a cloud run with Aliyun providers:
+
+```powershell
+$cloudRun = Invoke-RestMethod `
+  -Method Post `
+  -Uri "$ApiBase/tasks/$TaskId/cloud-runs" `
+  -ContentType "application/json" `
+  -Body (JsonBody @{
+    repo_id = $RepoId
+    queue_provider = "aliyun_mns"
+    storage_provider = "aliyun_oss"
+    runtime_provider = "aliyun_eci"
+  })
+```
+
+Expected output includes `queue_provider = aliyun_mns`, `storage_provider =
+aliyun_oss`, `runtime_provider = aliyun_eci`, an MNS message ID, an ECI runtime
+job ID, and `oss://` artifact/log URIs. Secrets and queue receipts must not
+appear in API responses.
+
+Cleanup after smoke:
+
+- Stop or delete any ECI container group left from the smoke run, including a
+  container group created before an API-side artifact write failure.
+- Delete OSS objects under the development prefix if lifecycle cleanup has not
+  removed them yet.
+- Purge unneeded MNS test messages.
+- Release idle NAT gateway or EIP resources that were created only for smoke
+  testing.
+
 See `docs/architecture.md` for architecture and phase boundaries.
