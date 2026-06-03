@@ -124,6 +124,8 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
             client_token,
             cpu,
             memory,
+            auto_create_eip,
+            eip_bandwidth,
             container,
         ):
             self.region_id = region_id
@@ -134,6 +136,8 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
             self.client_token = client_token
             self.cpu = cpu
             self.memory = memory
+            self.auto_create_eip = auto_create_eip
+            self.eip_bandwidth = eip_bandwidth
             self.container = container
 
     class FakeClient:
@@ -197,6 +201,8 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
             memory_gb=2.0,
             restart_policy="Never",
             client_token="ai-scdc-run-1",
+            auto_create_eip=True,
+            eip_bandwidth=1,
             environment={"AI_SCDC_CLOUD_RUN_ID": "run-1"},
         )
     )
@@ -206,6 +212,8 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
     assert captured["request"].v_switch_id == "vsw-demo"
     assert captured["request"].restart_policy == "Never"
     assert captured["request"].client_token == "ai-scdc-run-1"
+    assert captured["request"].auto_create_eip is True
+    assert captured["request"].eip_bandwidth == 1
     assert captured["request"].container[0] is captured["container"]
 
 

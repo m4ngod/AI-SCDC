@@ -41,6 +41,8 @@ class AliyunEciCreateContainerGroupRequest:
     restart_policy: str
     client_token: str
     environment: dict[str, str]
+    auto_create_eip: bool = False
+    eip_bandwidth: int = 1
 
 
 class AliyunMnsClient(Protocol):
@@ -226,6 +228,8 @@ class SdkAliyunEciClient:
             client_token=request.client_token,
             cpu=request.cpu,
             memory=request.memory_gb,
+            auto_create_eip=request.auto_create_eip,
+            eip_bandwidth=request.eip_bandwidth,
             container=[container],
         )
         result = client.create_container_group(create_request)

@@ -41,6 +41,8 @@ class AliyunSettings:
     api_public_base_url: str | None
     eci_cpu: float = 1.0
     eci_memory_gb: float = 2.0
+    eci_auto_create_eip: bool = False
+    eci_eip_bandwidth: int = 1
     eci_container_group_prefix: str = "ai-scdc-run"
     oss_prefix: str = "ai-scdc/dev"
 
@@ -60,6 +62,8 @@ def load_aliyun_settings() -> AliyunSettings:
         api_public_base_url=_env("AI_SCDC_API_PUBLIC_BASE_URL"),
         eci_cpu=_float_env("AI_SCDC_ALIYUN_ECI_CPU", 1.0),
         eci_memory_gb=_float_env("AI_SCDC_ALIYUN_ECI_MEMORY_GB", 2.0),
+        eci_auto_create_eip=_bool_env("AI_SCDC_ALIYUN_ECI_AUTO_CREATE_EIP", False),
+        eci_eip_bandwidth=_int_env("AI_SCDC_ALIYUN_ECI_EIP_BANDWIDTH", 1),
         eci_container_group_prefix=_env(
             "AI_SCDC_ALIYUN_ECI_CONTAINER_GROUP_PREFIX"
         )
@@ -108,3 +112,17 @@ def _float_env(name: str, default: float) -> float:
     if value is None:
         return default
     return float(value)
+
+
+def _int_env(name: str, default: int) -> int:
+    value = _env(name)
+    if value is None:
+        return default
+    return int(value)
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    value = _env(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}

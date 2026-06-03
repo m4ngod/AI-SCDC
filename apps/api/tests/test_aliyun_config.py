@@ -25,6 +25,8 @@ def test_load_aliyun_settings_reads_environment(monkeypatch: pytest.MonkeyPatch)
         "registry.cn-hangzhou.aliyuncs.com/ai-scdc/remote-worker:dev",
     )
     monkeypatch.setenv("AI_SCDC_API_PUBLIC_BASE_URL", "https://api.example.test")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ECI_AUTO_CREATE_EIP", "true")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ECI_EIP_BANDWIDTH", "1")
 
     settings = load_aliyun_settings()
 
@@ -36,6 +38,8 @@ def test_load_aliyun_settings_reads_environment(monkeypatch: pytest.MonkeyPatch)
     assert settings.eci_cpu == 1.0
     assert settings.eci_memory_gb == 2.0
     assert settings.eci_container_group_prefix == "ai-scdc-run"
+    assert settings.eci_auto_create_eip is True
+    assert settings.eci_eip_bandwidth == 1
     assert settings.oss_prefix == "ai-scdc/dev"
 
 

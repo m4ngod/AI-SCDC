@@ -176,6 +176,8 @@ class AliyunEciRuntimeProvider:
                     restart_policy="Never",
                     client_token=_eci_client_token(submission.cloud_run_id),
                     environment=environment,
+                    auto_create_eip=settings.eci_auto_create_eip,
+                    eip_bandwidth=settings.eci_eip_bandwidth,
                 )
             )
             runtime_job_id = result.get("container_group_id") or container_group_name
