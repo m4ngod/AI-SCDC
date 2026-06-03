@@ -396,6 +396,41 @@ def test_start_cloud_run_rejects_unknown_provider_runtime(
     )
 
 
+def test_phase_10c_aliyun_provider_names_are_recognized(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response = _post_fake_cloud_run_with_provider_selection(
+        tmp_path,
+        monkeypatch,
+        {
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Aliyun provider" in response.json()["detail"]
+    assert "missing configuration" in response.json()["detail"]
+
+
+def test_phase_10c_missing_secret_value_is_not_returned(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "very-secret-value")
+
+    response = _post_fake_cloud_run_with_provider_selection(
+        tmp_path,
+        monkeypatch,
+        {"storage_provider": "aliyun_oss"},
+    )
+
+    assert response.status_code == 400
+    assert "very-secret-value" not in response.json()["detail"]
+
+
 def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(
     tmp_path: Path,
     monkeypatch,

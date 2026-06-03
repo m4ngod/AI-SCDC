@@ -6,6 +6,7 @@ from typing import Protocol
 
 from sqlmodel import Session
 
+from ai_company_api.services.aliyun_config import require_aliyun_settings
 from ai_company_api.services.object_storage import (
     ObjectStorageWrite,
     get_object_storage_provider,
@@ -18,6 +19,9 @@ class RemoteRuntimeProviderNotFound(Exception):
 
 class RemoteRuntimeProvider(Protocol):
     name: str
+
+    def validate_configuration(self) -> None:
+        ...
 
     def submit(
         self,
@@ -49,6 +53,9 @@ class RemoteRuntimeSubmissionResult:
 
 class RemoteStubRuntimeProvider:
     name = "remote_stub"
+
+    def validate_configuration(self) -> None:
+        return None
 
     def submit(
         self,
@@ -100,8 +107,36 @@ class RemoteStubRuntimeProvider:
         )
 
 
+class AliyunEciRuntimeProvider:
+    name = "aliyun_eci"
+
+    def validate_configuration(self) -> None:
+        require_aliyun_settings(
+            provider_name=self.name,
+            required_names=(
+                "region_id",
+                "access_key_id",
+                "access_key_secret",
+                "eci_vswitch_id",
+                "eci_security_group_id",
+                "eci_image",
+                "api_public_base_url",
+            ),
+        )
+
+    def submit(
+        self,
+        session: Session,
+        submission: RemoteRuntimeSubmission,
+    ) -> RemoteRuntimeSubmissionResult:
+        raise RemoteRuntimeProviderNotFound(
+            "Aliyun ECI runtime submission is not ready"
+        )
+
+
 _KNOWN_RUNTIME_PROVIDERS = {
     "remote_stub": RemoteStubRuntimeProvider(),
+    "aliyun_eci": AliyunEciRuntimeProvider(),
 }
 
 

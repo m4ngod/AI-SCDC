@@ -29,6 +29,7 @@ from ai_company_api.schemas.api import (
     CloudRunResultRead,
     PatchArtifactRead,
 )
+from ai_company_api.services.aliyun_config import AliyunConfigurationError
 from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
     SandboxCommandSelection,
@@ -165,11 +166,21 @@ def start_cloud_run(
 
 def _validate_cloud_run_provider_selection(data: CloudRunCreate) -> None:
     try:
-        get_cloud_queue_provider(data.queue_provider)
-        if data.storage_provider is not None:
+        queue_provider = get_cloud_queue_provider(data.queue_provider)
+        storage_provider = (
             get_object_storage_provider(data.storage_provider)
-        get_remote_runtime_provider(data.runtime_provider)
+            if data.storage_provider is not None
+            else None
+        )
+        runtime_provider = get_remote_runtime_provider(data.runtime_provider)
+
+        queue_provider.validate_configuration()
+        if storage_provider is not None:
+            storage_provider.validate_configuration()
+        if runtime_provider is not None:
+            runtime_provider.validate_configuration()
     except (
+        AliyunConfigurationError,
         CloudQueueProviderNotFound,
         ObjectStorageProviderNotFound,
         RemoteRuntimeProviderNotFound,

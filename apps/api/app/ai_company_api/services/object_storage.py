@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from sqlmodel import Session
 
 from ai_company_api.models.entities import CloudRunStoredObject
+from ai_company_api.services.aliyun_config import require_aliyun_settings
 
 
 ARTIFACT_KINDS = {"diff", "log", "command_result", "test_result", "manifest"}
@@ -48,6 +49,9 @@ class ObjectStorageRef:
 class ObjectStorageProvider(Protocol):
     name: str
 
+    def validate_configuration(self) -> None:
+        ...
+
     def put_text(
         self,
         session: Session,
@@ -65,6 +69,9 @@ class ObjectStorageProvider(Protocol):
 
 class LocalInlineObjectStorageProvider:
     name = "local_inline"
+
+    def validate_configuration(self) -> None:
+        return None
 
     def put_text(
         self,
@@ -121,9 +128,41 @@ class LocalInlineObjectStorageProvider:
         return stored_object.text_content
 
 
+class AliyunOssObjectStorageProvider:
+    name = "aliyun_oss"
+
+    def validate_configuration(self) -> None:
+        require_aliyun_settings(
+            provider_name=self.name,
+            required_names=(
+                "region_id",
+                "access_key_id",
+                "access_key_secret",
+                "oss_endpoint",
+                "oss_bucket",
+            ),
+        )
+
+    def put_text(
+        self,
+        session: Session,
+        write: ObjectStorageWrite,
+    ) -> ObjectStorageRef:
+        raise ObjectStorageReadError("Aliyun OSS storage operations are not ready")
+
+    def read_text(
+        self,
+        session: Session,
+        ref: ObjectStorageRef,
+    ) -> str:
+        raise ObjectStorageReadError("Aliyun OSS storage operations are not ready")
+
+
 def get_object_storage_provider(name: str | None) -> ObjectStorageProvider:
     if name in (None, "local_inline"):
         return LocalInlineObjectStorageProvider()
+    if name == "aliyun_oss":
+        return AliyunOssObjectStorageProvider()
     raise ObjectStorageProviderNotFound(f"Unknown object storage provider: {name}")
 
 
