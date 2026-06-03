@@ -197,6 +197,7 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
 
     assert result["container_group_id"] == "eci-run-1"
     assert captured["container"].environment_var[0].key == "AI_SCDC_CLOUD_RUN_ID"
+    assert captured["request"].v_switch_id == "vsw-demo"
     assert captured["request"].container[0] is captured["container"]
 
 
