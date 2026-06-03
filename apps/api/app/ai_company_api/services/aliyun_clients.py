@@ -24,7 +24,7 @@ class AliyunMnsSendMessageRequest:
 class AliyunOssPutObjectRequest:
     bucket: str
     object_key: str
-    content: str
+    content: bytes
     content_type: str
 
 
@@ -132,7 +132,7 @@ class SdkAliyunOssClient:
             oss.PutObjectRequest(
                 bucket=request.bucket,
                 key=request.object_key,
-                body=request.content.encode("utf-8"),
+                body=request.content,
                 content_type=request.content_type,
             )
         )
@@ -213,7 +213,7 @@ class SdkAliyunEciClient:
             image=request.image,
             cpu=request.cpu,
             memory=request.memory_gb,
-            environment_vars=env_vars,
+            environment_var=env_vars,
         )
         create_request = eci_models.CreateContainerGroupRequest(
             region_id=request.region_id,
