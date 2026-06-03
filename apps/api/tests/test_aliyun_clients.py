@@ -119,7 +119,7 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
             region_id,
             container_group_name,
             security_group_id,
-            vswitch_id,
+            v_switch_id,
             cpu,
             memory,
             container,
@@ -127,7 +127,7 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
             self.region_id = region_id
             self.container_group_name = container_group_name
             self.security_group_id = security_group_id
-            self.vswitch_id = vswitch_id
+            self.v_switch_id = v_switch_id
             self.cpu = cpu
             self.memory = memory
             self.container = container

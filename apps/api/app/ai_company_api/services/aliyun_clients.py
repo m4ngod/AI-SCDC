@@ -219,7 +219,7 @@ class SdkAliyunEciClient:
             region_id=request.region_id,
             container_group_name=request.container_group_name,
             security_group_id=request.security_group_id,
-            vswitch_id=request.vswitch_id,
+            v_switch_id=request.vswitch_id,
             cpu=request.cpu,
             memory=request.memory_gb,
             container=[container],
