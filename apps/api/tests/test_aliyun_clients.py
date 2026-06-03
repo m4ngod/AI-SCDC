@@ -120,6 +120,8 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
             container_group_name,
             security_group_id,
             v_switch_id,
+            restart_policy,
+            client_token,
             cpu,
             memory,
             container,
@@ -128,6 +130,8 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
             self.container_group_name = container_group_name
             self.security_group_id = security_group_id
             self.v_switch_id = v_switch_id
+            self.restart_policy = restart_policy
+            self.client_token = client_token
             self.cpu = cpu
             self.memory = memory
             self.container = container
@@ -191,6 +195,8 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
             security_group_id="sg-demo",
             cpu=1.0,
             memory_gb=2.0,
+            restart_policy="Never",
+            client_token="ai-scdc-run-1",
             environment={"AI_SCDC_CLOUD_RUN_ID": "run-1"},
         )
     )
@@ -198,6 +204,8 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
     assert result["container_group_id"] == "eci-run-1"
     assert captured["container"].environment_var[0].key == "AI_SCDC_CLOUD_RUN_ID"
     assert captured["request"].v_switch_id == "vsw-demo"
+    assert captured["request"].restart_policy == "Never"
+    assert captured["request"].client_token == "ai-scdc-run-1"
     assert captured["request"].container[0] is captured["container"]
 
 

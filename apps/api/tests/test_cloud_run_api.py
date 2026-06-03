@@ -745,6 +745,8 @@ def test_aliyun_eci_runtime_submission_creates_safe_container_request(
     assert request.security_group_id == "sg-demo"
     assert request.cpu == 1.0
     assert request.memory_gb == 2.0
+    assert request.restart_policy == "Never"
+    assert request.client_token == f"ai-scdc-{cloud_run['id'].replace('_', '-')}"
     assert request.environment == {
         "AI_SCDC_API_BASE_URL": "https://api.example.test",
         "AI_SCDC_CLOUD_RUN_ID": cloud_run["id"],

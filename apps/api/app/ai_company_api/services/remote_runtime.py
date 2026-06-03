@@ -173,6 +173,8 @@ class AliyunEciRuntimeProvider:
                     security_group_id=settings.eci_security_group_id or "",
                     cpu=settings.eci_cpu,
                     memory_gb=settings.eci_memory_gb,
+                    restart_policy="Never",
+                    client_token=_eci_client_token(submission.cloud_run_id),
                     environment=environment,
                 )
             )
@@ -251,3 +253,10 @@ def _eci_container_group_name(prefix: str, cloud_run_id: str) -> str:
     if not normalized[0].isalpha():
         normalized = f"ai-scdc-run-{normalized}"
     return normalized[:128].rstrip("-")
+
+
+def _eci_client_token(cloud_run_id: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9-]+", "-", cloud_run_id).strip("-").lower()
+    if not normalized:
+        normalized = "run"
+    return f"ai-scdc-{normalized}"[:64].rstrip("-")

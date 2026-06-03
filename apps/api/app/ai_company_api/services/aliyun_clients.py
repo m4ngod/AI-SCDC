@@ -38,6 +38,8 @@ class AliyunEciCreateContainerGroupRequest:
     security_group_id: str
     cpu: float
     memory_gb: float
+    restart_policy: str
+    client_token: str
     environment: dict[str, str]
 
 
@@ -220,6 +222,8 @@ class SdkAliyunEciClient:
             container_group_name=request.container_group_name,
             security_group_id=request.security_group_id,
             v_switch_id=request.vswitch_id,
+            restart_policy=request.restart_policy,
+            client_token=request.client_token,
             cpu=request.cpu,
             memory=request.memory_gb,
             container=[container],
