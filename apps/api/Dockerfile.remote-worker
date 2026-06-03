@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY pyproject.toml /app/apps/api/pyproject.toml
+COPY app /app/apps/api/app
+
+RUN pip install --no-cache-dir -e /app/apps/api
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-m", "ai_company_api.services.remote_worker"]
