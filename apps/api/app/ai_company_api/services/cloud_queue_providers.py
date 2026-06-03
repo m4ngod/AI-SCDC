@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Protocol
 
+from ai_company_api.services.aliyun_clients import (
+    AliyunMnsSendMessageRequest,
+    get_aliyun_client_bundle,
+)
 from ai_company_api.services.aliyun_config import require_aliyun_settings
 
 
@@ -66,8 +71,42 @@ class AliyunMnsQueueProvider:
         )
 
     def enqueue(self, request: CloudQueueEnqueueRequest) -> CloudQueueEnqueueResult:
-        self.validate_configuration()
-        return CloudQueueEnqueueResult(external_status="queued")
+        settings = require_aliyun_settings(
+            provider_name=self.name,
+            required_names=(
+                "region_id",
+                "access_key_id",
+                "access_key_secret",
+                "mns_endpoint",
+                "mns_queue_name",
+            ),
+        )
+        body = json.dumps(
+            {
+                "workspace_id": request.workspace_id,
+                "project_id": request.project_id,
+                "task_id": request.task_id,
+                "cloud_run_id": request.cloud_run_id,
+                "queue_provider": request.queue_provider,
+                "runtime_provider": request.runtime_provider,
+                "storage_provider": request.storage_provider,
+            },
+            sort_keys=True,
+        )
+        result = get_aliyun_client_bundle(settings).mns.send_message(
+            AliyunMnsSendMessageRequest(
+                queue_name=settings.mns_queue_name or "",
+                cloud_run_id=request.cloud_run_id,
+                workspace_id=request.workspace_id,
+                project_id=request.project_id,
+                task_id=request.task_id,
+                body=body,
+            )
+        )
+        return CloudQueueEnqueueResult(
+            queue_message_id=result.get("message_id"),
+            external_status="queued",
+        )
 
 
 _KNOWN_QUEUE_PROVIDERS = {

@@ -28,6 +28,10 @@ from ai_company_api.services.cloud_sandbox_executor import (
     SandboxExecutionRequest,
     SandboxExecutionResult,
 )
+from ai_company_api.services.aliyun_clients import (
+    AliyunClientBundle,
+    AliyunMnsSendMessageRequest,
+)
 from ai_company_api.services.object_storage import (
     ObjectStorageWrite,
     get_object_storage_provider,
@@ -397,6 +401,19 @@ def _set_complete_aliyun_env(monkeypatch) -> None:
     monkeypatch.setenv("AI_SCDC_API_PUBLIC_BASE_URL", "https://api.example.test")
 
 
+class FakeAliyunMnsClient:
+    def __init__(self) -> None:
+        self.requests: list[AliyunMnsSendMessageRequest] = []
+
+    def send_message(self, request: AliyunMnsSendMessageRequest) -> dict:
+        self.requests.append(request)
+        return {"message_id": f"aliyun-mns-message-{request.cloud_run_id}"}
+
+
+class UnusedAliyunClient:
+    pass
+
+
 def test_start_cloud_run_rejects_unknown_provider_queue(
     tmp_path: Path,
     monkeypatch,
@@ -497,6 +514,64 @@ def test_phase_10c_complete_aliyun_config_reports_runtime_not_ready(
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Aliyun ECI runtime submission is not ready"
+
+
+def test_aliyun_mns_queue_provider_sends_message_on_enqueue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    monkeypatch.setenv("AI_SCDC_ALIYUN_REGION_ID", "cn-hangzhou")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_ID", "ak")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "secret")
+    monkeypatch.setenv(
+        "AI_SCDC_ALIYUN_MNS_ENDPOINT",
+        "https://123456.mns.cn-hangzhou.aliyuncs.com",
+    )
+    monkeypatch.setenv("AI_SCDC_ALIYUN_MNS_QUEUE_NAME", "ai-scdc-cloud-runs-dev")
+    fake_mns = FakeAliyunMnsClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    response = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={
+            "repo_id": repository.id,
+            "queue_provider": "aliyun_mns",
+        },
+    )
+
+    assert response.status_code == 201
+    cloud_run = response.json()["cloud_run"]
+    assert cloud_run["queue_provider"] == "aliyun_mns"
+    assert cloud_run["queue_message_id"] == f"aliyun-mns-message-{cloud_run['id']}"
+    assert cloud_run["external_status"] == "queued"
+    assert "queue_receipt" not in cloud_run
+    assert len(fake_mns.requests) == 1
+    assert fake_mns.requests[0].queue_name == "ai-scdc-cloud-runs-dev"
+    assert fake_mns.requests[0].cloud_run_id == cloud_run["id"]
 
 
 def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(

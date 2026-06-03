@@ -40,6 +40,7 @@ from ai_company_api.services.cloud_sandbox_executor import (
     select_cloud_sandbox_executor,
 )
 from ai_company_api.services.cloud_queue_providers import (
+    CloudQueueEnqueueRequest,
     CloudQueueProviderNotFound,
     get_cloud_queue_provider,
 )
@@ -252,9 +253,6 @@ def enqueue_cloud_run(
         queue_provider=data.queue_provider,
         runtime_provider=data.runtime_provider,
         storage_provider=data.storage_provider,
-        external_status="queued"
-        if data.queue_provider == EXTERNAL_STUB_QUEUE_PROVIDER
-        else None,
     )
     session.add(cloud_run)
     session.flush()
@@ -274,6 +272,21 @@ def enqueue_cloud_run(
     session.flush()
 
     cloud_run.local_run_id = local_run.id
+    queue_result = get_cloud_queue_provider(data.queue_provider).enqueue(
+        CloudQueueEnqueueRequest(
+            workspace_id=cloud_run.workspace_id,
+            project_id=cloud_run.project_id,
+            task_id=cloud_run.task_id,
+            cloud_run_id=cloud_run.id,
+            queue_provider=cloud_run.queue_provider,
+            runtime_provider=cloud_run.runtime_provider,
+            storage_provider=cloud_run.storage_provider,
+        )
+    )
+    cloud_run.queue_message_id = queue_result.queue_message_id
+    cloud_run.queue_receipt = queue_result.queue_receipt
+    if queue_result.external_status is not None:
+        cloud_run.external_status = queue_result.external_status
     runtime_provider = get_remote_runtime_provider(data.runtime_provider)
     if runtime_provider is not None and data.runtime_provider is not None:
         try:
