@@ -159,8 +159,9 @@ class AliyunOssObjectStorageProvider:
         content_bytes = write.content.encode("utf-8")
         digest = sha256(content_bytes).hexdigest()
         suffix = "json" if write.content_type == "application/json" else "txt"
+        oss_prefix = _normalized_oss_prefix(settings.oss_prefix)
         object_key = (
-            f"{settings.oss_prefix.strip('/')}/workspaces/{write.workspace_id}/"
+            f"{oss_prefix}workspaces/{write.workspace_id}/"
             f"cloud-runs/{write.cloud_run_id}/{write.kind}/{digest}.{suffix}"
         )
         get_aliyun_client_bundle(settings).oss.put_object(
@@ -190,7 +191,7 @@ class AliyunOssObjectStorageProvider:
         bucket, object_key = _parse_oss_ref(ref.uri)
         if bucket != settings.oss_bucket:
             raise ObjectStorageReadError("Object storage reference bucket mismatch")
-        expected_prefix = f"{settings.oss_prefix.strip('/')}/workspaces/"
+        expected_prefix = f"{_normalized_oss_prefix(settings.oss_prefix)}workspaces/"
         if not object_key.startswith(expected_prefix):
             raise ObjectStorageReadError("Object storage reference prefix mismatch")
         content = get_aliyun_client_bundle(settings).oss.get_object_text(
@@ -240,6 +241,10 @@ def _parse_oss_ref(uri: str) -> tuple[str, str]:
         raise ObjectStorageReadError("Object storage reference scheme mismatch")
     if not parsed.netloc:
         raise ObjectStorageReadError("Object storage reference bucket missing")
+    if parsed.query or parsed.fragment:
+        raise ObjectStorageReadError(
+            "Object storage reference must not include query or fragment"
+        )
     object_key = parsed.path.lstrip("/")
     if not object_key:
         raise ObjectStorageReadError("Object storage reference object key missing")
@@ -257,3 +262,10 @@ def _require_aliyun_oss_settings(provider_name: str) -> AliyunSettings:
             "oss_bucket",
         ),
     )
+
+
+def _normalized_oss_prefix(prefix: str) -> str:
+    stripped = prefix.strip("/")
+    if not stripped:
+        return ""
+    return f"{stripped}/"

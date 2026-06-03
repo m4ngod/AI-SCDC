@@ -112,7 +112,11 @@ class UnusedClient:
     pass
 
 
-def _install_fake_oss(monkeypatch: pytest.MonkeyPatch) -> FakeAliyunOssClient:
+def _install_fake_oss(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    oss_prefix: str | None = None,
+) -> FakeAliyunOssClient:
     monkeypatch.setenv("AI_SCDC_ALIYUN_REGION_ID", "cn-hangzhou")
     monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_ID", "ak")
     monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "secret")
@@ -121,6 +125,8 @@ def _install_fake_oss(monkeypatch: pytest.MonkeyPatch) -> FakeAliyunOssClient:
         "https://oss-cn-hangzhou.aliyuncs.com",
     )
     monkeypatch.setenv("AI_SCDC_ALIYUN_OSS_BUCKET", "ai-scdc-dev-artifacts")
+    if oss_prefix is not None:
+        monkeypatch.setenv("AI_SCDC_ALIYUN_OSS_PREFIX", oss_prefix)
     fake_oss = FakeAliyunOssClient()
     monkeypatch.setattr(
         "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
@@ -178,3 +184,48 @@ def test_aliyun_oss_storage_rejects_hash_mismatch(
 
         with pytest.raises(ObjectStorageReadError):
             provider.read_text(session, ref)
+
+
+def test_aliyun_oss_storage_rejects_query_or_fragment_in_ref(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_oss(monkeypatch)
+    with _build_storage_session(tmp_path) as session:
+        provider = get_object_storage_provider("aliyun_oss")
+        ref = provider.put_text(
+            session,
+            ObjectStorageWrite(
+                workspace_id="dev_workspace",
+                cloud_run_id="cloud_run_1",
+                kind="log",
+                content="safe log",
+            ),
+        )
+        ref.uri = f"{ref.uri}?token=secret#frag"
+
+        with pytest.raises(ObjectStorageReadError):
+            provider.read_text(session, ref)
+
+
+def test_aliyun_oss_storage_reads_ref_with_root_prefix(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_oss(monkeypatch, oss_prefix="/")
+    with _build_storage_session(tmp_path) as session:
+        provider = get_object_storage_provider("aliyun_oss")
+        text = "root prefix content"
+
+        ref = provider.put_text(
+            session,
+            ObjectStorageWrite(
+                workspace_id="dev_workspace",
+                cloud_run_id="cloud_run_1",
+                kind="log",
+                content=text,
+            ),
+        )
+
+        assert ref.uri.startswith("oss://ai-scdc-dev-artifacts/workspaces/")
+        assert provider.read_text(session, ref) == text
