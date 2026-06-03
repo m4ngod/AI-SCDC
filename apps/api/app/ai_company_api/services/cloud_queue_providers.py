@@ -108,10 +108,10 @@ class AliyunMnsQueueProvider:
                     body=body,
                 )
             )
-        except Exception as exc:
+        except Exception:
             raise CloudQueueProviderError(
                 f"Cloud queue provider {self.name} failed to enqueue message"
-            ) from exc
+            ) from None
         return CloudQueueEnqueueResult(
             queue_message_id=result.get("message_id"),
             external_status="queued",

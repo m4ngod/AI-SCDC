@@ -350,6 +350,7 @@ def enqueue_cloud_run(
 
     runtime_provider = get_remote_runtime_provider(data.runtime_provider)
     if runtime_provider is not None and data.runtime_provider is not None:
+        cloud_run_id = cloud_run.id
         try:
             runtime_submission = runtime_provider.submit(
                 session,
@@ -365,7 +366,37 @@ def enqueue_cloud_run(
                 ),
             )
         except RemoteRuntimeSubmissionError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            session.rollback()
+            cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+            local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
+            completed_at = utc_now()
+            failure_detail = _redact_external_error(str(exc)) or (
+                "Remote runtime submission failed"
+            )
+            cloud_run.status = "failed"
+            cloud_run.failure_reason = "runtime_submission_failed"
+            cloud_run.external_status = "failed"
+            cloud_run.external_error = failure_detail
+            cloud_run.completed_at = completed_at
+            cloud_run.updated_at = completed_at
+            local_run.status = "failed"
+            local_run.failure_reason = "runtime_submission_failed"
+            local_run.updated_at = completed_at
+            _append_cloud_run_log(
+                session,
+                cloud_run=cloud_run,
+                event="remote_runtime_submission_failed",
+                message="Remote runtime submission failed.",
+                level="error",
+                payload={
+                    "runtime_provider": data.runtime_provider,
+                    "failure_reason": "runtime_submission_failed",
+                },
+            )
+            session.add(local_run)
+            session.add(cloud_run)
+            session.commit()
+            raise HTTPException(status_code=400, detail=failure_detail) from None
         cloud_run.runtime_job_id = runtime_submission.runtime_job_id
         cloud_run.artifact_manifest_uri = runtime_submission.artifact_manifest_uri
         cloud_run.log_stream_uri = runtime_submission.log_stream_uri

@@ -506,6 +506,19 @@ def test_phase_10c_complete_aliyun_config_reports_runtime_not_ready(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
     _set_complete_aliyun_env(monkeypatch)
     monkeypatch.setattr(
         "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
@@ -515,11 +528,15 @@ def test_phase_10c_complete_aliyun_config_reports_runtime_not_ready(
             eci=UnusedAliyunClient(),
         ),
     )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
 
-    response = _post_fake_cloud_run_with_provider_selection(
-        tmp_path,
-        monkeypatch,
-        {
+    response = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={
+            "repo_id": repository.id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -528,6 +545,24 @@ def test_phase_10c_complete_aliyun_config_reports_runtime_not_ready(
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Aliyun ECI runtime submission is not ready"
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.exec(select(CloudRun)).one()
+        assert cloud_run.status == "failed"
+        assert cloud_run.failure_reason == "runtime_submission_failed"
+        assert cloud_run.external_status == "failed"
+        assert cloud_run.external_error == "Aliyun ECI runtime submission is not ready"
+        local_run = session.get(LocalTaskRun, cloud_run.local_run_id)
+        assert local_run is not None
+        assert local_run.status == "failed"
+        assert local_run.failure_reason == "runtime_submission_failed"
+        failure_log = session.exec(
+            select(CloudRunLogEntry).where(
+                CloudRunLogEntry.cloud_run_id == cloud_run.id,
+                CloudRunLogEntry.event == "remote_runtime_submission_failed",
+            )
+        ).one()
+        assert failure_log.level == "error"
 
 
 def test_aliyun_mns_queue_provider_sends_message_on_enqueue(
@@ -660,6 +695,60 @@ def test_aliyun_mns_queue_provider_failure_is_controlled(
         assert cloud_run.last_queue_error == "queue_enqueue_failed"
         assert cloud_run.external_status == "failed"
         assert "secret" not in (cloud_run.external_error or "")
+        local_run = session.get(LocalTaskRun, cloud_run.local_run_id)
+        assert local_run is not None
+        assert local_run.status == "failed"
+        assert local_run.failure_reason == "queue_enqueue_failed"
+        failure_log = session.exec(
+            select(CloudRunLogEntry).where(
+                CloudRunLogEntry.cloud_run_id == cloud_run.id,
+                CloudRunLogEntry.event == "queue_enqueue_failed",
+            )
+        ).one()
+        assert failure_log.level == "error"
+
+
+def test_aliyun_mns_queue_provider_error_suppresses_sdk_cause(monkeypatch) -> None:
+    from ai_company_api.services.cloud_queue_providers import (
+        AliyunMnsQueueProvider,
+        CloudQueueEnqueueRequest,
+        CloudQueueProviderError,
+    )
+
+    monkeypatch.setenv("AI_SCDC_ALIYUN_REGION_ID", "cn-hangzhou")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_ID", "ak")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "secret")
+    monkeypatch.setenv(
+        "AI_SCDC_ALIYUN_MNS_ENDPOINT",
+        "https://123456.mns.cn-hangzhou.aliyuncs.com",
+    )
+    monkeypatch.setenv("AI_SCDC_ALIYUN_MNS_QUEUE_NAME", "ai-scdc-cloud-runs-dev")
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FailingAliyunMnsClient(),
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+
+    try:
+        AliyunMnsQueueProvider().enqueue(
+            CloudQueueEnqueueRequest(
+                workspace_id="ws_1",
+                project_id="proj_1",
+                task_id="task_1",
+                cloud_run_id="cloud_run_1",
+                queue_provider="aliyun_mns",
+                runtime_provider=None,
+                storage_provider=None,
+            )
+        )
+    except CloudQueueProviderError as exc:
+        assert exc.__cause__ is None
+        assert "secret" not in str(exc)
+    else:
+        raise AssertionError("Expected CloudQueueProviderError")
 
 
 def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(
