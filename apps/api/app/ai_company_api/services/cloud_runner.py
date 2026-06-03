@@ -405,7 +405,7 @@ def enqueue_cloud_run(
             session,
             cloud_run=cloud_run,
             event="remote_runtime_submitted",
-            message="Remote runtime submitted via remote_stub.",
+            message=f"Remote runtime submitted via {data.runtime_provider}.",
             payload={
                 "runtime_provider": data.runtime_provider,
                 "runtime_job_id": runtime_submission.runtime_job_id,

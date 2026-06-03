@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Protocol
 
 from sqlmodel import Session
 
+from ai_company_api.services.aliyun_clients import (
+    AliyunEciCreateContainerGroupRequest,
+    get_aliyun_client_bundle,
+)
 from ai_company_api.services.aliyun_config import require_aliyun_settings
 from ai_company_api.services.object_storage import (
     ObjectStorageWrite,
@@ -133,7 +138,92 @@ class AliyunEciRuntimeProvider:
         session: Session,
         submission: RemoteRuntimeSubmission,
     ) -> RemoteRuntimeSubmissionResult:
-        raise RemoteRuntimeSubmissionError("Aliyun ECI runtime submission is not ready")
+        settings = require_aliyun_settings(
+            provider_name=self.name,
+            required_names=(
+                "region_id",
+                "access_key_id",
+                "access_key_secret",
+                "eci_vswitch_id",
+                "eci_security_group_id",
+                "eci_image",
+                "api_public_base_url",
+            ),
+        )
+        container_group_name = _eci_container_group_name(
+            settings.eci_container_group_prefix,
+            submission.cloud_run_id,
+        )
+        environment = {
+            "AI_SCDC_API_BASE_URL": settings.api_public_base_url or "",
+            "AI_SCDC_CLOUD_RUN_ID": submission.cloud_run_id,
+            "AI_SCDC_WORKER_ID": f"aliyun-eci-{submission.cloud_run_id}",
+            "AI_SCDC_QUEUE_PROVIDER": submission.queue_provider,
+            "AI_SCDC_STORAGE_PROVIDER": submission.storage_provider or "",
+        }
+
+        try:
+            result = get_aliyun_client_bundle(settings).eci.create_container_group(
+                AliyunEciCreateContainerGroupRequest(
+                    region_id=settings.region_id or "",
+                    cloud_run_id=submission.cloud_run_id,
+                    container_group_name=container_group_name,
+                    image=settings.eci_image or "",
+                    vswitch_id=settings.eci_vswitch_id or "",
+                    security_group_id=settings.eci_security_group_id or "",
+                    cpu=settings.eci_cpu,
+                    memory_gb=settings.eci_memory_gb,
+                    environment=environment,
+                )
+            )
+            runtime_job_id = result.get("container_group_id") or container_group_name
+            artifact_manifest_uri = None
+            log_stream_uri = None
+            if submission.storage_provider == "aliyun_oss":
+                storage_provider = get_object_storage_provider("aliyun_oss")
+                manifest_ref = storage_provider.put_text(
+                    session,
+                    ObjectStorageWrite(
+                        workspace_id=submission.workspace_id,
+                        cloud_run_id=submission.cloud_run_id,
+                        kind="manifest",
+                        content=json.dumps(
+                            {
+                                "cloud_run_id": submission.cloud_run_id,
+                                "queue_provider": submission.queue_provider,
+                                "runtime_job_id": runtime_job_id,
+                                "runtime_provider": self.name,
+                                "status": "submitted",
+                                "storage_provider": submission.storage_provider,
+                            },
+                            sort_keys=True,
+                        ),
+                        content_type="application/json",
+                    ),
+                )
+                log_ref = storage_provider.put_text(
+                    session,
+                    ObjectStorageWrite(
+                        workspace_id=submission.workspace_id,
+                        cloud_run_id=submission.cloud_run_id,
+                        kind="log",
+                        content="Remote runtime submitted via aliyun_eci.\n",
+                        content_type="text/plain",
+                    ),
+                )
+                artifact_manifest_uri = manifest_ref.uri
+                log_stream_uri = log_ref.uri
+        except Exception:
+            raise RemoteRuntimeSubmissionError(
+                "Cloud runtime provider aliyun_eci failed to submit container group"
+            ) from None
+
+        return RemoteRuntimeSubmissionResult(
+            runtime_job_id=runtime_job_id,
+            external_status="submitted",
+            artifact_manifest_uri=artifact_manifest_uri,
+            log_stream_uri=log_stream_uri,
+        )
 
 
 _KNOWN_RUNTIME_PROVIDERS = {
@@ -151,3 +241,13 @@ def get_remote_runtime_provider(name: str | None) -> RemoteRuntimeProvider | Non
             f"Unknown remote runtime provider: {name}"
         )
     return provider
+
+
+def _eci_container_group_name(prefix: str, cloud_run_id: str) -> str:
+    raw_name = f"{prefix}-{cloud_run_id}"
+    normalized = re.sub(r"[^A-Za-z0-9-]+", "-", raw_name).strip("-").lower()
+    if not normalized:
+        return "ai-scdc-run"
+    if not normalized[0].isalpha():
+        normalized = f"ai-scdc-run-{normalized}"
+    return normalized[:128].rstrip("-")

@@ -31,7 +31,9 @@ from ai_company_api.services.cloud_sandbox_executor import (
 )
 from ai_company_api.services.aliyun_clients import (
     AliyunClientBundle,
+    AliyunEciCreateContainerGroupRequest,
     AliyunMnsSendMessageRequest,
+    AliyunOssPutObjectRequest,
 )
 from ai_company_api.services.object_storage import (
     ObjectStorageWrite,
@@ -416,6 +418,39 @@ class FailingAliyunMnsClient:
         raise RuntimeError("network failure with secret value")
 
 
+class FakeAliyunOssClient:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], bytes] = {}
+        self.put_requests: list[AliyunOssPutObjectRequest] = []
+
+    def put_object(self, request: AliyunOssPutObjectRequest) -> None:
+        self.put_requests.append(request)
+        self.objects[(request.bucket, request.object_key)] = request.content
+
+    def get_object_text(self, bucket: str, object_key: str) -> str:
+        return self.objects[(bucket, object_key)].decode("utf-8")
+
+
+class FakeAliyunEciClient:
+    def __init__(self) -> None:
+        self.requests: list[AliyunEciCreateContainerGroupRequest] = []
+
+    def create_container_group(
+        self,
+        request: AliyunEciCreateContainerGroupRequest,
+    ) -> dict:
+        self.requests.append(request)
+        return {"container_group_id": f"eci-cg-{request.cloud_run_id}"}
+
+
+class FailingAliyunEciClient:
+    def create_container_group(
+        self,
+        request: AliyunEciCreateContainerGroupRequest,
+    ) -> dict:
+        raise RuntimeError("eci network failure secret=super-secret-value")
+
+
 class UnusedAliyunClient:
     pass
 
@@ -502,7 +537,7 @@ def test_phase_10c_missing_secret_value_is_not_returned(
     assert "very-secret-value" not in response.json()["detail"]
 
 
-def test_phase_10c_complete_aliyun_config_reports_runtime_not_ready(
+def test_aliyun_eci_runtime_submission_failure_is_controlled(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -524,8 +559,8 @@ def test_phase_10c_complete_aliyun_config_reports_runtime_not_ready(
         "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
         AliyunClientBundle(
             mns=FakeAliyunMnsClient(),
-            oss=UnusedAliyunClient(),
-            eci=UnusedAliyunClient(),
+            oss=FakeAliyunOssClient(),
+            eci=FailingAliyunEciClient(),
         ),
     )
     database_path = tmp_path / "app.db"
@@ -544,14 +579,20 @@ def test_phase_10c_complete_aliyun_config_reports_runtime_not_ready(
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Aliyun ECI runtime submission is not ready"
+    assert response.json()["detail"] == (
+        "Cloud runtime provider aliyun_eci failed to submit container group"
+    )
+    assert "secret" not in response.text
 
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
         cloud_run = session.exec(select(CloudRun)).one()
         assert cloud_run.status == "failed"
         assert cloud_run.failure_reason == "runtime_submission_failed"
         assert cloud_run.external_status == "failed"
-        assert cloud_run.external_error == "Aliyun ECI runtime submission is not ready"
+        assert cloud_run.external_error == (
+            "Cloud runtime provider aliyun_eci failed to submit container group"
+        )
+        assert "secret" not in (cloud_run.external_error or "")
         local_run = session.get(LocalTaskRun, cloud_run.local_run_id)
         assert local_run is not None
         assert local_run.status == "failed"
@@ -632,6 +673,104 @@ def test_aliyun_mns_queue_provider_sends_message_on_enqueue(
         "storage_provider": None,
     }
     assert "secret" not in fake_mns.requests[0].body
+
+
+def test_aliyun_eci_runtime_submission_creates_safe_container_request(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    fake_oss = FakeAliyunOssClient()
+    fake_eci = FakeAliyunEciClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=fake_oss,
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    response = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={
+            "repo_id": repository.id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    )
+
+    assert response.status_code == 201
+    cloud_run = response.json()["cloud_run"]
+    assert cloud_run["queue_provider"] == "aliyun_mns"
+    assert cloud_run["storage_provider"] == "aliyun_oss"
+    assert cloud_run["runtime_provider"] == "aliyun_eci"
+    assert cloud_run["queue_message_id"] == f"aliyun-mns-message-{cloud_run['id']}"
+    assert cloud_run["runtime_job_id"] == f"eci-cg-{cloud_run['id']}"
+    assert cloud_run["external_status"] == "submitted"
+    assert cloud_run["artifact_manifest_uri"].startswith(
+        "oss://ai-scdc-dev-artifacts/"
+    )
+    assert cloud_run["log_stream_uri"].startswith("oss://ai-scdc-dev-artifacts/")
+    assert cloud_run["external_error"] is None
+    assert "secret" not in str(response.json())
+
+    assert len(fake_eci.requests) == 1
+    request = fake_eci.requests[0]
+    assert request.region_id == "cn-hangzhou"
+    assert request.cloud_run_id == cloud_run["id"]
+    assert request.container_group_name.startswith("ai-scdc-run-cloud-run-")
+    assert "_" not in request.container_group_name
+    assert request.image.endswith("/remote-worker:dev")
+    assert request.vswitch_id == "vsw-demo"
+    assert request.security_group_id == "sg-demo"
+    assert request.cpu == 1.0
+    assert request.memory_gb == 2.0
+    assert request.environment == {
+        "AI_SCDC_API_BASE_URL": "https://api.example.test",
+        "AI_SCDC_CLOUD_RUN_ID": cloud_run["id"],
+        "AI_SCDC_WORKER_ID": f"aliyun-eci-{cloud_run['id']}",
+        "AI_SCDC_QUEUE_PROVIDER": "aliyun_mns",
+        "AI_SCDC_STORAGE_PROVIDER": "aliyun_oss",
+    }
+    assert "AI_SCDC_ALIYUN_ACCESS_KEY_SECRET" not in request.environment
+    assert "secret" not in str(request.environment)
+
+    assert len(fake_oss.put_requests) == 2
+    manifest_request = next(
+        request
+        for request in fake_oss.put_requests
+        if request.content_type == "application/json"
+    )
+    manifest = json.loads(manifest_request.content.decode("utf-8"))
+    assert manifest == {
+        "cloud_run_id": cloud_run["id"],
+        "queue_provider": "aliyun_mns",
+        "runtime_job_id": f"eci-cg-{cloud_run['id']}",
+        "runtime_provider": "aliyun_eci",
+        "status": "submitted",
+        "storage_provider": "aliyun_oss",
+    }
+    assert "secret" not in str(fake_oss.put_requests)
 
 
 def test_aliyun_mns_queue_provider_failure_is_controlled(
