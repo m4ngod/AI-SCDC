@@ -2,10 +2,19 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_DEFAULT_TIMEOUT=180
+ARG PIP_RETRIES=10
+
 COPY pyproject.toml /app/apps/api/pyproject.toml
 COPY app /app/apps/api/app
 
-RUN pip install --no-cache-dir -e /app/apps/api
+RUN pip install \
+    --no-cache-dir \
+    --index-url "$PIP_INDEX_URL" \
+    --default-timeout "$PIP_DEFAULT_TIMEOUT" \
+    --retries "$PIP_RETRIES" \
+    -e /app/apps/api
 
 ENV PYTHONUNBUFFERED=1
 
