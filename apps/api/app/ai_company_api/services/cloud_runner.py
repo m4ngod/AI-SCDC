@@ -647,7 +647,7 @@ def _resolve_cloud_run_completion_artifacts(
         except ObjectStorageReadError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        if artifact_ref.kind == "diff" and diff_text is None:
+        if diff_text is None:
             diff_text = content
 
     if diff_text is None:
