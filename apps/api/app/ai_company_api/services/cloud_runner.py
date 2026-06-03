@@ -21,6 +21,7 @@ from ai_company_api.models.entities import (
 )
 from ai_company_api.schemas.api import (
     CloudRunCreate,
+    CloudRunArtifactUploadCreate,
     CloudRunArtifactRefCreate,
     CloudRunExecutionResultCreate,
     CloudRunLeaseRead,
@@ -50,6 +51,7 @@ from ai_company_api.services.object_storage import (
     ObjectStorageProviderNotFound,
     ObjectStorageReadError,
     ObjectStorageRef,
+    ObjectStorageWrite,
     get_object_storage_provider,
 )
 from ai_company_api.services.remote_runtime import (
@@ -354,6 +356,7 @@ def claim_next_cloud_run_lease(
     worker_id: str,
     worker_kind: str = "remote_stub",
     queue_provider: str = DEFAULT_QUEUE_PROVIDER,
+    cloud_run_id: str | None = None,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> CloudRunLeaseRead | None:
     try:
@@ -361,20 +364,23 @@ def claim_next_cloud_run_lease(
     except CloudQueueProviderNotFound as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    statement = select(CloudRun.id).where(
+        CloudRun.status == "queued",
+        CloudRun.queue_provider == queue_provider,
+        CloudRun.cancel_requested.is_(False),
+        CloudRun.attempt_count < CloudRun.max_attempts,
+    )
+    if cloud_run_id is not None:
+        statement = statement.where(CloudRun.id == cloud_run_id)
+
     candidate_ids = session.exec(
-        select(CloudRun.id)
-        .where(
-            CloudRun.status == "queued",
-            CloudRun.queue_provider == queue_provider,
-            CloudRun.cancel_requested.is_(False),
-            CloudRun.attempt_count < CloudRun.max_attempts,
+        statement.order_by(CloudRun.created_at, CloudRun.id).limit(
+            DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT
         )
-        .order_by(CloudRun.created_at, CloudRun.id)
-        .limit(DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT)
     ).all()
 
-    for cloud_run_id in candidate_ids:
-        cloud_run = session.get(CloudRun, cloud_run_id)
+    for candidate_id in candidate_ids:
+        cloud_run = session.get(CloudRun, candidate_id)
         if cloud_run is None:
             continue
 
@@ -598,6 +604,8 @@ def _sandbox_execution_result_from_create(
 def _object_storage_provider_name_from_uri(uri: str) -> str:
     if uri.startswith("local-inline://"):
         return "local_inline"
+    if uri.startswith("oss://"):
+        return "aliyun_oss"
     scheme = uri.split("://", 1)[0] if "://" in uri else ""
     raise HTTPException(
         status_code=400,
@@ -659,6 +667,51 @@ def _resolve_cloud_run_completion_artifacts(
             payload={"kind": "diff"},
         )
     return result.model_copy(update={"diff_text": diff_text})
+
+
+def upload_cloud_run_lease_artifact(
+    session: Session,
+    *,
+    lease_id: str,
+    data: CloudRunArtifactUploadCreate,
+) -> CloudRunArtifactRefCreate:
+    cloud_run = _get_current_cloud_run_lease_or_409(
+        session,
+        lease_id=lease_id,
+        worker_id=data.worker_id,
+    )
+    provider = get_object_storage_provider(cloud_run.storage_provider)
+    ref = provider.put_text(
+        session,
+        ObjectStorageWrite(
+            workspace_id=cloud_run.workspace_id,
+            cloud_run_id=cloud_run.id,
+            kind=data.kind,
+            content=data.content,
+            content_type=data.content_type,
+        ),
+    )
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="worker_artifact_uploaded",
+        message="Cloud run worker artifact uploaded.",
+        payload={
+            "kind": ref.kind,
+            "uri": _redact_external_uri(ref.uri),
+            "size_bytes": ref.size_bytes,
+            "content_type": ref.content_type,
+        },
+    )
+    session.add(cloud_run)
+    session.commit()
+    return CloudRunArtifactRefCreate(
+        kind=ref.kind,
+        uri=ref.uri,
+        sha256=ref.sha256,
+        size_bytes=ref.size_bytes,
+        content_type=ref.content_type,
+    )
 
 
 def complete_cloud_run_lease(

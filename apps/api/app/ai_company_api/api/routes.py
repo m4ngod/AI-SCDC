@@ -6,6 +6,8 @@ from sqlmodel import Session
 from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     AgentRole,
+    CloudRunArtifactRefCreate,
+    CloudRunArtifactUploadCreate,
     CloudRunCreate,
     CloudRunLeaseComplete,
     CloudRunLeaseCreate,
@@ -66,6 +68,7 @@ from ai_company_api.services.cloud_runner import (
     process_next_cloud_run,
     requeue_expired_cloud_run_leases,
     start_cloud_run,
+    upload_cloud_run_lease_artifact,
 )
 from ai_company_api.services.github_repository import (
     create_github_credential,
@@ -511,6 +514,7 @@ def post_cloud_run_worker_lease(
         worker_id=data.worker_id,
         worker_kind=data.worker_kind,
         queue_provider=data.queue_provider,
+        cloud_run_id=data.cloud_run_id,
         lease_seconds=data.lease_seconds,
     )
     if lease is None:
@@ -548,6 +552,19 @@ def post_cloud_run_worker_lease_heartbeat(
         worker_id=data.worker_id,
         lease_seconds=data.lease_seconds,
     )
+
+
+@router.post(
+    "/cloud-run-worker/leases/{lease_id}/artifacts",
+    status_code=status.HTTP_201_CREATED,
+    response_model=CloudRunArtifactRefCreate,
+)
+def post_cloud_run_worker_artifact(
+    lease_id: str,
+    data: CloudRunArtifactUploadCreate,
+    session: SessionDep,
+) -> CloudRunArtifactRefCreate:
+    return upload_cloud_run_lease_artifact(session, lease_id=lease_id, data=data)
 
 
 @router.post(
