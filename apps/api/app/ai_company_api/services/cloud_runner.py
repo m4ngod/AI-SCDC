@@ -634,6 +634,8 @@ def _resolve_cloud_run_completion_artifacts(
 
     diff_text: str | None = None
     for artifact_ref in result.artifact_refs:
+        if artifact_ref.kind != "diff":
+            continue
         provider = get_object_storage_provider(
             _object_storage_provider_name_from_uri(artifact_ref.uri)
         )
@@ -680,17 +682,21 @@ def upload_cloud_run_lease_artifact(
         lease_id=lease_id,
         worker_id=data.worker_id,
     )
-    provider = get_object_storage_provider(cloud_run.storage_provider)
-    ref = provider.put_text(
-        session,
-        ObjectStorageWrite(
-            workspace_id=cloud_run.workspace_id,
-            cloud_run_id=cloud_run.id,
-            kind=data.kind,
-            content=data.content,
-            content_type=data.content_type,
-        ),
-    )
+    try:
+        provider = get_object_storage_provider(cloud_run.storage_provider)
+        ref = provider.put_text(
+            session,
+            ObjectStorageWrite(
+                workspace_id=cloud_run.workspace_id,
+                cloud_run_id=cloud_run.id,
+                kind=data.kind,
+                content=data.content,
+                content_type=data.content_type,
+            ),
+        )
+    except (ObjectStorageProviderNotFound, ObjectStorageReadError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     _append_cloud_run_log(
         session,
         cloud_run=cloud_run,

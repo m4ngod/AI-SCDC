@@ -1610,6 +1610,98 @@ def test_worker_artifact_upload_rejects_wrong_worker(tmp_path: Path) -> None:
     assert response.json()["detail"] == "Cloud run lease is not current"
 
 
+def test_worker_artifact_upload_reports_storage_provider_error(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "storage_provider": "local_inline"},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "cloud_run_id": queued["id"],
+            "lease_seconds": 60,
+        },
+    ).json()
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        cloud_run.storage_provider = "missing_provider"
+        session.add(cloud_run)
+        session.commit()
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/artifacts",
+        json={
+            "worker_id": "remote-worker-1",
+            "kind": "diff",
+            "content": "diff --git a/app.py b/app.py\n+bad\n",
+            "content_type": "text/x-diff",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Unknown object storage provider: missing_provider"
+    )
+
+
+def test_complete_cloud_run_lease_ignores_non_diff_artifact_ref_errors(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "storage_provider": "local_inline"},
+    ).json()["cloud_run"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "cloud_run_id": queued["id"],
+            "lease_seconds": 60,
+        },
+    ).json()
+    payload = remote_stub_completion_payload(queued["id"])
+    payload["result"]["diff_text"] = "diff --git a/app.py b/app.py\n+inline\n"
+    payload["result"]["artifact_refs"] = [
+        {
+            "kind": "log",
+            "uri": "local-inline://cloud-run-objects/00000000000000000000000000000000",
+            "sha256": "0" * 64,
+            "size_bytes": 10,
+            "content_type": "text/plain",
+        }
+    ]
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["patch_artifact"]["diff_text"] == (
+        "diff --git a/app.py b/app.py\n+inline\n"
+    )
+
+
 def test_complete_cloud_run_lease_rejects_invalid_artifact_ref_without_artifact(
     tmp_path: Path,
 ) -> None:
