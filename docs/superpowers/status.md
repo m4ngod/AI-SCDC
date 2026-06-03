@@ -53,24 +53,35 @@ tests, README smoke instructions, and git history.
 
 ## Verification
 
-Latest Phase 10C focused verification:
+Latest Phase 10C final verification:
 
 ```bash
+pytest apps/api/tests/test_aliyun_config.py apps/api/tests/test_aliyun_clients.py apps/api/tests/test_cloud_object_storage.py apps/api/tests/test_remote_worker.py -v
+pytest apps/api/tests/test_cloud_run_api.py -k "aliyun or worker_uploads or artifact_ref or lease" -v
+pytest apps/api/tests
 pytest apps/api/tests/test_cloud_run_api.py -v
 pytest apps/api/tests/test_cloud_object_storage.py -v
 pytest apps/api/tests/test_aliyun_config.py apps/api/tests/test_aliyun_clients.py apps/api/tests/test_remote_worker.py -v
+pnpm --filter @ai-scdc/desktop test -- src/test/client.test.ts src/test/App.test.tsx
+pnpm typecheck
 git diff --check
+rg -n "AccessKey|ACCESS_KEY_SECRET|secret-value|ak-secret|very-secret-value|ALIYUN_ACCESS_KEY_SECRET" apps docs README.md
 ```
 
 Results:
 
+- Phase 10C provider/object-storage/worker focused tests: passed, 16 tests.
+- Phase 10C cloud-run focused tests: passed, 26 tests, 1 existing Starlette/httpx warning.
+- `pytest apps/api/tests`: passed, 339 tests, 1 existing Starlette/httpx warning.
 - `pytest apps/api/tests/test_cloud_run_api.py`: passed, 93 tests, 1 existing Starlette/httpx warning.
 - `pytest apps/api/tests/test_cloud_object_storage.py`: passed, 7 tests.
 - `pytest apps/api/tests/test_aliyun_config.py apps/api/tests/test_aliyun_clients.py apps/api/tests/test_remote_worker.py`: passed, 9 tests.
+- Desktop client/App tests: passed, 67 tests.
+- Root `pnpm typecheck`: passed.
 - `git diff --check`: passed.
-
-Full API, desktop, and typecheck verification is the next Phase 10C final
-verification step.
+- Secret scan found only environment variable names, README placeholders, plan
+  examples, and fake test secret values; no real Aliyun credential values were
+  present.
 
 ## Phase 8 Smoke
 
