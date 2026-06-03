@@ -352,6 +352,50 @@ def _post_fake_cloud_run_with_provider_selection(
     )
 
 
+def _clear_aliyun_env(monkeypatch) -> None:
+    for name in (
+        "AI_SCDC_ALIYUN_REGION_ID",
+        "AI_SCDC_ALIYUN_ACCESS_KEY_ID",
+        "AI_SCDC_ALIYUN_ACCESS_KEY_SECRET",
+        "AI_SCDC_ALIYUN_MNS_ENDPOINT",
+        "AI_SCDC_ALIYUN_MNS_QUEUE_NAME",
+        "AI_SCDC_ALIYUN_OSS_ENDPOINT",
+        "AI_SCDC_ALIYUN_OSS_BUCKET",
+        "AI_SCDC_ALIYUN_ECI_VSWITCH_ID",
+        "AI_SCDC_ALIYUN_ECI_SECURITY_GROUP_ID",
+        "AI_SCDC_ALIYUN_ECI_IMAGE",
+        "AI_SCDC_ALIYUN_ECI_CPU",
+        "AI_SCDC_ALIYUN_ECI_MEMORY_GB",
+        "AI_SCDC_ALIYUN_ECI_CONTAINER_GROUP_PREFIX",
+        "AI_SCDC_ALIYUN_OSS_PREFIX",
+        "AI_SCDC_API_PUBLIC_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _set_complete_aliyun_env(monkeypatch) -> None:
+    monkeypatch.setenv("AI_SCDC_ALIYUN_REGION_ID", "cn-hangzhou")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_ID", "ak")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "secret")
+    monkeypatch.setenv(
+        "AI_SCDC_ALIYUN_MNS_ENDPOINT",
+        "https://123456.mns.cn-hangzhou.aliyuncs.com",
+    )
+    monkeypatch.setenv("AI_SCDC_ALIYUN_MNS_QUEUE_NAME", "ai-scdc-cloud-runs-dev")
+    monkeypatch.setenv(
+        "AI_SCDC_ALIYUN_OSS_ENDPOINT",
+        "https://oss-cn-hangzhou.aliyuncs.com",
+    )
+    monkeypatch.setenv("AI_SCDC_ALIYUN_OSS_BUCKET", "ai-scdc-dev-artifacts")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ECI_VSWITCH_ID", "vsw-demo")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ECI_SECURITY_GROUP_ID", "sg-demo")
+    monkeypatch.setenv(
+        "AI_SCDC_ALIYUN_ECI_IMAGE",
+        "registry.cn-hangzhou.aliyuncs.com/ai-scdc/remote-worker:dev",
+    )
+    monkeypatch.setenv("AI_SCDC_API_PUBLIC_BASE_URL", "https://api.example.test")
+
+
 def test_start_cloud_run_rejects_unknown_provider_queue(
     tmp_path: Path,
     monkeypatch,
@@ -400,6 +444,8 @@ def test_phase_10c_aliyun_provider_names_are_recognized(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _clear_aliyun_env(monkeypatch)
+
     response = _post_fake_cloud_run_with_provider_selection(
         tmp_path,
         monkeypatch,
@@ -419,6 +465,7 @@ def test_phase_10c_missing_secret_value_is_not_returned(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _clear_aliyun_env(monkeypatch)
     monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "very-secret-value")
 
     response = _post_fake_cloud_run_with_provider_selection(
@@ -429,6 +476,26 @@ def test_phase_10c_missing_secret_value_is_not_returned(
 
     assert response.status_code == 400
     assert "very-secret-value" not in response.json()["detail"]
+
+
+def test_phase_10c_complete_aliyun_config_reports_runtime_not_ready(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_complete_aliyun_env(monkeypatch)
+
+    response = _post_fake_cloud_run_with_provider_selection(
+        tmp_path,
+        monkeypatch,
+        {
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Aliyun ECI runtime submission is not ready"
 
 
 def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(

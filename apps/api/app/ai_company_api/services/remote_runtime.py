@@ -17,6 +17,10 @@ class RemoteRuntimeProviderNotFound(Exception):
     pass
 
 
+class RemoteRuntimeSubmissionError(Exception):
+    pass
+
+
 class RemoteRuntimeProvider(Protocol):
     name: str
 
@@ -129,9 +133,7 @@ class AliyunEciRuntimeProvider:
         session: Session,
         submission: RemoteRuntimeSubmission,
     ) -> RemoteRuntimeSubmissionResult:
-        raise RemoteRuntimeProviderNotFound(
-            "Aliyun ECI runtime submission is not ready"
-        )
+        raise RemoteRuntimeSubmissionError("Aliyun ECI runtime submission is not ready")
 
 
 _KNOWN_RUNTIME_PROVIDERS = {

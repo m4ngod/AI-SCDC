@@ -54,6 +54,7 @@ from ai_company_api.services.object_storage import (
 )
 from ai_company_api.services.remote_runtime import (
     RemoteRuntimeSubmission,
+    RemoteRuntimeSubmissionError,
     RemoteRuntimeProviderNotFound,
     get_remote_runtime_provider,
 )
@@ -273,19 +274,22 @@ def enqueue_cloud_run(
     cloud_run.local_run_id = local_run.id
     runtime_provider = get_remote_runtime_provider(data.runtime_provider)
     if runtime_provider is not None and data.runtime_provider is not None:
-        runtime_submission = runtime_provider.submit(
-            session,
-            RemoteRuntimeSubmission(
-                workspace_id=cloud_run.workspace_id,
-                project_id=cloud_run.project_id,
-                task_id=cloud_run.task_id,
-                cloud_run_id=cloud_run.id,
-                queue_provider=cloud_run.queue_provider,
-                runtime_provider=data.runtime_provider,
-                storage_provider=cloud_run.storage_provider,
-                status="submitted",
-            ),
-        )
+        try:
+            runtime_submission = runtime_provider.submit(
+                session,
+                RemoteRuntimeSubmission(
+                    workspace_id=cloud_run.workspace_id,
+                    project_id=cloud_run.project_id,
+                    task_id=cloud_run.task_id,
+                    cloud_run_id=cloud_run.id,
+                    queue_provider=cloud_run.queue_provider,
+                    runtime_provider=data.runtime_provider,
+                    storage_provider=cloud_run.storage_provider,
+                    status="submitted",
+                ),
+            )
+        except RemoteRuntimeSubmissionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         cloud_run.runtime_job_id = runtime_submission.runtime_job_id
         cloud_run.artifact_manifest_uri = runtime_submission.artifact_manifest_uri
         cloud_run.log_stream_uri = runtime_submission.log_stream_uri
