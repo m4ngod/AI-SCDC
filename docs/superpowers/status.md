@@ -53,23 +53,24 @@ tests, README smoke instructions, and git history.
 
 ## Verification
 
-Latest automated verification:
+Latest Phase 10C focused verification:
 
 ```bash
-pytest apps/api/tests
-pnpm --filter @ai-scdc/desktop test -- src/test/client.test.ts src/test/App.test.tsx
-pnpm typecheck
+pytest apps/api/tests/test_cloud_run_api.py -v
+pytest apps/api/tests/test_cloud_object_storage.py -v
+pytest apps/api/tests/test_aliyun_config.py apps/api/tests/test_aliyun_clients.py apps/api/tests/test_remote_worker.py -v
 git diff --check
 ```
 
 Results:
 
-- `pytest apps/api/tests`: passed, 314 tests, 1 existing Starlette/httpx warning.
-- `pytest apps/api/tests/test_cloud_run_api.py`: passed, 81 tests, 1 existing Starlette/httpx warning.
-- `pytest apps/api/tests/test_cloud_object_storage.py`: passed, 3 tests.
-- Desktop client/App tests: passed, 67 tests.
-- Root `pnpm typecheck`: passed.
+- `pytest apps/api/tests/test_cloud_run_api.py`: passed, 93 tests, 1 existing Starlette/httpx warning.
+- `pytest apps/api/tests/test_cloud_object_storage.py`: passed, 7 tests.
+- `pytest apps/api/tests/test_aliyun_config.py apps/api/tests/test_aliyun_clients.py apps/api/tests/test_remote_worker.py`: passed, 9 tests.
 - `git diff --check`: passed.
+
+Full API, desktop, and typecheck verification is the next Phase 10C final
+verification step.
 
 ## Phase 8 Smoke
 
