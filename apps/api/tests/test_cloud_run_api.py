@@ -775,6 +775,83 @@ def test_aliyun_eci_runtime_submission_creates_safe_container_request(
     assert "secret" not in str(fake_oss.put_requests)
 
 
+def test_aliyun_provider_mvp_enqueue_persists_non_sensitive_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "secret-value")
+    fake_mns = FakeAliyunMnsClient()
+    fake_oss = FakeAliyunOssClient()
+    fake_eci = FakeAliyunEciClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(mns=fake_mns, oss=fake_oss, eci=fake_eci),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    response = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={
+            "repo_id": repository.id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    cloud_run = body["cloud_run"]
+    assert cloud_run["queue_provider"] == "aliyun_mns"
+    assert cloud_run["storage_provider"] == "aliyun_oss"
+    assert cloud_run["runtime_provider"] == "aliyun_eci"
+    assert cloud_run["queue_message_id"].startswith("aliyun-mns-message-")
+    assert cloud_run["runtime_job_id"].startswith("eci-cg-")
+    assert cloud_run["external_status"] == "submitted"
+    assert cloud_run["artifact_manifest_uri"].startswith(
+        "oss://ai-scdc-dev-artifacts/"
+    )
+    assert cloud_run["log_stream_uri"].startswith("oss://ai-scdc-dev-artifacts/")
+    assert cloud_run["external_error"] is None
+    assert "queue_receipt" not in cloud_run
+    assert "secret-value" not in str(body)
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        persisted = session.get(CloudRun, cloud_run["id"])
+        assert persisted is not None
+        assert persisted.queue_provider == "aliyun_mns"
+        assert persisted.storage_provider == "aliyun_oss"
+        assert persisted.runtime_provider == "aliyun_eci"
+        assert persisted.queue_message_id == cloud_run["queue_message_id"]
+        assert persisted.runtime_job_id == cloud_run["runtime_job_id"]
+        assert persisted.queue_receipt is None
+        assert persisted.external_status == "submitted"
+
+    assert len(fake_mns.requests) == 1
+    assert len(fake_eci.requests) == 1
+    assert len(fake_oss.put_requests) == 2
+    assert "secret-value" not in str(fake_mns.requests)
+    assert "secret-value" not in str(fake_eci.requests)
+    assert "secret-value" not in str(fake_oss.put_requests)
+
+
 def test_aliyun_mns_queue_provider_failure_is_controlled(
     tmp_path: Path,
     monkeypatch,
