@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 
 
@@ -30,7 +30,7 @@ _SECRET_FIELDS = {"access_key_secret"}
 class AliyunSettings:
     region_id: str | None
     access_key_id: str | None
-    access_key_secret: str | None
+    access_key_secret: str | None = field(repr=False)
     mns_endpoint: str | None
     mns_queue_name: str | None
     oss_endpoint: str | None
