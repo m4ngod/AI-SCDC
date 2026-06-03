@@ -8,12 +8,17 @@ from urllib.parse import urlparse
 from sqlmodel import Session
 
 from ai_company_api.models.entities import CloudRunStoredObject
-from ai_company_api.services.aliyun_config import require_aliyun_settings
+from ai_company_api.services.aliyun_clients import (
+    AliyunOssPutObjectRequest,
+    get_aliyun_client_bundle,
+)
+from ai_company_api.services.aliyun_config import AliyunSettings, require_aliyun_settings
 
 
 ARTIFACT_KINDS = {"diff", "log", "command_result", "test_result", "manifest"}
 LOCAL_INLINE_SCHEME = "local-inline"
 LOCAL_INLINE_AUTHORITY = "cloud-run-objects"
+ALIYUN_OSS_SCHEME = "oss"
 
 
 class ObjectStorageError(Exception):
@@ -148,14 +153,56 @@ class AliyunOssObjectStorageProvider:
         session: Session,
         write: ObjectStorageWrite,
     ) -> ObjectStorageRef:
-        raise ObjectStorageReadError("Aliyun OSS storage operations are not ready")
+        self.validate_configuration()
+        _validate_artifact_kind(write.kind)
+        settings = _require_aliyun_oss_settings(self.name)
+        content_bytes = write.content.encode("utf-8")
+        digest = sha256(content_bytes).hexdigest()
+        suffix = "json" if write.content_type == "application/json" else "txt"
+        object_key = (
+            f"{settings.oss_prefix.strip('/')}/workspaces/{write.workspace_id}/"
+            f"cloud-runs/{write.cloud_run_id}/{write.kind}/{digest}.{suffix}"
+        )
+        get_aliyun_client_bundle(settings).oss.put_object(
+            AliyunOssPutObjectRequest(
+                bucket=settings.oss_bucket or "",
+                object_key=object_key,
+                content=content_bytes,
+                content_type=write.content_type,
+            )
+        )
+        return ObjectStorageRef(
+            kind=write.kind,
+            uri=f"{ALIYUN_OSS_SCHEME}://{settings.oss_bucket}/{object_key}",
+            sha256=digest,
+            size_bytes=len(content_bytes),
+            content_type=write.content_type,
+        )
 
     def read_text(
         self,
         session: Session,
         ref: ObjectStorageRef,
     ) -> str:
-        raise ObjectStorageReadError("Aliyun OSS storage operations are not ready")
+        self.validate_configuration()
+        _validate_artifact_kind(ref.kind)
+        settings = _require_aliyun_oss_settings(self.name)
+        bucket, object_key = _parse_oss_ref(ref.uri)
+        if bucket != settings.oss_bucket:
+            raise ObjectStorageReadError("Object storage reference bucket mismatch")
+        expected_prefix = f"{settings.oss_prefix.strip('/')}/workspaces/"
+        if not object_key.startswith(expected_prefix):
+            raise ObjectStorageReadError("Object storage reference prefix mismatch")
+        content = get_aliyun_client_bundle(settings).oss.get_object_text(
+            bucket,
+            object_key,
+        )
+        content_bytes = content.encode("utf-8")
+        if sha256(content_bytes).hexdigest() != ref.sha256:
+            raise ObjectStorageReadError("Object storage content sha256 mismatch")
+        if len(content_bytes) != ref.size_bytes:
+            raise ObjectStorageReadError("Object storage content size mismatch")
+        return content
 
 
 def get_object_storage_provider(name: str | None) -> ObjectStorageProvider:
@@ -185,3 +232,28 @@ def _parse_local_inline_object_id(uri: str) -> str:
     if not stored_object_id:
         raise ObjectStorageReadError("Object storage reference object id missing")
     return stored_object_id
+
+
+def _parse_oss_ref(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    if parsed.scheme != ALIYUN_OSS_SCHEME:
+        raise ObjectStorageReadError("Object storage reference scheme mismatch")
+    if not parsed.netloc:
+        raise ObjectStorageReadError("Object storage reference bucket missing")
+    object_key = parsed.path.lstrip("/")
+    if not object_key:
+        raise ObjectStorageReadError("Object storage reference object key missing")
+    return parsed.netloc, object_key
+
+
+def _require_aliyun_oss_settings(provider_name: str) -> AliyunSettings:
+    return require_aliyun_settings(
+        provider_name=provider_name,
+        required_names=(
+            "region_id",
+            "access_key_id",
+            "access_key_secret",
+            "oss_endpoint",
+            "oss_bucket",
+        ),
+    )
