@@ -4,8 +4,8 @@ Last verified: 2026-06-03
 
 ## Current Phase
 
-The project is through Phase 10B: provider-neutral remote execution-plane
-contract.
+The project is through Phase 10C: Aliyun provider MVP for the remote
+execution-plane contracts.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -46,6 +46,10 @@ tests, README smoke instructions, and git history.
     `local_inline` object storage, remote completion artifact refs,
     `remote_stub` runtime submission, external metadata redaction, and payload
     size guards.
+13. Phase 10C Aliyun provider MVP: `aliyun_mns` queue enqueue, `aliyun_oss`
+    artifact storage refs, `aliyun_eci` remote runtime submission, worker
+    artifact upload endpoint, ACR worker image path, fake-client automated
+    tests, and opt-in Aliyun smoke documentation.
 
 ## Verification
 
@@ -99,11 +103,12 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Known Limits
 
-- The Phase 10B provider contracts are implemented with deterministic local
-  providers only. There is no real external queue, remote VM/container runtime,
-  cloud object storage bucket, or live log streaming provider yet.
-- Docker execution is still local-first; `remote_stub`, `external_stub`, and
-  `local_inline` are development adapters for the provider-neutral contract.
+- Phase 10C adds an opt-in Aliyun provider MVP, but live log streaming, SLS,
+  Kubernetes/ACK orchestration, billing, and model-backed reviewer/debugger
+  agents remain future work.
+- Docker execution is still available as a local-first adapter; `remote_stub`,
+  `external_stub`, and `local_inline` remain deterministic development adapters
+  for the provider-neutral contract.
 - Docker Hub image pulls failed in the local environment with an EOF response
   from `registry-1.docker.io`, so the smoke used an already cached image.
 - Real GitHub PR publishing still requires starting the API with
@@ -116,20 +121,14 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Recommended Next Phase
 
-Phase 10C should attach concrete production providers to the Phase 10B
-contracts:
+The next production hardening phase should build on Phase 10C without widening
+the approval boundary:
 
-1. Implement a real external queue provider behind the queue contract.
-2. Implement a real remote VM/container runtime provider behind the runtime
-   contract.
-3. Implement real object storage for large logs, diffs, manifests, and command
-   results.
-4. Add live log streaming on top of the existing provider-neutral log URI and
+1. Add live log streaming on top of the existing provider-neutral log URI and
    Phase 9 polling/log contract.
-5. Keep fake, `docker_local`, `remote_stub`, `external_stub`, and
+2. Harden Aliyun smoke operations with cleanup automation, least-privilege RAM
+   policy examples, and provider failure runbooks.
+3. Keep fake, `docker_local`, `remote_stub`, `external_stub`, and
    `local_inline` as deterministic development adapters.
-
-The concrete production-provider step should come before model-backed
-reviewer/debugger agents or commercial beta work, because the execution plane
-now has provider-neutral contracts but still lacks real production provider
-implementations.
+4. Defer model-backed reviewer/debugger agents and commercial beta work until
+   the remote execution plane is operationally reliable.

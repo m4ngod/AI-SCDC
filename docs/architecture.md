@@ -143,6 +143,22 @@ remote VMs or containers, live log streaming, automatic PR creation, or
 automatic merge. Concrete production providers can implement these contracts in
 a later phase.
 
+## Phase 10C Boundary
+
+Phase 10C adds the first concrete production provider MVP for the Phase 10B
+execution-plane contracts. The selected stack is Aliyun MNS for queue messages,
+Aliyun OSS for remote artifact refs, Aliyun ECI for short-lived remote worker
+containers, and ACR for the worker image.
+
+The public cloud-run lifecycle remains unchanged. Aliyun providers are selected
+by provider names (`aliyun_mns`, `aliyun_oss`, and `aliyun_eci`), automated tests
+use fake clients, and real cloud calls are opt-in through environment variables
+and smoke commands. Worker containers receive API callback metadata, not broad
+Aliyun AccessKeys.
+
+Phase 10C does not add live log streaming, SLS, Kubernetes, automatic PR
+creation, automatic merge, billing, or model-backed reviewer/debugger agents.
+
 ## Roadmap
 
 Completed:
@@ -159,9 +175,10 @@ Completed:
 10. Local cloud-run queue worker boundary with queued enqueue, explicit worker processing, cancellation, ordered redacted logs, and desktop Process/Cancel controls.
 11. Remote worker control-plane contract with local queue adapter, renewable leases, heartbeats, stale completion rejection, expired lease requeue, and remote stub completion.
 12. Provider-neutral remote execution-plane contract with queue, local-inline object storage, remote runtime stub, artifact refs, external metadata redaction, and payload size guards.
+13. Aliyun provider MVP with MNS queue enqueue, OSS artifact refs, ECI remote worker submission, ACR worker image path, fake-client tests, and opt-in smoke documentation.
 
 Future:
 
-1. Concrete production cloud providers for the Phase 10B queue, runtime, object storage, and live log streaming contracts.
+1. Live log streaming providers on top of the existing provider-neutral log URI and Phase 9 polling/log contract.
 2. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
 3. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.
