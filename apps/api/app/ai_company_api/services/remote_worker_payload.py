@@ -33,6 +33,11 @@ def get_remote_worker_payload(
         lease_id=lease_id,
         worker_id=data.worker_id,
     )
+    if cloud_run.callback_token_hash is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Worker callback token is not valid",
+        )
     verify_cloud_run_callback_token_or_403(
         cloud_run,
         worker_id=data.worker_id,

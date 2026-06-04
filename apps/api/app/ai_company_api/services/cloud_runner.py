@@ -226,6 +226,11 @@ def enqueue_cloud_run(
     )
     if should_validate_sandbox_profile:
         if data.sandbox_profile_id is None:
+            if data.runtime_provider is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Remote runtime cloud runs require a sandbox profile",
+                )
             if executor.sandbox_kind == "docker_local":
                 raise HTTPException(
                     status_code=400,

@@ -572,6 +572,57 @@ def test_start_cloud_run_rejects_unknown_provider_runtime(
     )
 
 
+def test_remote_runtime_cloud_run_requires_sandbox_profile(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_eci = FakeAliyunEciClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Remote runtime cloud runs require a sandbox profile"
+    )
+    assert fake_eci.requests == []
+
+
 def test_phase_10c_aliyun_provider_names_are_recognized(
     tmp_path: Path,
     monkeypatch,
@@ -639,12 +690,17 @@ def test_aliyun_eci_runtime_submission_failure_is_controlled(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+        profile = create_profile_entity(session, project, repository)
+        profile_id = profile.id
 
     response = client.post(
-        f"/tasks/{task.id}/cloud-runs",
+        f"/tasks/{task_id}/cloud-runs",
         json={
-            "repo_id": repository.id,
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -709,12 +765,17 @@ def test_aliyun_eci_submission_cleans_up_when_oss_manifest_seed_fails(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+        profile = create_profile_entity(session, project, repository)
+        profile_id = profile.id
 
     response = client.post(
-        f"/tasks/{task.id}/cloud-runs",
+        f"/tasks/{task_id}/cloud-runs",
         json={
-            "repo_id": repository.id,
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -844,12 +905,17 @@ def test_aliyun_eci_runtime_submission_creates_safe_container_request(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+        profile = create_profile_entity(session, project, repository)
+        profile_id = profile.id
 
     response = client.post(
-        f"/tasks/{task.id}/cloud-runs",
+        f"/tasks/{task_id}/cloud-runs",
         json={
-            "repo_id": repository.id,
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -944,12 +1010,17 @@ def test_protected_aliyun_worker_claim_requires_callback_token(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+        profile = create_profile_entity(session, project, repository)
+        profile_id = profile.id
 
     response = client.post(
-        f"/tasks/{task.id}/cloud-runs",
+        f"/tasks/{task_id}/cloud-runs",
         json={
-            "repo_id": repository.id,
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -1036,12 +1107,17 @@ def test_protected_worker_endpoints_require_callback_token_after_claim(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+        profile = create_profile_entity(session, project, repository)
+        profile_id = profile.id
 
     cloud_run = client.post(
-        f"/tasks/{task.id}/cloud-runs",
+        f"/tasks/{task_id}/cloud-runs",
         json={
-            "repo_id": repository.id,
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -1426,6 +1502,57 @@ def test_remote_worker_payload_rejects_expired_lease(
     assert response.json()["detail"] == "Cloud run lease is not current"
 
 
+def test_remote_worker_payload_rejects_hashless_current_lease(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class DockerExecutorShouldNotRun:
+        sandbox_kind = "docker_local"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: DockerExecutorShouldNotRun(),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    cloud_run = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id, "sandbox_profile_id": profile_id},
+    ).json()["cloud_run"]
+    worker_id = "docker-local-worker"
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": worker_id,
+            "worker_kind": "docker_local",
+            "queue_provider": "local_db",
+            "cloud_run_id": cloud_run["id"],
+            "lease_seconds": 60,
+        },
+    ).json()
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/payload",
+        json={"worker_id": worker_id},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Worker callback token is not valid"
+
+
 def test_cancelling_protected_queued_run_invalidates_callback_token(
     tmp_path: Path,
     monkeypatch,
@@ -1455,12 +1582,17 @@ def test_cancelling_protected_queued_run_invalidates_callback_token(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+        profile = create_profile_entity(session, project, repository)
+        profile_id = profile.id
 
     cloud_run = client.post(
-        f"/tasks/{task.id}/cloud-runs",
+        f"/tasks/{task_id}/cloud-runs",
         json={
-            "repo_id": repository.id,
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -1508,9 +1640,11 @@ def test_protected_worker_claim_rejects_cross_run_callback_token(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, first_task = create_cloud_task(session)
+        project, repository, first_task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
         first_task_id = first_task.id
         repo_id = repository.id
+        profile_id = profile.id
         second_task = Task(
             project_id=first_task.project_id,
             title="Second protected run",
@@ -1526,6 +1660,7 @@ def test_protected_worker_claim_rejects_cross_run_callback_token(
         f"/tasks/{first_task_id}/cloud-runs",
         json={
             "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -1535,6 +1670,7 @@ def test_protected_worker_claim_rejects_cross_run_callback_token(
         f"/tasks/{second_task_id}/cloud-runs",
         json={
             "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -1588,12 +1724,17 @@ def test_protected_worker_endpoints_reject_expired_callback_token(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+        profile = create_profile_entity(session, project, repository)
+        profile_id = profile.id
 
     cloud_run = client.post(
-        f"/tasks/{task.id}/cloud-runs",
+        f"/tasks/{task_id}/cloud-runs",
         json={
-            "repo_id": repository.id,
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -1668,12 +1809,17 @@ def test_aliyun_provider_mvp_enqueue_persists_non_sensitive_metadata(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+        profile = create_profile_entity(session, project, repository)
+        profile_id = profile.id
 
     response = client.post(
-        f"/tasks/{task.id}/cloud-runs",
+        f"/tasks/{task_id}/cloud-runs",
         json={
-            "repo_id": repository.id,
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "aliyun_mns",
             "storage_provider": "aliyun_oss",
             "runtime_provider": "aliyun_eci",
@@ -2267,14 +2413,17 @@ def test_remote_stub_runtime_submission_records_job_metadata(
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
-        _project, repository, task = create_cloud_task(session)
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
         task_id = task.id
         repo_id = repository.id
+        profile_id = profile.id
 
     response = client.post(
         f"/tasks/{task_id}/cloud-runs",
         json={
             "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
             "queue_provider": "external_stub",
             "runtime_provider": "remote_stub",
             "storage_provider": "local_inline",
