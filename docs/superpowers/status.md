@@ -1,11 +1,11 @@
 # AI-SCDC Project Status
 
-Last verified: 2026-06-03
+Last verified: 2026-06-04
 
 ## Current Phase
 
-The project is through Phase 10C: Aliyun provider MVP for the remote
-execution-plane contracts.
+The project is through Phase 10D: run-scoped callback token hardening for
+protected remote worker callbacks.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -50,19 +50,19 @@ tests, README smoke instructions, and git history.
     artifact storage refs, `aliyun_eci` remote runtime submission, worker
     artifact upload endpoint, ACR worker image path, fake-client automated
     tests, and opt-in Aliyun smoke documentation.
+14. Phase 10D remote worker callback token hardening: run- and worker-bound
+    callback token hash storage, ECI worker env injection, protected lease,
+    heartbeat, artifact-upload, and completion callbacks, callback-token
+    expiry, completion invalidation, and queued-cancel invalidation.
 
 ## Verification
 
-Latest Phase 10C final verification:
+Latest Phase 10D verification:
 
 ```bash
+pytest apps/api/tests/test_cloud_run_api.py -k "aliyun or worker_uploads or artifact_ref or lease or callback_token" -v
 pytest apps/api/tests/test_aliyun_config.py apps/api/tests/test_aliyun_clients.py apps/api/tests/test_cloud_object_storage.py apps/api/tests/test_remote_worker.py -v
-pytest apps/api/tests/test_cloud_run_api.py -k "aliyun or worker_uploads or artifact_ref or lease" -v
 pytest apps/api/tests
-pytest apps/api/tests/test_cloud_run_api.py -v
-pytest apps/api/tests/test_cloud_object_storage.py -v
-pytest apps/api/tests/test_aliyun_config.py apps/api/tests/test_aliyun_clients.py apps/api/tests/test_remote_worker.py -v
-pnpm --filter @ai-scdc/desktop test -- src/test/client.test.ts src/test/App.test.tsx
 pnpm typecheck
 git diff --check
 rg -n "AccessKey|ACCESS_KEY_SECRET|secret-value|ak-secret|very-secret-value|ALIYUN_ACCESS_KEY_SECRET" apps docs README.md
@@ -70,15 +70,11 @@ rg -n "AccessKey|ACCESS_KEY_SECRET|secret-value|ak-secret|very-secret-value|ALIY
 
 Results:
 
-- Phase 10C provider/object-storage/worker focused tests: passed, 16 tests.
-- Phase 10C cloud-run focused tests: passed, 26 tests, 1 existing Starlette/httpx warning.
-- `pytest apps/api/tests`: passed, 339 tests, 1 existing Starlette/httpx warning.
-- `pytest apps/api/tests/test_cloud_run_api.py`: passed, 93 tests, 1 existing Starlette/httpx warning.
-- `pytest apps/api/tests/test_cloud_object_storage.py`: passed, 7 tests.
-- `pytest apps/api/tests/test_aliyun_config.py apps/api/tests/test_aliyun_clients.py apps/api/tests/test_remote_worker.py`: passed, 9 tests.
-- Desktop client/App tests: passed, 67 tests.
+- Phase 10D cloud-run focused tests: passed, 34 tests, 67 deselected, 1 existing Starlette/httpx warning.
+- Phase 10D Aliyun config/client/object-storage/worker focused tests: passed, 19 tests.
+- `pytest apps/api/tests`: passed, 350 tests, 1 existing Starlette/httpx warning.
 - Root `pnpm typecheck`: passed.
-- `git diff --check`: passed.
+- `git diff --check`: passed with Git LF-to-CRLF working-copy warnings only.
 - Secret scan found only environment variable names, README placeholders, plan
   examples, and fake test secret values; no real Aliyun credential values were
   present.

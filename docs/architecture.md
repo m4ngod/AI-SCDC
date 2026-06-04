@@ -153,11 +153,28 @@ containers, and ACR for the worker image.
 The public cloud-run lifecycle remains unchanged. Aliyun providers are selected
 by provider names (`aliyun_mns`, `aliyun_oss`, and `aliyun_eci`), automated tests
 use fake clients, and real cloud calls are opt-in through environment variables
-and smoke commands. Worker containers receive API callback metadata, not broad
-Aliyun AccessKeys.
+and smoke commands. Worker containers receive API callback metadata and a
+run-scoped callback token, not broad Aliyun AccessKeys.
 
 Phase 10C does not add live log streaming, SLS, Kubernetes, automatic PR
 creation, automatic merge, billing, or model-backed reviewer/debugger agents.
+
+## Phase 10D Boundary
+
+Phase 10D hardens the remote worker callback surface. Protected remote runtime
+submissions now generate a high-entropy callback token, store only a run- and
+worker-bound SHA-256 hash, inject the raw token only into the worker container
+environment, and require that token on lease claim, heartbeat, artifact upload,
+and completion callbacks.
+
+Tokens are scoped to a single cloud run and deterministic worker ID, expire
+after one hour, and are invalidated on completion or queued cancellation. Legacy
+local/stub runs without a stored token remain compatible for local tests and
+development flows.
+
+Phase 10D does not add user identity auth for worker endpoints, rotate tokens
+during a running lease, add live log streaming, or change automatic PR/merge
+boundaries.
 
 ## Roadmap
 
@@ -176,6 +193,7 @@ Completed:
 11. Remote worker control-plane contract with local queue adapter, renewable leases, heartbeats, stale completion rejection, expired lease requeue, and remote stub completion.
 12. Provider-neutral remote execution-plane contract with queue, local-inline object storage, remote runtime stub, artifact refs, external metadata redaction, and payload size guards.
 13. Aliyun provider MVP with MNS queue enqueue, OSS artifact refs, ECI remote worker submission, ACR worker image path, fake-client tests, and opt-in smoke documentation.
+14. Run-scoped remote worker callback token hardening with token hash storage, ECI env injection, protected worker callbacks, expiry, completion invalidation, and queued-cancel invalidation.
 
 Future:
 

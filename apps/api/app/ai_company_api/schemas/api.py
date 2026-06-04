@@ -359,11 +359,13 @@ class CloudRunLeaseCreate(BaseModel):
     worker_kind: str = Field(default="remote_stub", min_length=1)
     queue_provider: str = Field(default="local_db", min_length=1)
     cloud_run_id: str | None = Field(default=None, min_length=1)
+    callback_token: str | None = Field(default=None, min_length=1)
     lease_seconds: int = Field(default=60, ge=1, le=3600)
 
 
 class CloudRunLeaseHeartbeat(BaseModel):
     worker_id: str = Field(min_length=1)
+    callback_token: str | None = Field(default=None, min_length=1)
     lease_seconds: int = Field(default=60, ge=1, le=3600)
 
 
@@ -391,6 +393,7 @@ class CloudRunArtifactRefCreate(BaseModel):
 
 class CloudRunArtifactUploadCreate(BaseModel):
     worker_id: str = Field(min_length=1)
+    callback_token: str | None = Field(default=None, min_length=1)
     kind: Literal["diff", "log", "command_result", "test_result", "manifest"]
     content: str = Field(max_length=2 * 1024 * 1024)
     content_type: str = "text/plain"
@@ -416,6 +419,7 @@ class CloudRunExecutionResultCreate(BaseModel):
 
 class CloudRunLeaseComplete(BaseModel):
     worker_id: str = Field(min_length=1)
+    callback_token: str | None = Field(default=None, min_length=1)
     result: CloudRunExecutionResultCreate
 
 

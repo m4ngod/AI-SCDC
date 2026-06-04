@@ -71,6 +71,11 @@ from ai_company_api.services.task_state import (
     allowed_next_statuses,
     validate_transition,
 )
+from ai_company_api.services.worker_callback_auth import (
+    generate_callback_token,
+    hash_callback_token,
+    verify_callback_token,
+)
 
 SENSITIVE_PAYLOAD_KEYS = {
     "token",
@@ -351,6 +356,18 @@ def enqueue_cloud_run(
     runtime_provider = get_remote_runtime_provider(data.runtime_provider)
     if runtime_provider is not None and data.runtime_provider is not None:
         cloud_run_id = cloud_run.id
+        callback_token: str | None = None
+        callback_token_expires_at: datetime | None = None
+        worker_id = _remote_runtime_worker_id(data.runtime_provider, cloud_run.id)
+        callback_token = generate_callback_token()
+        callback_token_expires_at = utc_now() + timedelta(hours=1)
+        cloud_run.callback_token_hash = hash_callback_token(
+            cloud_run.id,
+            worker_id,
+            callback_token,
+        )
+        cloud_run.callback_token_expires_at = callback_token_expires_at
+        cloud_run.updated_at = utc_now()
         try:
             runtime_submission = runtime_provider.submit(
                 session,
@@ -359,6 +376,9 @@ def enqueue_cloud_run(
                     project_id=cloud_run.project_id,
                     task_id=cloud_run.task_id,
                     cloud_run_id=cloud_run.id,
+                    worker_id=worker_id,
+                    callback_token=callback_token,
+                    callback_token_expires_at=callback_token_expires_at,
                     queue_provider=cloud_run.queue_provider,
                     runtime_provider=data.runtime_provider,
                     storage_provider=cloud_run.storage_provider,
@@ -445,6 +465,7 @@ def claim_next_cloud_run_lease(
     worker_kind: str = "remote_stub",
     queue_provider: str = DEFAULT_QUEUE_PROVIDER,
     cloud_run_id: str | None = None,
+    callback_token: str | None = None,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> CloudRunLeaseRead | None:
     try:
@@ -473,6 +494,12 @@ def claim_next_cloud_run_lease(
             continue
 
         now = utc_now()
+        _verify_cloud_run_callback_token_or_403(
+            cloud_run,
+            worker_id=worker_id,
+            callback_token=callback_token,
+            now=now,
+        )
         lease_id = prefixed_id("lease")
         lease_expires_at = now + timedelta(seconds=lease_seconds)
         if not _claim_cloud_run_lease(
@@ -528,12 +555,18 @@ def heartbeat_cloud_run_lease(
     *,
     lease_id: str,
     worker_id: str,
+    callback_token: str | None = None,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> CloudRunLeaseRead:
     cloud_run = _get_current_cloud_run_lease_or_409(
         session,
         lease_id=lease_id,
         worker_id=worker_id,
+    )
+    _verify_cloud_run_callback_token_or_403(
+        cloud_run,
+        worker_id=worker_id,
+        callback_token=callback_token,
     )
     now = utc_now()
     cloud_run.heartbeat_at = now
@@ -770,6 +803,11 @@ def upload_cloud_run_lease_artifact(
         lease_id=lease_id,
         worker_id=data.worker_id,
     )
+    _verify_cloud_run_callback_token_or_403(
+        cloud_run,
+        worker_id=data.worker_id,
+        callback_token=data.callback_token,
+    )
     try:
         provider = get_object_storage_provider(cloud_run.storage_provider)
         ref = provider.put_text(
@@ -813,12 +851,18 @@ def complete_cloud_run_lease(
     *,
     lease_id: str,
     worker_id: str,
+    callback_token: str | None = None,
     result: CloudRunExecutionResultCreate,
 ) -> CloudRunResultRead:
     cloud_run = _get_current_cloud_run_lease_or_409(
         session,
         lease_id=lease_id,
         worker_id=worker_id,
+    )
+    _verify_cloud_run_callback_token_or_403(
+        cloud_run,
+        worker_id=worker_id,
+        callback_token=callback_token,
     )
     result = _resolve_cloud_run_completion_artifacts(
         session,
@@ -832,6 +876,8 @@ def complete_cloud_run_lease(
             "completed" if execution_result.status == "patch_ready" else "failed"
         )
         cloud_run.updated_at = utc_now()
+    if cloud_run.callback_token_hash is not None:
+        cloud_run.callback_token_used_at = utc_now()
     repository = get_repository(session, cloud_run.repo_id)
     secrets = _redaction_secrets({}, repository.repo_url, None)
     _append_cloud_run_log(
@@ -1054,6 +1100,8 @@ def _mark_claimed_cloud_run_cancelled(
     cloud_run.cancelled_at = cloud_run.cancelled_at or completed_at
     cloud_run.completed_at = completed_at
     cloud_run.updated_at = completed_at
+    if cloud_run.callback_token_hash is not None and cloud_run.callback_token_used_at is None:
+        cloud_run.callback_token_used_at = completed_at
     _append_cloud_run_log(
         session,
         cloud_run=cloud_run,
@@ -1097,6 +1145,11 @@ def cancel_cloud_run(session: Session, *, cloud_run_id: str) -> CloudRunRead:
                 now=now,
             )
         session.refresh(cloud_run)
+        if (
+            cloud_run.callback_token_hash is not None
+            and cloud_run.callback_token_used_at is None
+        ):
+            cloud_run.callback_token_used_at = now
         local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
         local_run.status = "cancelled"
         local_run.updated_at = now
@@ -1636,6 +1689,56 @@ def _get_current_cloud_run_lease_or_409(
             detail="Cloud run lease is not current",
         )
     return cloud_run
+
+
+def _verify_cloud_run_callback_token_or_403(
+    cloud_run: CloudRun,
+    *,
+    worker_id: str,
+    callback_token: str | None,
+    now: datetime | None = None,
+) -> None:
+    if cloud_run.callback_token_hash is None:
+        return
+    if callback_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Worker callback token is required",
+        )
+    if cloud_run.callback_token_used_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Worker callback token is not valid",
+        )
+    expires_at = cloud_run.callback_token_expires_at
+    if expires_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Worker callback token is not valid",
+        )
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < (now or utc_now()):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Worker callback token is not valid",
+        )
+    if not verify_callback_token(
+        cloud_run.id,
+        worker_id,
+        callback_token,
+        cloud_run.callback_token_hash,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Worker callback token is not valid",
+        )
+
+
+def _remote_runtime_worker_id(runtime_provider: str, cloud_run_id: str) -> str:
+    if runtime_provider == "aliyun_eci":
+        return f"aliyun-eci-{cloud_run_id}"
+    return f"{runtime_provider}-{cloud_run_id}"
 
 
 def _get_cloud_run_local_run_or_404(

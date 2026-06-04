@@ -22,6 +22,7 @@ def init_db(engine) -> None:
     _upgrade_sqlite_cloud_run_phase_9_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10a_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10b_columns(engine)
+    _upgrade_sqlite_cloud_run_phase_10d_columns(engine)
     SQLModel.metadata.create_all(engine)
     _upgrade_sqlite_repository_phase_7_columns(engine)
     _upgrade_sqlite_cloud_run_phase_8_columns(engine)
@@ -257,6 +258,45 @@ def _upgrade_sqlite_cloud_run_phase_10b_columns(engine) -> None:
             "storage_provider",
             "external_status",
         ):
+            connection.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_cloud_run_{column_name} "
+                    f"ON cloud_run ({column_name})"
+                )
+            )
+
+
+def _upgrade_sqlite_cloud_run_phase_10d_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    cloud_run_columns = {
+        "callback_token_hash": "VARCHAR",
+        "callback_token_expires_at": "DATETIME",
+        "callback_token_used_at": "DATETIME",
+    }
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "cloud_run" not in existing_tables:
+            return
+
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(text("PRAGMA table_info(cloud_run)")).mappings()
+        }
+        for column_name, column_type in cloud_run_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    text(f"ALTER TABLE cloud_run ADD COLUMN {column_name} {column_type}")
+                )
+
+        for column_name in ("callback_token_hash", "callback_token_expires_at"):
             connection.execute(
                 text(
                     f"CREATE INDEX IF NOT EXISTS ix_cloud_run_{column_name} "

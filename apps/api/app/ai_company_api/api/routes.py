@@ -515,6 +515,7 @@ def post_cloud_run_worker_lease(
         worker_kind=data.worker_kind,
         queue_provider=data.queue_provider,
         cloud_run_id=data.cloud_run_id,
+        callback_token=data.callback_token,
         lease_seconds=data.lease_seconds,
     )
     if lease is None:
@@ -550,6 +551,7 @@ def post_cloud_run_worker_lease_heartbeat(
         session,
         lease_id=lease_id,
         worker_id=data.worker_id,
+        callback_token=data.callback_token,
         lease_seconds=data.lease_seconds,
     )
 
@@ -580,6 +582,7 @@ def post_cloud_run_worker_lease_complete(
         session,
         lease_id=lease_id,
         worker_id=data.worker_id,
+        callback_token=data.callback_token,
         result=data.result,
     )
 

@@ -14,19 +14,26 @@ class RemoteWorkerConfig:
     worker_id: str
     queue_provider: str
     storage_provider: str
+    callback_token: str
 
 
 class RemoteWorkerClient(Protocol):
     def claim(self, config: RemoteWorkerConfig) -> dict[str, Any]:
         ...
 
-    def heartbeat(self, lease_id: str, worker_id: str) -> dict[str, Any]:
+    def heartbeat(
+        self,
+        lease_id: str,
+        worker_id: str,
+        callback_token: str,
+    ) -> dict[str, Any]:
         ...
 
     def upload_artifact(
         self,
         lease_id: str,
         worker_id: str,
+        callback_token: str,
         *,
         kind: str,
         content: str,
@@ -38,6 +45,7 @@ class RemoteWorkerClient(Protocol):
         self,
         lease_id: str,
         worker_id: str,
+        callback_token: str,
         result: dict[str, Any],
     ) -> dict[str, Any]:
         ...
@@ -55,20 +63,31 @@ class HttpRemoteWorkerClient:
                 "worker_kind": "aliyun_eci",
                 "queue_provider": config.queue_provider,
                 "cloud_run_id": config.cloud_run_id,
+                "callback_token": config.callback_token,
                 "lease_seconds": 300,
             },
         )
 
-    def heartbeat(self, lease_id: str, worker_id: str) -> dict[str, Any]:
+    def heartbeat(
+        self,
+        lease_id: str,
+        worker_id: str,
+        callback_token: str,
+    ) -> dict[str, Any]:
         return self._post_json(
             f"/cloud-run-worker/leases/{lease_id}/heartbeat",
-            {"worker_id": worker_id, "lease_seconds": 300},
+            {
+                "worker_id": worker_id,
+                "callback_token": callback_token,
+                "lease_seconds": 300,
+            },
         )
 
     def upload_artifact(
         self,
         lease_id: str,
         worker_id: str,
+        callback_token: str,
         *,
         kind: str,
         content: str,
@@ -78,6 +97,7 @@ class HttpRemoteWorkerClient:
             f"/cloud-run-worker/leases/{lease_id}/artifacts",
             {
                 "worker_id": worker_id,
+                "callback_token": callback_token,
                 "kind": kind,
                 "content": content,
                 "content_type": content_type,
@@ -88,12 +108,14 @@ class HttpRemoteWorkerClient:
         self,
         lease_id: str,
         worker_id: str,
+        callback_token: str,
         result: dict[str, Any],
     ) -> dict[str, Any]:
         return self._post_json(
             f"/cloud-run-worker/leases/{lease_id}/complete",
             {
                 "worker_id": worker_id,
+                "callback_token": callback_token,
                 "result": result["result"],
             },
         )
@@ -119,11 +141,12 @@ def run_remote_worker_once(
     resolved_client = client or HttpRemoteWorkerClient(config.api_base_url)
     lease = resolved_client.claim(config)
     lease_id = lease["lease_id"]
-    resolved_client.heartbeat(lease_id, config.worker_id)
+    resolved_client.heartbeat(lease_id, config.worker_id, config.callback_token)
     diff_text = _deterministic_diff(config.cloud_run_id)
     diff_ref = resolved_client.upload_artifact(
         lease_id,
         config.worker_id,
+        config.callback_token,
         kind="diff",
         content=diff_text,
         content_type="text/x-diff",
@@ -149,7 +172,12 @@ def run_remote_worker_once(
             "failure_reason": None,
         }
     }
-    return resolved_client.complete(lease_id, config.worker_id, completion)
+    return resolved_client.complete(
+        lease_id,
+        config.worker_id,
+        config.callback_token,
+        completion,
+    )
 
 
 def config_from_env() -> RemoteWorkerConfig:
@@ -159,6 +187,7 @@ def config_from_env() -> RemoteWorkerConfig:
         worker_id=_required_env("AI_SCDC_WORKER_ID"),
         queue_provider=os.getenv("AI_SCDC_QUEUE_PROVIDER", "aliyun_mns"),
         storage_provider=os.getenv("AI_SCDC_STORAGE_PROVIDER", "aliyun_oss"),
+        callback_token=_required_env("AI_SCDC_CALLBACK_TOKEN"),
     )
 
 

@@ -214,6 +214,23 @@ def test_cloud_run_log_payload_redacts_token_like_keys() -> None:
     }
 
 
+def test_callback_token_helper_binds_token_to_run_and_worker() -> None:
+    from ai_company_api.services.worker_callback_auth import (
+        generate_callback_token,
+        hash_callback_token,
+        verify_callback_token,
+    )
+
+    token = generate_callback_token()
+    assert len(token) >= 32
+    stored_hash = hash_callback_token("cloud_run_1", "worker_1", token)
+
+    assert verify_callback_token("cloud_run_1", "worker_1", token, stored_hash)
+    assert not verify_callback_token("cloud_run_1", "worker_2", token, stored_hash)
+    assert not verify_callback_token("cloud_run_2", "worker_1", token, stored_hash)
+    assert not verify_callback_token("cloud_run_1", "worker_1", "wrong", stored_hash)
+
+
 def test_start_cloud_run_enqueues_fake_run_without_executor_work(
     tmp_path: Path,
     monkeypatch,
@@ -826,13 +843,15 @@ def test_aliyun_eci_runtime_submission_creates_safe_container_request(
     assert request.memory_gb == 2.0
     assert request.restart_policy == "Never"
     assert request.client_token == f"ai-scdc-{cloud_run['id'].replace('_', '-')}"
-    assert request.environment == {
+    assert request.environment.items() >= {
         "AI_SCDC_API_BASE_URL": "https://api.example.test",
         "AI_SCDC_CLOUD_RUN_ID": cloud_run["id"],
         "AI_SCDC_WORKER_ID": f"aliyun-eci-{cloud_run['id']}",
         "AI_SCDC_QUEUE_PROVIDER": "aliyun_mns",
         "AI_SCDC_STORAGE_PROVIDER": "aliyun_oss",
-    }
+    }.items()
+    assert len(request.environment["AI_SCDC_CALLBACK_TOKEN"]) >= 32
+    assert "callback_token_hash" not in str(request.environment)
     assert "AI_SCDC_ALIYUN_ACCESS_KEY_SECRET" not in request.environment
     assert "secret" not in str(request.environment)
 
@@ -852,6 +871,468 @@ def test_aliyun_eci_runtime_submission_creates_safe_container_request(
         "storage_provider": "aliyun_oss",
     }
     assert "secret" not in str(fake_oss.put_requests)
+
+
+def test_protected_aliyun_worker_claim_requires_callback_token(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_eci = FakeAliyunEciClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    response = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={
+            "repo_id": repository.id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    )
+
+    assert response.status_code == 201
+    cloud_run = response.json()["cloud_run"]
+    assert len(fake_eci.requests) == 1
+    worker_id = f"aliyun-eci-{cloud_run['id']}"
+    runtime_environment = fake_eci.requests[0].environment
+    callback_token = runtime_environment["AI_SCDC_CALLBACK_TOKEN"]
+    assert len(callback_token) >= 32
+    assert "callback_token_hash" not in str(runtime_environment)
+    assert callback_token not in str(response.json())
+
+    claim_without_token = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": worker_id,
+            "worker_kind": "aliyun_eci",
+            "queue_provider": "aliyun_mns",
+            "cloud_run_id": cloud_run["id"],
+            "lease_seconds": 60,
+        },
+    )
+    assert claim_without_token.status_code == 401
+
+    claim_wrong_token = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": worker_id,
+            "worker_kind": "aliyun_eci",
+            "queue_provider": "aliyun_mns",
+            "cloud_run_id": cloud_run["id"],
+            "callback_token": "wrong",
+            "lease_seconds": 60,
+        },
+    )
+    assert claim_wrong_token.status_code == 403
+
+    claim_with_token = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": worker_id,
+            "worker_kind": "aliyun_eci",
+            "queue_provider": "aliyun_mns",
+            "cloud_run_id": cloud_run["id"],
+            "callback_token": callback_token,
+            "lease_seconds": 60,
+        },
+    )
+    assert claim_with_token.status_code == 201
+    assert claim_with_token.json()["cloud_run"]["id"] == cloud_run["id"]
+
+
+def test_protected_worker_endpoints_require_callback_token_after_claim(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_eci = FakeAliyunEciClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    cloud_run = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={
+            "repo_id": repository.id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    ).json()["cloud_run"]
+    worker_id = f"aliyun-eci-{cloud_run['id']}"
+    callback_token = fake_eci.requests[0].environment["AI_SCDC_CALLBACK_TOKEN"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": worker_id,
+            "worker_kind": "aliyun_eci",
+            "queue_provider": "aliyun_mns",
+            "cloud_run_id": cloud_run["id"],
+            "callback_token": callback_token,
+            "lease_seconds": 60,
+        },
+    ).json()
+
+    heartbeat_without_token = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/heartbeat",
+        json={"worker_id": worker_id, "lease_seconds": 60},
+    )
+    assert heartbeat_without_token.status_code == 401
+
+    heartbeat_wrong_token = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/heartbeat",
+        json={
+            "worker_id": worker_id,
+            "callback_token": "wrong",
+            "lease_seconds": 60,
+        },
+    )
+    assert heartbeat_wrong_token.status_code == 403
+
+    heartbeat_with_token = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/heartbeat",
+        json={
+            "worker_id": worker_id,
+            "callback_token": callback_token,
+            "lease_seconds": 60,
+        },
+    )
+    assert heartbeat_with_token.status_code == 200
+
+    diff_text = "diff --git a/app.py b/app.py\n+print('protected')\n"
+    upload_without_token = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/artifacts",
+        json={
+            "worker_id": worker_id,
+            "kind": "diff",
+            "content": diff_text,
+            "content_type": "text/x-diff",
+        },
+    )
+    assert upload_without_token.status_code == 401
+
+    upload_wrong_token = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/artifacts",
+        json={
+            "worker_id": worker_id,
+            "callback_token": "wrong",
+            "kind": "diff",
+            "content": diff_text,
+            "content_type": "text/x-diff",
+        },
+    )
+    assert upload_wrong_token.status_code == 403
+
+    upload_with_token = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/artifacts",
+        json={
+            "worker_id": worker_id,
+            "callback_token": callback_token,
+            "kind": "diff",
+            "content": diff_text,
+            "content_type": "text/x-diff",
+        },
+    )
+    assert upload_with_token.status_code == 201
+
+    completion_payload = remote_stub_completion_payload(cloud_run["id"])
+    completion_payload["worker_id"] = worker_id
+    completion_payload["callback_token"] = callback_token
+    completion_payload["result"]["artifact_refs"] = [upload_with_token.json()]
+    completion_payload["result"]["diff_text"] = ""
+
+    complete_without_token_payload = dict(completion_payload)
+    complete_without_token_payload.pop("callback_token")
+    complete_without_token = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=complete_without_token_payload,
+    )
+    assert complete_without_token.status_code == 401
+
+    complete_wrong_token_payload = dict(completion_payload)
+    complete_wrong_token_payload["callback_token"] = "wrong"
+    complete_wrong_token = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=complete_wrong_token_payload,
+    )
+    assert complete_wrong_token.status_code == 403
+
+    complete_with_token = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=completion_payload,
+    )
+    assert complete_with_token.status_code == 200
+    assert complete_with_token.json()["cloud_run"]["status"] == "patch_ready"
+
+    reused_token = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=completion_payload,
+    )
+    assert reused_token.status_code in {403, 409}
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        persisted = session.get(CloudRun, cloud_run["id"])
+        assert persisted is not None
+        assert persisted.callback_token_used_at is not None
+
+
+def test_cancelling_protected_queued_run_invalidates_callback_token(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=FakeAliyunEciClient(),
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    cloud_run = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={
+            "repo_id": repository.id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    ).json()["cloud_run"]
+
+    cancel_response = client.post(f"/cloud-runs/{cloud_run['id']}/cancel")
+
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "cancelled"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        persisted = session.get(CloudRun, cloud_run["id"])
+        assert persisted is not None
+        assert persisted.callback_token_hash is not None
+        assert persisted.callback_token_used_at is not None
+
+
+def test_protected_worker_claim_rejects_cross_run_callback_token(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_eci = FakeAliyunEciClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, first_task = create_cloud_task(session)
+        first_task_id = first_task.id
+        repo_id = repository.id
+        second_task = Task(
+            project_id=first_task.project_id,
+            title="Second protected run",
+            description="Second protected run",
+            role_required="backend",
+        )
+        session.add(second_task)
+        session.commit()
+        session.refresh(second_task)
+        second_task_id = second_task.id
+
+    first_run = client.post(
+        f"/tasks/{first_task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    ).json()["cloud_run"]
+    second_run = client.post(
+        f"/tasks/{second_task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    ).json()["cloud_run"]
+    first_token = fake_eci.requests[0].environment["AI_SCDC_CALLBACK_TOKEN"]
+
+    cross_run_claim = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": f"aliyun-eci-{second_run['id']}",
+            "worker_kind": "aliyun_eci",
+            "queue_provider": "aliyun_mns",
+            "cloud_run_id": second_run["id"],
+            "callback_token": first_token,
+            "lease_seconds": 60,
+        },
+    )
+
+    assert first_run["id"] != second_run["id"]
+    assert cross_run_claim.status_code == 403
+
+
+def test_protected_worker_endpoints_reject_expired_callback_token(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_eci = FakeAliyunEciClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+
+    cloud_run = client.post(
+        f"/tasks/{task.id}/cloud-runs",
+        json={
+            "repo_id": repository.id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    ).json()["cloud_run"]
+    worker_id = f"aliyun-eci-{cloud_run['id']}"
+    callback_token = fake_eci.requests[0].environment["AI_SCDC_CALLBACK_TOKEN"]
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": worker_id,
+            "worker_kind": "aliyun_eci",
+            "queue_provider": "aliyun_mns",
+            "cloud_run_id": cloud_run["id"],
+            "callback_token": callback_token,
+            "lease_seconds": 60,
+        },
+    ).json()
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        persisted = session.get(CloudRun, cloud_run["id"])
+        assert persisted is not None
+        persisted.callback_token_expires_at = datetime(2026, 6, 2, tzinfo=timezone.utc)
+        session.add(persisted)
+        session.commit()
+
+    expired_heartbeat = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/heartbeat",
+        json={
+            "worker_id": worker_id,
+            "callback_token": callback_token,
+            "lease_seconds": 60,
+        },
+    )
+    assert expired_heartbeat.status_code == 403
+
+    completion_payload = remote_stub_completion_payload(cloud_run["id"])
+    completion_payload["worker_id"] = worker_id
+    completion_payload["callback_token"] = callback_token
+    expired_complete = client.post(
+        f"/cloud-run-worker/leases/{lease['lease_id']}/complete",
+        json=completion_payload,
+    )
+    assert expired_complete.status_code == 403
 
 
 def test_aliyun_provider_mvp_enqueue_persists_non_sensitive_metadata(
@@ -4855,6 +5336,52 @@ def test_init_db_adds_phase_10b_cloud_run_provider_columns(
     assert ("runtime_job_id",) in indexes
     assert ("storage_provider",) in indexes
     assert ("external_status",) in indexes
+
+
+def test_init_db_adds_phase_10d_callback_token_columns(tmp_path: Path) -> None:
+    database_path = tmp_path / "phase10d.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    SQLModel.metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE cloud_run RENAME TO cloud_run_old")
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE cloud_run (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                workspace_id VARCHAR NOT NULL,
+                project_id VARCHAR NOT NULL,
+                task_id VARCHAR NOT NULL,
+                repo_id VARCHAR NOT NULL,
+                local_run_id VARCHAR,
+                base_branch VARCHAR NOT NULL,
+                head_branch VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                sandbox_kind VARCHAR NOT NULL,
+                cancel_requested BOOLEAN NOT NULL DEFAULT 0,
+                queue_provider VARCHAR NOT NULL DEFAULT 'local_db',
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql("DROP TABLE cloud_run_old")
+
+    init_db(engine)
+
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("cloud_run")}
+    assert {
+        "callback_token_hash",
+        "callback_token_expires_at",
+        "callback_token_used_at",
+    }.issubset(columns)
+    indexes = {
+        tuple(index["column_names"])
+        for index in inspector.get_indexes("cloud_run")
+    }
+    assert ("callback_token_hash",) in indexes
+    assert ("callback_token_expires_at",) in indexes
 
 
 def test_init_db_allows_cloud_test_run_without_patch_artifact(

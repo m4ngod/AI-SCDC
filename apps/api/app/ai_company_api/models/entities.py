@@ -525,6 +525,9 @@ class CloudRun(SQLModel, table=True):
     log_stream_uri: str | None = None
     external_status: str | None = Field(default=None, index=True)
     external_error: str | None = None
+    callback_token_hash: str | None = Field(default=None, index=True)
+    callback_token_expires_at: datetime | None = Field(default=None, index=True)
+    callback_token_used_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now, index=True)
     updated_at: datetime = Field(default_factory=utc_now)
 

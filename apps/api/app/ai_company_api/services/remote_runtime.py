@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import json
 import re
 from typing import Protocol
@@ -46,6 +47,9 @@ class RemoteRuntimeSubmission:
     project_id: str
     task_id: str
     cloud_run_id: str
+    worker_id: str | None
+    callback_token: str | None
+    callback_token_expires_at: datetime | None
     queue_provider: str
     runtime_provider: str
     storage_provider: str | None
@@ -157,10 +161,13 @@ class AliyunEciRuntimeProvider:
         environment = {
             "AI_SCDC_API_BASE_URL": settings.api_public_base_url or "",
             "AI_SCDC_CLOUD_RUN_ID": submission.cloud_run_id,
-            "AI_SCDC_WORKER_ID": f"aliyun-eci-{submission.cloud_run_id}",
+            "AI_SCDC_WORKER_ID": submission.worker_id
+            or f"aliyun-eci-{submission.cloud_run_id}",
             "AI_SCDC_QUEUE_PROVIDER": submission.queue_provider,
             "AI_SCDC_STORAGE_PROVIDER": submission.storage_provider or "",
         }
+        if submission.callback_token is not None:
+            environment["AI_SCDC_CALLBACK_TOKEN"] = submission.callback_token
 
         runtime_job_id: str | None = None
         try:
