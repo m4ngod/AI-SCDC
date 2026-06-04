@@ -879,17 +879,21 @@ export const fakeApiClient: ConsoleApiClient = {
     cloudRunId: string,
     windowOptions: CloudRunLogWindowOptions = {}
   ) {
-    const logs = await this.listCloudRunLogs(cloudRunId);
+    const logs = fakeCloudRunLogsById.get(cloudRunId) ?? [];
+    const parsedOffset = Number.parseInt(windowOptions.after ?? "", 10);
+    const offset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0;
     const limit = windowOptions.limit ?? logs.length;
-    const entries = logs.slice(0, limit).map((entry, sequence) => ({
+    const entries = logs.slice(offset, offset + limit).map((entry, sequence) => ({
       ...entry,
       source: "control_plane" as const,
-      sequence
+      sequence: offset + sequence
     }));
+    const nextOffset = offset + entries.length;
+    const hasMore = nextOffset < logs.length;
     return {
       entries,
-      nextCursor: logs.length > entries.length ? String(entries.length) : null,
-      hasMore: logs.length > entries.length
+      nextCursor: hasMore ? String(nextOffset) : null,
+      hasMore
     };
   },
   async createPullRequest(approvalId: string) {

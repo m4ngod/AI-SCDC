@@ -277,6 +277,25 @@ describe("desktop API clients", () => {
     });
   });
 
+  it("fake client pages cloud run log windows with cursors", async () => {
+    const queued = await fakeApiClient.startCloudRun("task_log_window_demo");
+    await fakeApiClient.processCloudRun(queued.cloud_run.id);
+
+    const first = await fakeApiClient.listCloudRunLogWindow(queued.cloud_run.id, {
+      limit: 1
+    });
+    expect(first.entries).toHaveLength(1);
+    expect(first.hasMore).toBe(true);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await fakeApiClient.listCloudRunLogWindow(queued.cloud_run.id, {
+      after: first.nextCursor,
+      limit: 1
+    });
+    expect(second.entries).toHaveLength(1);
+    expect(second.entries[0].id).not.toBe(first.entries[0].id);
+  });
+
   it("fake client cancels queued cloud runs and records logs", async () => {
     const queued = await fakeApiClient.startCloudRun("task_cancel_demo");
 
