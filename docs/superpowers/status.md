@@ -78,10 +78,10 @@ rg -n "ghp_|callback-token|AI_SCDC_CALLBACK_TOKEN|clone_token|AccessKey|ACCESS_K
 Results:
 
 - `pytest apps/api/tests/test_cloud_run_api.py -k "log_window or log_stream or phase_12a" -v`:
-  passed, 7 tests, 108 deselected, 1 existing Starlette/httpx warning.
+  passed, 8 tests, 108 deselected, 1 existing Starlette/httpx warning.
 - `pnpm --filter @ai-scdc/desktop test -- client.test.ts`: passed, 34
   tests.
-- `pytest apps/api/tests -v`: passed, 397 tests, 1 existing Starlette/httpx
+- `pytest apps/api/tests -v`: passed, 398 tests, 1 existing Starlette/httpx
   warning.
 - `pnpm typecheck`: passed.
 - `git diff --check`: passed with Git LF-to-CRLF working-copy warnings only.
