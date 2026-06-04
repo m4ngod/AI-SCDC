@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, Phase 10A remote worker control-plane contract, Phase 10B provider-neutral remote execution-plane contract, Phase 10C Aliyun provider MVP, Phase 10D run-scoped remote worker callback token hardening, and Phase 11 real remote worker execution skeleton for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, Phase 10A remote worker control-plane contract, Phase 10B provider-neutral remote execution-plane contract, Phase 10C Aliyun provider MVP, Phase 10D run-scoped remote worker callback token hardening, Phase 11 real remote worker execution skeleton, and Phase 12A bounded cloud-run log polling and safe remote log-stream reads for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -739,6 +739,12 @@ repository's active clone credential, returned only through the
 callback-token-protected worker payload. Outside that protected payload
 response, the clone credential must not appear in API responses, logs,
 artifacts, or completion payloads.
+
+Phase 12A adds `GET /cloud-runs/{cloud_run_id}/logs/window` for bounded log
+polling. The endpoint accepts an opaque `after` cursor, `limit`, and
+`include_stream`; it returns persisted control-plane log entries and, when
+complete object metadata is present, redacted remote log-stream lines. The
+legacy `/logs` endpoint remains available for full-list compatibility.
 
 Cleanup after smoke:
 

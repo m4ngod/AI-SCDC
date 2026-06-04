@@ -1,11 +1,11 @@
 # AI-SCDC Project Status
 
-Last verified: 2026-06-04
+Last verified: 2026-06-05
 
 ## Current Phase
 
-The project is through Phase 11: real remote worker execution skeleton for
-protected Aliyun ECI workers.
+The project is through Phase 12A: bounded cloud-run log polling and safe remote
+log-stream reads for provider-backed runs.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -58,34 +58,37 @@ tests, README smoke instructions, and git history.
     fetch, private GitHub clone credential boundary, selected sandbox profile
     command/test execution inside the worker container, diff capture, artifact
     uploads, and redacted completion payloads.
+16. Phase 12A cloud-run log polling: cursor-based log windows, persisted
+    log-stream object metadata, redacted stream-line reads, and desktop API
+    client support.
 
 ## Verification
 
-Latest Phase 11 final verification:
+Latest Phase 12A final verification:
 
 ```bash
-pytest apps/api/tests/test_remote_worker.py -v
-pytest apps/api/tests/test_cloud_run_api.py -k "payload or callback_token or aliyun or artifact_ref or lease" -v
-pytest apps/api/tests
+pytest apps/api/tests/test_cloud_run_api.py -k "log_window or log_stream or phase_12a" -v
+pnpm --filter @ai-scdc/desktop test -- client.test.ts
+pytest apps/api/tests -v
 pnpm typecheck
 git diff --check
-rg -n "ghp_|callback-token|AI_SCDC_CALLBACK_TOKEN|clone_token|AccessKey|ACCESS_KEY_SECRET" apps docs README.md
+rg -n "ghp_|callback-token|AI_SCDC_CALLBACK_TOKEN|clone_token|AccessKey|ACCESS_KEY_SECRET|secret-token|abc\.def" apps docs README.md
 ```
 
 Results:
 
-- `pytest apps/api/tests/test_remote_worker.py -v`: passed, 33 tests.
-- `pytest apps/api/tests/test_cloud_run_api.py -k "payload or callback_token or aliyun or artifact_ref or lease" -v`:
-  passed, 42 tests, 66 deselected, 1 existing Starlette/httpx warning.
-- `pytest apps/api/tests`: passed, 387 tests, 1 existing Starlette/httpx
+- `pytest apps/api/tests/test_cloud_run_api.py -k "log_window or log_stream or phase_12a" -v`:
+  passed, 7 tests, 108 deselected, 1 existing Starlette/httpx warning.
+- `pnpm --filter @ai-scdc/desktop test -- client.test.ts`: passed, 34
+  tests.
+- `pytest apps/api/tests -v`: passed, 397 tests, 1 existing Starlette/httpx
   warning.
 - `pnpm typecheck`: passed.
-- `git diff --check`: passed.
+- `git diff --check`: passed with Git LF-to-CRLF working-copy warnings only.
 - Secret scan hits were limited to environment variable names, schema/field
-  names, README placeholders, historical plan/spec examples, and fake test
-  values; no real credential values were found.
-- Task 8 scoped docs grep over `README.md`, `docs/architecture.md`, and
-  `docs/superpowers/status.md`: no hits for the Task 8 sentinel pattern.
+  names, README placeholders, historical plan/spec examples, fake test values,
+  and explicit redaction regression strings; no real credential values were
+  found.
 
 Previous Phase 10D verification:
 
@@ -141,13 +144,13 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Known Limits
 
-- Phase 11 adds a protected real remote worker execution skeleton for Aliyun
-  ECI, but live log streaming, direct MNS receive/delete semantics, SLS,
-  Kubernetes/ACK orchestration, billing, and model-backed reviewer/debugger
-  agents remain future work.
+- Phase 12A adds bounded log polling and safe remote log-stream object reads,
+  but provider-native live log streaming, direct MNS receive/delete semantics,
+  SLS, Kubernetes/ACK orchestration, billing, and model-backed
+  reviewer/debugger agents remain future work.
 - The real remote worker can fetch a protected payload, clone, execute commands,
   capture diffs, upload artifacts, and complete a lease, but it does not push
-  branches, create pull requests, merge changes, or stream logs.
+  branches, create pull requests, merge changes, or stream provider-native logs.
 - Docker execution is still available as a local-first adapter; `remote_stub`,
   `external_stub`, and `local_inline` remain deterministic development adapters
   for the provider-neutral contract.
@@ -163,11 +166,11 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Recommended Next Phase
 
-The next production hardening phase should build on Phase 11 without widening
+The next production hardening phase should build on Phase 12A without widening
 the approval boundary:
 
-1. Add live log streaming on top of the existing provider-neutral log URI and
-   Phase 9 polling/log contract.
+1. Add provider-native live log streaming on top of the existing
+   provider-neutral log URI and Phase 9 polling/log contract.
 2. Add or harden direct Aliyun MNS receive/delete worker semantics while keeping
    callback-token-protected payload access and completion boundaries.
 3. Keep fake, `docker_local`, `remote_stub`, `external_stub`, and

@@ -190,6 +190,17 @@ Phase 11 does not add direct MNS receive/delete semantics, live log streaming,
 model-backed debugging, Git push, PR creation, automatic merge, production KMS,
 or a second cloud provider.
 
+## Phase 12A Boundary
+
+Phase 12A adds a bounded log polling surface for cloud runs. The API keeps the
+legacy full log list endpoint and adds a cursor-based log window endpoint that
+can return persisted control-plane log rows and redacted remote log-stream
+lines when the run has complete object-storage ref metadata.
+
+Phase 12A does not add WebSockets, provider-native live log streaming, direct
+MNS receive/delete semantics, artifact browser UI, model-backed reviewer or
+debugger agents, production KMS, or a broad `cloud_runner.py` split.
+
 ## Roadmap
 
 Completed:
@@ -209,9 +220,9 @@ Completed:
 13. Aliyun provider MVP with MNS queue enqueue, OSS artifact refs, ECI remote worker submission, ACR worker image path, fake-client tests, and opt-in smoke documentation.
 14. Run-scoped remote worker callback token hardening with token hash storage, ECI env injection, protected worker callbacks, expiry, completion invalidation, and queued-cancel invalidation.
 15. Real remote worker execution skeleton with protected payload fetch, private GitHub clone credential boundary, command/test execution, diff capture, artifact uploads, and redacted completion.
+16. Bounded cloud-run log polling with cursor windows and safe remote log-stream reads.
 
 Future:
 
-1. Live log streaming providers on top of the existing provider-neutral log URI and Phase 9 polling/log contract.
-2. Model-backed reviewer/debugger agents that can propose or apply fixes within explicit approval boundaries.
-3. Commercial beta with users, organizations, subscriptions, credit wallet, usage ledger, rate limits, and billing provider abstraction.
+1. Provider-native live log streaming on top of the existing provider-neutral log URI and Phase 9 polling/log contract.
+2. Direct MNS receive/delete worker semantics while preserving callback-token-protected payload access and completion boundaries.
