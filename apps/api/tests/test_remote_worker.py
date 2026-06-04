@@ -94,7 +94,7 @@ class FakeWorkerClient:
         self.completed = {
             "lease_id": lease_id,
             "worker_id": worker_id,
-            "callback_token": callback_token,
+            "callback_token": "[redacted]",
             **result,
         }
         return {"cloud_run": {"status": result["result"]["status"]}}
@@ -143,6 +143,62 @@ class FakeCommandRunner:
                 }
             ],
             "failure_reason": None,
+        }
+
+
+class SecretBearingCommandRunner:
+    def run(self, payload: dict, repo_path: str) -> dict:
+        clone_token = payload["clone_token"]
+        callback_token = "callback-token-1"
+        env_secret = payload["env"]["SAFE_REMOTE_ENV"]
+        return {
+            "status": "failed",
+            "runner_kind": "aliyun_eci",
+            "base_sha": "base123",
+            "head_sha": "head456",
+            "worktree_ref": (
+                f"remote-worker://{clone_token}/{callback_token}/{env_secret}"
+            ),
+            "summary": "Remote worker failed while collecting artifacts.",
+            "files_changed": ["AI_SCDC_CLOUD_RUN.md"],
+            "tests_run": [
+                f"pytest -q --token {clone_token}",
+                f"echo {callback_token}",
+                f"echo {env_secret}",
+            ],
+            "test_result": "failed",
+            "risks": [
+                f"clone risk {clone_token}",
+                f"callback risk {callback_token}",
+                f"env risk {env_secret}",
+            ],
+            "diff_text": (
+                "diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n"
+                f"+{clone_token}\n"
+                f"+{callback_token}\n"
+                f"+{env_secret}\n"
+            ),
+            "command_results": [
+                {
+                    "command": f"python patch.py {clone_token}",
+                    "exit_code": 1,
+                    "stdout": f"patched {env_secret}",
+                    "stderr": f"failed {callback_token}",
+                    "duration_ms": 12,
+                    "timed_out": False,
+                }
+            ],
+            "test_command_results": [
+                {
+                    "command": f"pytest -q --token {callback_token}",
+                    "exit_code": 1,
+                    "stdout": f"test stdout {clone_token}",
+                    "stderr": f"test stderr {env_secret}",
+                    "duration_ms": 15,
+                    "timed_out": False,
+                }
+            ],
+            "failure_reason": f"failed with {clone_token} {callback_token} {env_secret}",
         }
 
 
@@ -211,6 +267,65 @@ def test_remote_worker_fetches_payload_runs_components_uploads_artifacts_and_com
     assert "ghp_private_clone_token1234" not in str(client.uploaded)
     assert "env-secret-value" not in str(client.uploaded)
     assert "callback-token-1" not in str(client.uploaded)
+
+
+def test_remote_worker_redacts_secret_bearing_execution_fields() -> None:
+    from ai_company_api.services.remote_worker import RemoteWorkerExecutor
+
+    client = FakeWorkerClient()
+    config = RemoteWorkerConfig(
+        api_base_url="https://api.example.test",
+        cloud_run_id="cloud_run_1",
+        worker_id="worker_1",
+        queue_provider="aliyun_mns",
+        storage_provider="aliyun_oss",
+        callback_token="callback-token-1",
+    )
+    executor = RemoteWorkerExecutor(
+        client=client,
+        checkout=FakeCheckout(),
+        command_runner=SecretBearingCommandRunner(),
+    )
+
+    result = executor.run_once(config)
+
+    assert result["cloud_run"]["status"] == "failed"
+    assert client.completed is not None
+    secret_values = [
+        "ghp_private_clone_token1234",
+        "callback-token-1",
+        "env-secret-value",
+    ]
+    for secret in secret_values:
+        assert secret not in str(client.uploaded)
+        assert secret not in str(client.completed)
+    diff_upload = next(
+        upload for upload in client.uploaded if upload["ref"]["kind"] == "diff"
+    )
+    assert "[redacted]" in diff_upload["content"]
+    manifest_upload = next(
+        upload for upload in client.uploaded if upload["ref"]["kind"] == "manifest"
+    )
+    assert '"failure_reason": "failed with [redacted] [redacted] [redacted]"' in (
+        manifest_upload["content"]
+    )
+    completion = client.completed["result"]
+    assert completion["worktree_ref"] == (
+        "remote-worker://[redacted]/[redacted]/[redacted]"
+    )
+    assert completion["tests_run"] == [
+        "pytest -q --token [redacted]",
+        "echo [redacted]",
+        "echo [redacted]",
+    ]
+    assert completion["risks"] == [
+        "clone risk [redacted]",
+        "callback risk [redacted]",
+        "env risk [redacted]",
+    ]
+    assert completion["failure_reason"] == (
+        "failed with [redacted] [redacted] [redacted]"
+    )
 
 
 def test_remote_worker_config_from_env_reads_provider_contract(monkeypatch) -> None:

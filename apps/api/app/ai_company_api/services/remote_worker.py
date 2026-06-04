@@ -186,6 +186,21 @@ def _redacted_command_result(
     }
 
 
+def _redacted_optional_text(value: Any, secrets: list[str]) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return _redact_text(value, secrets)
+    return value
+
+
+def _redacted_string_list(values: list[Any], secrets: list[str]) -> list[Any]:
+    return [
+        _redact_text(value, secrets) if isinstance(value, str) else value
+        for value in values
+    ]
+
+
 @dataclass
 class RemoteWorkerExecutor:
     client: RemoteWorkerClient
@@ -277,7 +292,11 @@ class RemoteWorkerExecutor:
             for result in execution.get("test_command_results", [])
         ]
         uploads = [
-            ("diff", execution.get("diff_text", ""), "text/x-diff"),
+            (
+                "diff",
+                _redact_text(execution.get("diff_text") or "", secrets),
+                "text/x-diff",
+            ),
             (
                 "command_result",
                 json.dumps(command_results, sort_keys=True),
@@ -310,7 +329,10 @@ class RemoteWorkerExecutor:
             "cloud_run_id": config.cloud_run_id,
             "artifacts": artifact_refs,
             "status": execution.get("status"),
-            "failure_reason": execution.get("failure_reason"),
+            "failure_reason": _redacted_optional_text(
+                execution.get("failure_reason"),
+                secrets,
+            ),
         }
         artifact_refs.append(
             self.client.upload_artifact(
@@ -335,12 +357,18 @@ class RemoteWorkerExecutor:
             "runner_kind": execution.get("runner_kind", "aliyun_eci"),
             "base_sha": execution.get("base_sha"),
             "head_sha": execution.get("head_sha"),
-            "worktree_ref": execution.get("worktree_ref"),
+            "worktree_ref": _redacted_optional_text(
+                execution.get("worktree_ref"),
+                secrets,
+            ),
             "summary": _redact_text(execution.get("summary", ""), secrets),
             "files_changed": execution.get("files_changed", []),
-            "tests_run": execution.get("tests_run", []),
+            "tests_run": _redacted_string_list(
+                execution.get("tests_run", []),
+                secrets,
+            ),
             "test_result": execution.get("test_result", "not_run"),
-            "risks": execution.get("risks", []),
+            "risks": _redacted_string_list(execution.get("risks", []), secrets),
             "diff_text": "",
             "artifact_refs": artifact_refs,
             "command_results": [
@@ -351,7 +379,10 @@ class RemoteWorkerExecutor:
                 _redacted_command_result(result, secrets)
                 for result in execution.get("test_command_results", [])
             ],
-            "failure_reason": execution.get("failure_reason"),
+            "failure_reason": _redacted_optional_text(
+                execution.get("failure_reason"),
+                secrets,
+            ),
         }
 
 
