@@ -64,10 +64,23 @@ tests, README smoke instructions, and git history.
 Latest Phase 11 focused verification during implementation:
 
 ```bash
-pytest apps/api/tests/test_cloud_run_api.py -k "payload or callback_token or artifact_ref or aliyun" -v
+pytest apps/api/tests/test_cloud_run_api.py -k "payload" -v
 pytest apps/api/tests/test_remote_worker.py -v
+pytest apps/api/tests/test_remote_worker.py apps/api/tests/test_cloud_run_api.py -k "payload or remote_worker or callback_token" -v
 git diff --check
 ```
+
+Results:
+
+- `pytest apps/api/tests/test_cloud_run_api.py -k "payload" -v`: passed, 8
+  tests, 100 deselected, 1 existing Starlette/httpx warning.
+- `pytest apps/api/tests/test_remote_worker.py -v`: passed, 32 tests.
+- `pytest apps/api/tests/test_remote_worker.py apps/api/tests/test_cloud_run_api.py -k "payload or remote_worker or callback_token" -v`:
+  passed, 48 tests, 93 deselected, 1 existing Starlette/httpx warning.
+- Docs grep over `README.md`, `docs/architecture.md`, and
+  `docs/superpowers/status.md`: no hits for incomplete markers or fake secret
+  values.
+- `git diff --check`: passed with Git LF-to-CRLF working-copy warnings only.
 
 Task 9 final verification has not run in this status update.
 
