@@ -32,6 +32,7 @@ STREAM_SECRET_PATTERN = re.compile(
     re.IGNORECASE,
 )
 STREAM_BEARER_PATTERN = re.compile(r"\bBearer\s+\S+", re.IGNORECASE)
+MAX_LOG_STREAM_READ_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -197,6 +198,8 @@ def _log_stream_entries(
 
     ref = _log_stream_ref(cloud_run)
     if ref is None:
+        return []
+    if ref.size_bytes > MAX_LOG_STREAM_READ_BYTES:
         return []
 
     provider_name = _object_storage_provider_name(ref.uri)
