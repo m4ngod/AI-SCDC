@@ -16,6 +16,7 @@ from ai_company_api.schemas.api import (
     CloudRunLogWindowEntryRead,
     CloudRunLogWindowRead,
 )
+from ai_company_api.services.aliyun_config import AliyunConfigurationError
 from ai_company_api.services.object_storage import (
     ObjectStorageProviderNotFound,
     ObjectStorageReadError,
@@ -204,7 +205,13 @@ def _log_stream_entries(
 
     try:
         text = get_object_storage_provider(provider_name).read_text(session, ref)
-    except (ObjectStorageProviderNotFound, ObjectStorageReadError):
+    except (
+        ObjectStorageProviderNotFound,
+        ObjectStorageReadError,
+        AliyunConfigurationError,
+    ):
+        return []
+    except Exception:
         return []
 
     redacted_uri = _redact_uri(ref.uri)

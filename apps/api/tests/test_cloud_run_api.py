@@ -4480,6 +4480,44 @@ def test_cloud_run_log_window_skips_stream_when_metadata_is_missing(
     assert "local-inline://cloud-run-objects/missing" not in str(body)
 
 
+def test_cloud_run_log_window_skips_stream_when_oss_read_fails(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        cloud_run.log_stream_uri = (
+            "oss://bucket/ai-scdc/dev/workspaces/ws/cloud-runs/run/log/fake.txt"
+        )
+        cloud_run.log_stream_sha256 = "0" * 64
+        cloud_run.log_stream_size_bytes = 0
+        cloud_run.log_stream_content_type = "text/plain"
+        session.add(cloud_run)
+        session.commit()
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "true"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert all(entry["source"] == "control_plane" for entry in body["entries"])
+    assert "oss://bucket" not in str(body)
+    assert "AliyunConfigurationError" not in str(body)
+
+
 def test_cloud_run_log_window_rejects_invalid_cursor(tmp_path: Path) -> None:
     from fastapi import HTTPException
 
