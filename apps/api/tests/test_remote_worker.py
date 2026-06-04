@@ -159,6 +159,9 @@ class FakeCommandRunner:
 
 
 class FailingCommandRunner:
+    def __init__(self, failure_reason: str) -> None:
+        self.failure_reason = failure_reason
+
     def run(self, payload: dict, repo_path: str) -> dict:
         return {
             "status": "failed",
@@ -183,7 +186,7 @@ class FailingCommandRunner:
                 }
             ],
             "test_command_results": [],
-            "failure_reason": "no_patch_produced",
+            "failure_reason": self.failure_reason,
         }
 
 
@@ -1115,7 +1118,7 @@ def test_remote_worker_completes_failure_reason_from_command_runner() -> None:
     executor = RemoteWorkerExecutor(
         client=client,
         checkout=FakeCheckout(),
-        command_runner=FailingCommandRunner(),
+        command_runner=FailingCommandRunner("no_patch_produced"),
     )
 
     result = executor.run_once(config)
