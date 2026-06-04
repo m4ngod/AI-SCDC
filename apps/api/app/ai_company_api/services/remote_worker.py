@@ -59,6 +59,16 @@ class RemoteWorkerClient(Protocol):
         ...
 
 
+class RemoteWorkerCheckout(Protocol):
+    def checkout(self, payload: dict[str, Any]) -> str:
+        ...
+
+
+class RemoteWorkerCommandRunner(Protocol):
+    def run(self, payload: dict[str, Any], repo_path: str) -> dict[str, Any]:
+        ...
+
+
 class HttpRemoteWorkerClient:
     def __init__(self, api_base_url: str) -> None:
         self._api_base_url = api_base_url.rstrip("/")
@@ -155,12 +165,210 @@ class HttpRemoteWorkerClient:
         return json.loads(raw) if raw else {}
 
 
+def _redact_text(text: str, secrets: list[str]) -> str:
+    redacted = text
+    for secret in sorted((secret for secret in secrets if secret), key=len, reverse=True):
+        redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
+def _redacted_command_result(
+    result: dict[str, Any],
+    secrets: list[str],
+) -> dict[str, Any]:
+    return {
+        "command": _redact_text(result.get("command", ""), secrets),
+        "exit_code": result.get("exit_code"),
+        "stdout": _redact_text(result.get("stdout", ""), secrets),
+        "stderr": _redact_text(result.get("stderr", ""), secrets),
+        "duration_ms": result.get("duration_ms", 0),
+        "timed_out": result.get("timed_out", False),
+    }
+
+
+@dataclass
+class RemoteWorkerExecutor:
+    client: RemoteWorkerClient
+    checkout: RemoteWorkerCheckout
+    command_runner: RemoteWorkerCommandRunner
+
+    def run_once(self, config: RemoteWorkerConfig) -> dict[str, Any]:
+        lease = self.client.claim(config)
+        lease_id = lease["lease_id"]
+        payload = self.client.payload(lease_id, config.worker_id, config.callback_token)
+        first_heartbeat = self.client.heartbeat(
+            lease_id,
+            config.worker_id,
+            config.callback_token,
+        )
+        if first_heartbeat.get("cancel_requested") is True:
+            return self._complete_cancelled(config, lease_id)
+        repo_path = self.checkout.checkout(payload)
+        execution = self.command_runner.run(payload, repo_path)
+        second_heartbeat = self.client.heartbeat(
+            lease_id,
+            config.worker_id,
+            config.callback_token,
+        )
+        if second_heartbeat.get("cancel_requested") is True:
+            execution = {
+                **execution,
+                "status": "failed",
+                "failure_reason": "cancelled",
+                "test_result": execution.get("test_result", "not_run"),
+            }
+        secrets = [
+            payload.get("clone_token", ""),
+            config.callback_token,
+            *[str(value) for value in payload.get("env", {}).values()],
+        ]
+        artifact_refs = self._upload_artifacts(config, lease_id, execution, secrets)
+        completion = self._completion_payload(execution, artifact_refs, secrets)
+        return self.client.complete(
+            lease_id,
+            config.worker_id,
+            config.callback_token,
+            {"result": completion},
+        )
+
+    def _complete_cancelled(
+        self,
+        config: RemoteWorkerConfig,
+        lease_id: str,
+    ) -> dict[str, Any]:
+        return self.client.complete(
+            lease_id,
+            config.worker_id,
+            config.callback_token,
+            {
+                "result": {
+                    "status": "failed",
+                    "runner_kind": "aliyun_eci",
+                    "base_sha": None,
+                    "head_sha": None,
+                    "worktree_ref": None,
+                    "summary": "Remote worker cancelled before checkout.",
+                    "files_changed": [],
+                    "tests_run": [],
+                    "test_result": "not_run",
+                    "risks": [],
+                    "diff_text": "",
+                    "artifact_refs": [],
+                    "command_results": [],
+                    "test_command_results": [],
+                    "failure_reason": "cancelled",
+                }
+            },
+        )
+
+    def _upload_artifacts(
+        self,
+        config: RemoteWorkerConfig,
+        lease_id: str,
+        execution: dict[str, Any],
+        secrets: list[str],
+    ) -> list[dict[str, Any]]:
+        command_results = [
+            _redacted_command_result(result, secrets)
+            for result in execution.get("command_results", [])
+        ]
+        test_results = [
+            _redacted_command_result(result, secrets)
+            for result in execution.get("test_command_results", [])
+        ]
+        uploads = [
+            ("diff", execution.get("diff_text", ""), "text/x-diff"),
+            (
+                "command_result",
+                json.dumps(command_results, sort_keys=True),
+                "application/json",
+            ),
+            (
+                "test_result",
+                json.dumps(test_results, sort_keys=True),
+                "application/json",
+            ),
+            (
+                "log",
+                _redact_text(execution.get("summary", ""), secrets),
+                "text/plain",
+            ),
+        ]
+        artifact_refs: list[dict[str, Any]] = []
+        for kind, content, content_type in uploads:
+            artifact_refs.append(
+                self.client.upload_artifact(
+                    lease_id,
+                    config.worker_id,
+                    config.callback_token,
+                    kind=kind,
+                    content=content,
+                    content_type=content_type,
+                )
+            )
+        manifest = {
+            "cloud_run_id": config.cloud_run_id,
+            "artifacts": artifact_refs,
+            "status": execution.get("status"),
+            "failure_reason": execution.get("failure_reason"),
+        }
+        artifact_refs.append(
+            self.client.upload_artifact(
+                lease_id,
+                config.worker_id,
+                config.callback_token,
+                kind="manifest",
+                content=json.dumps(manifest, sort_keys=True),
+                content_type="application/json",
+            )
+        )
+        return artifact_refs
+
+    def _completion_payload(
+        self,
+        execution: dict[str, Any],
+        artifact_refs: list[dict[str, Any]],
+        secrets: list[str],
+    ) -> dict[str, Any]:
+        return {
+            "status": execution.get("status", "failed"),
+            "runner_kind": execution.get("runner_kind", "aliyun_eci"),
+            "base_sha": execution.get("base_sha"),
+            "head_sha": execution.get("head_sha"),
+            "worktree_ref": execution.get("worktree_ref"),
+            "summary": _redact_text(execution.get("summary", ""), secrets),
+            "files_changed": execution.get("files_changed", []),
+            "tests_run": execution.get("tests_run", []),
+            "test_result": execution.get("test_result", "not_run"),
+            "risks": execution.get("risks", []),
+            "diff_text": "",
+            "artifact_refs": artifact_refs,
+            "command_results": [
+                _redacted_command_result(result, secrets)
+                for result in execution.get("command_results", [])
+            ],
+            "test_command_results": [
+                _redacted_command_result(result, secrets)
+                for result in execution.get("test_command_results", [])
+            ],
+            "failure_reason": execution.get("failure_reason"),
+        }
+
+
 def run_remote_worker_once(
     config: RemoteWorkerConfig,
     *,
     client: RemoteWorkerClient | None = None,
+    checkout: RemoteWorkerCheckout | None = None,
+    command_runner: RemoteWorkerCommandRunner | None = None,
 ) -> dict[str, Any]:
     resolved_client = client or HttpRemoteWorkerClient(config.api_base_url)
+    if checkout is not None and command_runner is not None:
+        return RemoteWorkerExecutor(
+            client=resolved_client,
+            checkout=checkout,
+            command_runner=command_runner,
+        ).run_once(config)
     lease = resolved_client.claim(config)
     lease_id = lease["lease_id"]
     resolved_client.heartbeat(lease_id, config.worker_id, config.callback_token)
