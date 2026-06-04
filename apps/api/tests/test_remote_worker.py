@@ -168,3 +168,47 @@ def test_http_remote_worker_client_sends_callback_token() -> None:
         "callback-token-1",
         "callback-token-1",
     ]
+
+
+def test_http_remote_worker_client_fetches_payload_with_callback_token() -> None:
+    class RecordingHttpRemoteWorkerClient(HttpRemoteWorkerClient):
+        def __init__(self) -> None:
+            super().__init__("https://api.example.test")
+            self.requests: list[tuple[str, dict]] = []
+
+        def _post_json(self, path: str, payload: dict) -> dict:
+            self.requests.append((path, payload))
+            return {
+                "cloud_run_id": "cloud_run_1",
+                "task_id": "task_1",
+                "title": "Task",
+                "description": "Description",
+                "repo_url": "https://github.com/example/demo",
+                "github_owner": "example",
+                "github_repo": "demo",
+                "base_branch": "main",
+                "head_branch": "ai-scdc/cloud-run",
+                "allowed_paths": ["AI_SCDC_CLOUD_RUN.md"],
+                "required_tests": ["pytest -q"],
+                "patch_command": {
+                    "key": "patch",
+                    "label": "Patch",
+                    "command": "python patch.py",
+                    "timeout_seconds": 120,
+                },
+                "test_commands": [],
+                "env": {},
+                "network_enabled": True,
+                "clone_token": "ghp_private_clone_token1234",
+            }
+
+    client = RecordingHttpRemoteWorkerClient()
+    payload = client.payload("lease_1", "worker_1", "callback-token-1")
+
+    assert payload["clone_token"] == "ghp_private_clone_token1234"
+    assert client.requests == [
+        (
+            "/cloud-run-worker/leases/lease_1/payload",
+            {"worker_id": "worker_1", "callback_token": "callback-token-1"},
+        )
+    ]

@@ -29,6 +29,14 @@ class RemoteWorkerClient(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def payload(
+        self,
+        lease_id: str,
+        worker_id: str,
+        callback_token: str,
+    ) -> dict[str, Any]:
+        ...
+
     def upload_artifact(
         self,
         lease_id: str,
@@ -80,6 +88,20 @@ class HttpRemoteWorkerClient:
                 "worker_id": worker_id,
                 "callback_token": callback_token,
                 "lease_seconds": 300,
+            },
+        )
+
+    def payload(
+        self,
+        lease_id: str,
+        worker_id: str,
+        callback_token: str,
+    ) -> dict[str, Any]:
+        return self._post_json(
+            f"/cloud-run-worker/leases/{lease_id}/payload",
+            {
+                "worker_id": worker_id,
+                "callback_token": callback_token,
             },
         )
 
