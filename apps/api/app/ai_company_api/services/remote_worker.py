@@ -954,12 +954,21 @@ def run_remote_worker_once(
     command_runner: RemoteWorkerCommandRunner | None = None,
 ) -> dict[str, Any]:
     resolved_client = client or HttpRemoteWorkerClient(config.api_base_url)
-    if checkout is not None and command_runner is not None:
-        return RemoteWorkerExecutor(
-            client=resolved_client,
-            checkout=checkout,
-            command_runner=command_runner,
-        ).run_once(config)
+    resolved_checkout = checkout or RemoteWorkerGitCheckout()
+    resolved_command_runner = command_runner or RemoteWorkerCommandRunnerImpl()
+    return RemoteWorkerExecutor(
+        client=resolved_client,
+        checkout=resolved_checkout,
+        command_runner=resolved_command_runner,
+    ).run_once(config)
+
+
+def run_deterministic_remote_worker_once(
+    config: RemoteWorkerConfig,
+    *,
+    client: RemoteWorkerClient | None = None,
+) -> dict[str, Any]:
+    resolved_client = client or HttpRemoteWorkerClient(config.api_base_url)
     lease = resolved_client.claim(config)
     lease_id = lease["lease_id"]
     resolved_client.heartbeat(lease_id, config.worker_id, config.callback_token)

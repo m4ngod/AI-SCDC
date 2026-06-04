@@ -7,6 +7,7 @@ from ai_company_api.services.remote_worker import (
     HttpRemoteWorkerClient,
     RemoteWorkerConfig,
     config_from_env,
+    run_deterministic_remote_worker_once,
     run_remote_worker_once,
 )
 
@@ -251,7 +252,7 @@ def test_remote_worker_uploads_diff_ref_and_completes() -> None:
         callback_token="callback-token-1",
     )
 
-    result = run_remote_worker_once(config, client=client)
+    result = run_deterministic_remote_worker_once(config, client=client)
 
     assert result["cloud_run"]["status"] == "patch_ready"
     assert client.claimed_config == config
@@ -271,6 +272,90 @@ def test_remote_worker_uploads_diff_ref_and_completes() -> None:
     assert completion["runner_kind"] == "aliyun_eci"
     assert completion["worktree_ref"] == "aliyun-eci://cloud_run_1"
     assert completion["files_changed"] == ["AI_SCDC_ALIYUN_ECI.md"]
+
+
+def test_run_remote_worker_once_uses_real_executor_when_components_are_supplied() -> None:
+    client = FakeWorkerClient()
+    config = RemoteWorkerConfig(
+        api_base_url="https://api.example.test",
+        cloud_run_id="cloud_run_1",
+        worker_id="worker_1",
+        queue_provider="aliyun_mns",
+        storage_provider="aliyun_oss",
+        callback_token="callback-token-1",
+    )
+
+    result = run_remote_worker_once(
+        config,
+        client=client,
+        checkout=FakeCheckout(),
+        command_runner=FakeCommandRunner(),
+    )
+
+    assert result["cloud_run"]["status"] == "patch_ready"
+    assert client.completed is not None
+    assert client.completed["result"]["artifact_refs"][0]["kind"] == "diff"
+
+
+def test_run_remote_worker_once_uses_real_executor_with_default_components(
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import remote_worker
+
+    created: dict[str, object] = {}
+
+    class RecordingHttpRemoteWorkerClient(FakeWorkerClient):
+        def __init__(self, api_base_url: str) -> None:
+            super().__init__()
+            self.api_base_url = api_base_url
+            created["client"] = self
+
+    class RecordingCheckout:
+        def __init__(self) -> None:
+            created["checkout"] = self
+
+        def checkout(self, payload: dict) -> str:
+            return "/tmp/repo"
+
+    class RecordingCommandRunner:
+        def __init__(self) -> None:
+            created["command_runner"] = self
+
+        def run(self, payload: dict, repo_path: str) -> dict:
+            return FakeCommandRunner().run(payload, repo_path)
+
+    monkeypatch.setattr(
+        remote_worker,
+        "HttpRemoteWorkerClient",
+        RecordingHttpRemoteWorkerClient,
+    )
+    monkeypatch.setattr(remote_worker, "RemoteWorkerGitCheckout", RecordingCheckout)
+    monkeypatch.setattr(
+        remote_worker,
+        "RemoteWorkerCommandRunnerImpl",
+        RecordingCommandRunner,
+    )
+    config = RemoteWorkerConfig(
+        api_base_url="https://api.example.test",
+        cloud_run_id="cloud_run_1",
+        worker_id="worker_1",
+        queue_provider="aliyun_mns",
+        storage_provider="aliyun_oss",
+        callback_token="callback-token-1",
+    )
+
+    result = remote_worker.run_remote_worker_once(config)
+
+    assert result["cloud_run"]["status"] == "patch_ready"
+    assert isinstance(created["client"], RecordingHttpRemoteWorkerClient)
+    assert isinstance(created["checkout"], RecordingCheckout)
+    assert isinstance(created["command_runner"], RecordingCommandRunner)
+    client = created["client"]
+    assert isinstance(client, RecordingHttpRemoteWorkerClient)
+    assert client.api_base_url == "https://api.example.test"
+    assert len(client.heartbeats) == 2
+    assert client.completed is not None
+    assert client.completed["result"]["worktree_ref"] == "remote-worker://cloud_run_1"
 
 
 def test_remote_worker_fetches_payload_runs_components_uploads_artifacts_and_completes() -> None:
@@ -835,6 +920,31 @@ def test_remote_worker_command_runner_cancels_before_tests_with_real_runner(
     assert completion["failure_reason"] == "cancelled"
     assert completion["test_result"] == "not_run"
     assert completion["files_changed"] == ["AI_SCDC_CLOUD_RUN.md"]
+
+
+def test_remote_worker_stops_at_command_boundary_when_cancel_requested() -> None:
+    from ai_company_api.services.remote_worker import RemoteWorkerExecutor
+
+    client = FakeWorkerClient(cancel_on_second_heartbeat=True)
+    config = RemoteWorkerConfig(
+        api_base_url="https://api.example.test",
+        cloud_run_id="cloud_run_1",
+        worker_id="worker_1",
+        queue_provider="aliyun_mns",
+        storage_provider="aliyun_oss",
+        callback_token="callback-token-1",
+    )
+    executor = RemoteWorkerExecutor(
+        client=client,
+        checkout=FakeCheckout(),
+        command_runner=FakeCommandRunner(),
+    )
+
+    result = executor.run_once(config)
+
+    assert result["cloud_run"]["status"] == "failed"
+    assert client.completed is not None
+    assert client.completed["result"]["failure_reason"] == "cancelled"
 
 
 def test_remote_worker_executor_completes_repo_checkout_failure() -> None:
