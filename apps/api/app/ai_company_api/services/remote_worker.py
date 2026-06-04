@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -44,6 +45,25 @@ class RemoteProcessResult:
 
 
 ProcessRun = Callable[..., Any]
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_CHILD_PROCESS_ENV_ALLOWLIST = {
+    "COMSPEC",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LOGNAME",
+    "PATH",
+    "PATHEXT",
+    "SHELL",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USER",
+    "WINDIR",
+}
 
 
 class RemoteWorkerClient(Protocol):
@@ -232,15 +252,18 @@ class RemoteWorkerGitCheckout:
         base_branch = str(payload.get("base_branch") or "main")
         head_branch = str(payload["head_branch"])
         clone_token = str(payload.get("clone_token") or "")
-        run_dir = self._workspace_root / cloud_run_id
+        workspace_root = self._workspace_root.resolve()
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        run_dir = _safe_workspace_child(workspace_root, cloud_run_id)
         repo_dir = run_dir / "repo"
 
         shutil.rmtree(run_dir, ignore_errors=True)
         repo_dir.mkdir(parents=True, exist_ok=True)
 
-        credentials_dir = self._create_askpass_files(run_dir, clone_token)
-        env = self._checkout_env(credentials_dir / "askpass.sh", clone_token)
+        credentials_dir: Path | None = None
         try:
+            credentials_dir = self._create_askpass_files(run_dir, clone_token)
+            env = self._checkout_env(credentials_dir / "askpass.sh")
             self._must_run(
                 ["git", "clone", "--", repo_url, "."],
                 cwd=repo_dir,
@@ -260,7 +283,9 @@ class RemoteWorkerGitCheckout:
                 timeout=_timeout_seconds(payload.get("checkout_timeout_seconds"), 120),
             )
         finally:
-            shutil.rmtree(credentials_dir, ignore_errors=True)
+            if credentials_dir is not None:
+                shutil.rmtree(credentials_dir, ignore_errors=True)
+            _cleanup_credential_dirs(run_dir)
 
         return str(repo_dir)
 
@@ -295,13 +320,8 @@ class RemoteWorkerGitCheckout:
     def _checkout_env(
         self,
         askpass_path: Path,
-        clone_token: str,
     ) -> dict[str, str]:
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if not clone_token or clone_token not in value
-        }
+        env = _base_child_process_env()
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_ASKPASS"] = str(askpass_path)
         return env
@@ -358,6 +378,9 @@ class RemoteWorkerCommandRunnerImpl:
         artifact_results: dict[str, RemoteProcessResult] = {}
         if failure_reason is None:
             artifact_results = self._capture_artifacts(repo, process_env, payload)
+            command_results.extend(
+                result.as_dict() for result in artifact_results.values()
+            )
             if any(
                 result.timed_out or result.exit_code != 0
                 for result in artifact_results.values()
@@ -370,18 +393,17 @@ class RemoteWorkerCommandRunnerImpl:
                 diff_text = artifact_results["diff_text"].stdout
                 base_sha = artifact_results["base_sha"].stdout.strip() or None
                 head_sha = artifact_results["head_sha"].stdout.strip() or None
-                disallowed_paths = self._disallowed_paths(
-                    files_changed,
-                    payload.get("allowed_paths", []),
-                )
-                if disallowed_paths:
-                    failure_reason = "artifact_capture_failed"
-                    risks.extend(
-                        f"Changed file outside allowed paths: {path}"
-                        for path in disallowed_paths
-                    )
-                elif not files_changed or not diff_text.strip():
+                if not files_changed or not diff_text.strip():
                     failure_reason = "no_patch_produced"
+                else:
+                    try:
+                        _ensure_files_allowed(
+                            files_changed,
+                            [str(path) for path in payload.get("allowed_paths") or []],
+                        )
+                    except RuntimeError as exc:
+                        failure_reason = "artifact_capture_failed"
+                        risks.append(str(exc))
 
         if failure_reason is None:
             test_commands = list(payload.get("test_commands") or [])
@@ -436,11 +458,12 @@ class RemoteWorkerCommandRunnerImpl:
         payload: dict[str, Any],
     ) -> dict[str, RemoteProcessResult]:
         base_branch = str(payload.get("base_branch") or "main")
+        base_ref = shlex.quote(f"origin/{base_branch}")
         commands = {
             "add_intent": "git add -N .",
             "diff_name_only": "git diff --name-only",
             "diff_text": "git diff --no-ext-diff",
-            "base_sha": f"git rev-parse origin/{base_branch}",
+            "base_sha": f"git rev-parse {base_ref}",
             "head_sha": "git rev-parse HEAD",
         }
         return {
@@ -482,21 +505,11 @@ class RemoteWorkerCommandRunnerImpl:
             )
 
     def _process_env(self, payload_env: dict[str, Any]) -> dict[str, str]:
-        env = dict(os.environ)
+        env = _base_child_process_env()
         for key, value in payload_env.items():
-            if value is not None:
+            if value is not None and _is_safe_env_name(str(key)):
                 env[str(key)] = str(value)
         return env
-
-    def _disallowed_paths(
-        self,
-        files_changed: list[str],
-        allowed_paths: list[Any],
-    ) -> list[str]:
-        if not allowed_paths:
-            return []
-        allowed = {str(path) for path in allowed_paths}
-        return [path for path in files_changed if path not in allowed]
 
     def _summary(
         self,
@@ -513,13 +526,56 @@ class RemoteWorkerCommandRunnerImpl:
 
 def _safe_path_segment(value: Any) -> str:
     text = str(value or "cloud-run").strip()
-    segment = "".join(
-        character
-        if character.isalnum() or character in {"-", "_", "."}
-        else "_"
-        for character in text
-    )
+    segment = re.sub(r"[^A-Za-z0-9_.-]+", "-", text).strip(".-")
     return segment or "cloud-run"
+
+
+def _safe_workspace_child(workspace_root: Path, segment: str) -> Path:
+    candidate = (workspace_root / segment).resolve()
+    try:
+        candidate.relative_to(workspace_root)
+    except ValueError as exc:
+        raise RuntimeError("repo_checkout_failed") from exc
+    if candidate == workspace_root:
+        raise RuntimeError("repo_checkout_failed")
+    return candidate
+
+
+def _cleanup_credential_dirs(run_dir: Path) -> None:
+    if not run_dir.exists():
+        return
+    for path in run_dir.glob(".git-credentials-*"):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _base_child_process_env() -> dict[str, str]:
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if value and key.upper() in _CHILD_PROCESS_ENV_ALLOWLIST
+    }
+
+
+def _is_safe_env_name(name: str) -> bool:
+    return _ENV_NAME_RE.fullmatch(name) is not None
+
+
+def _ensure_files_allowed(files_changed: list[str], allowed_paths: list[str]) -> None:
+    from ai_company_worker.local_runner import (
+        LocalRunnerError,
+        ensure_changed_files_allowed,
+    )
+
+    try:
+        ensure_changed_files_allowed(files_changed, allowed_paths)
+    except LocalRunnerError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _timeout_seconds(
@@ -586,6 +642,41 @@ def _redacted_string_list(values: list[Any], secrets: list[str]) -> list[Any]:
     ]
 
 
+def _payload_secrets(
+    payload: dict[str, Any],
+    callback_token: str,
+) -> list[str]:
+    payload_env = payload.get("env") or {}
+    return [
+        str(secret)
+        for secret in [
+            payload.get("clone_token", ""),
+            callback_token,
+            *list(payload_env.values()),
+        ]
+        if secret
+    ]
+
+
+def _failed_execution(failure_reason: str) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "runner_kind": "aliyun_eci",
+        "base_sha": None,
+        "head_sha": None,
+        "worktree_ref": None,
+        "summary": f"Remote worker failed: {failure_reason}.",
+        "files_changed": [],
+        "tests_run": [],
+        "test_result": "not_run",
+        "risks": [],
+        "diff_text": "",
+        "command_results": [],
+        "test_command_results": [],
+        "failure_reason": failure_reason,
+    }
+
+
 @dataclass
 class RemoteWorkerExecutor:
     client: RemoteWorkerClient
@@ -596,6 +687,7 @@ class RemoteWorkerExecutor:
         lease = self.client.claim(config)
         lease_id = lease["lease_id"]
         payload = self.client.payload(lease_id, config.worker_id, config.callback_token)
+        secrets = _payload_secrets(payload, config.callback_token)
         first_heartbeat = self.client.heartbeat(
             lease_id,
             config.worker_id,
@@ -603,8 +695,24 @@ class RemoteWorkerExecutor:
         )
         if first_heartbeat.get("cancel_requested") is True:
             return self._complete_cancelled(config, lease_id)
-        repo_path = self.checkout.checkout(payload)
-        execution = self.command_runner.run(payload, repo_path)
+        try:
+            repo_path = self.checkout.checkout(payload)
+        except RuntimeError as exc:
+            failure_reason = (
+                "repo_checkout_failed"
+                if str(exc) == "repo_checkout_failed"
+                else "worker_execution_failed"
+            )
+            execution = _failed_execution(failure_reason)
+            return self._complete_execution(config, lease_id, execution, secrets)
+        except Exception:
+            execution = _failed_execution("worker_execution_failed")
+            return self._complete_execution(config, lease_id, execution, secrets)
+        try:
+            execution = self.command_runner.run(payload, repo_path)
+        except Exception:
+            execution = _failed_execution("worker_execution_failed")
+            return self._complete_execution(config, lease_id, execution, secrets)
         second_heartbeat = self.client.heartbeat(
             lease_id,
             config.worker_id,
@@ -617,11 +725,15 @@ class RemoteWorkerExecutor:
                 "failure_reason": "cancelled",
                 "test_result": execution.get("test_result", "not_run"),
             }
-        secrets = [
-            payload.get("clone_token", ""),
-            config.callback_token,
-            *[str(value) for value in payload.get("env", {}).values()],
-        ]
+        return self._complete_execution(config, lease_id, execution, secrets)
+
+    def _complete_execution(
+        self,
+        config: RemoteWorkerConfig,
+        lease_id: str,
+        execution: dict[str, Any],
+        secrets: list[str],
+    ) -> dict[str, Any]:
         artifact_refs = self._upload_artifacts(config, lease_id, execution, secrets)
         completion = self._completion_payload(execution, artifact_refs, secrets)
         return self.client.complete(
