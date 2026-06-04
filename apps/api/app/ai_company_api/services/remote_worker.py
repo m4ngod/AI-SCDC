@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -407,7 +408,9 @@ class RemoteWorkerCommandRunnerImpl:
 
         if failure_reason is None:
             test_commands = list(payload.get("test_commands") or [])
-            if test_commands:
+            if _cancel_requested(payload):
+                failure_reason = "cancelled"
+            elif test_commands:
                 for test_command in test_commands:
                     command = str(test_command.get("command") or "").strip()
                     if not command:
@@ -567,15 +570,48 @@ def _is_safe_env_name(name: str) -> bool:
 
 
 def _ensure_files_allowed(files_changed: list[str], allowed_paths: list[str]) -> None:
-    from ai_company_worker.local_runner import (
-        LocalRunnerError,
-        ensure_changed_files_allowed,
-    )
+    if not allowed_paths:
+        raise RuntimeError("Task has no allowed_paths for remote worker changes")
 
-    try:
-        ensure_changed_files_allowed(files_changed, allowed_paths)
-    except LocalRunnerError as exc:
-        raise RuntimeError(str(exc)) from exc
+    for file_changed in files_changed:
+        normalized_file = _normalize_path_pattern(file_changed)
+        if not any(
+            _path_matches_allowed(normalized_file, allowed_path)
+            for allowed_path in allowed_paths
+        ):
+            raise RuntimeError(
+                f"Changed file is outside allowed_paths: {normalized_file}"
+            )
+
+
+def _normalize_path_pattern(path_pattern: Any) -> str:
+    return str(path_pattern).replace("\\", "/").strip()
+
+
+def _is_safe_relative_pattern(path_pattern: str) -> bool:
+    if path_pattern == "":
+        return False
+    if path_pattern.startswith("/") or re.match(r"^[A-Za-z]:", path_pattern):
+        return False
+    parts = [part for part in path_pattern.split("/") if part not in {"", "."}]
+    return ".." not in parts
+
+
+def _path_matches_allowed(file_changed: str, allowed_path: str) -> bool:
+    normalized_allowed = _normalize_path_pattern(allowed_path)
+    if not _is_safe_relative_pattern(normalized_allowed):
+        return False
+    if normalized_allowed.endswith("/**"):
+        prefix = normalized_allowed.removesuffix("/**")
+        return file_changed == prefix or file_changed.startswith(f"{prefix}/")
+    return fnmatch.fnmatchcase(file_changed, normalized_allowed)
+
+
+def _cancel_requested(payload: dict[str, Any]) -> bool:
+    callback = payload.get("_remote_worker_cancel_requested")
+    if not callable(callback):
+        return False
+    return callback() is True
 
 
 def _timeout_seconds(
@@ -709,9 +745,18 @@ class RemoteWorkerExecutor:
             execution = _failed_execution("worker_execution_failed")
             return self._complete_execution(config, lease_id, execution, secrets)
         try:
-            execution = self.command_runner.run(payload, repo_path)
+            runner_payload = {
+                **payload,
+                "_remote_worker_cancel_requested": lambda: self._cancel_requested(
+                    config,
+                    lease_id,
+                ),
+            }
+            execution = self.command_runner.run(runner_payload, repo_path)
         except Exception:
             execution = _failed_execution("worker_execution_failed")
+            return self._complete_execution(config, lease_id, execution, secrets)
+        if execution.get("failure_reason") == "cancelled":
             return self._complete_execution(config, lease_id, execution, secrets)
         second_heartbeat = self.client.heartbeat(
             lease_id,
@@ -726,6 +771,18 @@ class RemoteWorkerExecutor:
                 "test_result": execution.get("test_result", "not_run"),
             }
         return self._complete_execution(config, lease_id, execution, secrets)
+
+    def _cancel_requested(
+        self,
+        config: RemoteWorkerConfig,
+        lease_id: str,
+    ) -> bool:
+        heartbeat = self.client.heartbeat(
+            lease_id,
+            config.worker_id,
+            config.callback_token,
+        )
+        return heartbeat.get("cancel_requested") is True
 
     def _complete_execution(
         self,

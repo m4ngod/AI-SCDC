@@ -9,6 +9,10 @@ ARG PIP_RETRIES=10
 COPY pyproject.toml /app/apps/api/pyproject.toml
 COPY app /app/apps/api/app
 
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install \
     --no-cache-dir \
     --index-url "$PIP_INDEX_URL" \

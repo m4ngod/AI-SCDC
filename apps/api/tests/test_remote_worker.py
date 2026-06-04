@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -226,6 +227,17 @@ def fake_completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
         (),
         {"returncode": returncode, "stdout": stdout, "stderr": stderr},
     )()
+
+
+def test_remote_worker_dockerfile_installs_git() -> None:
+    dockerfile = Path("apps/api/Dockerfile.remote-worker").read_text(
+        encoding="utf-8",
+    )
+
+    assert "apt-get update" in dockerfile
+    assert "apt-get install" in dockerfile
+    assert "git" in dockerfile
+    assert "rm -rf /var/lib/apt/lists/*" in dockerfile
 
 
 def test_remote_worker_uploads_diff_ref_and_completes() -> None:
@@ -700,6 +712,40 @@ def test_remote_worker_command_runner_rejects_empty_allowed_paths(
     assert result["files_changed"] == ["README.md"]
 
 
+def test_remote_worker_allowed_paths_does_not_import_ai_company_worker(
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import remote_worker
+
+    class BlockWorkerImport:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "ai_company_worker" or fullname.startswith(
+                "ai_company_worker."
+            ):
+                raise AssertionError(f"unexpected import: {fullname}")
+            return None
+
+    for module_name in list(sys.modules):
+        if module_name == "ai_company_worker" or module_name.startswith(
+            "ai_company_worker."
+        ):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+    blocker = BlockWorkerImport()
+    monkeypatch.setattr(sys, "meta_path", [blocker, *sys.meta_path])
+
+    remote_worker._ensure_files_allowed(["apps/api/app.py"], ["apps/api/**"])
+
+
+def test_remote_worker_allowed_paths_reject_unsafe_patterns() -> None:
+    from ai_company_api.services import remote_worker
+
+    with pytest.raises(RuntimeError, match="outside allowed_paths"):
+        remote_worker._ensure_files_allowed(
+            ["apps/api/app.py"],
+            ["", "/apps/api/**", "C:/repo/apps/api/**", "../apps/api/**"],
+        )
+
+
 def test_remote_worker_command_runner_quotes_base_branch_for_rev_parse(
     tmp_path: Path,
 ) -> None:
@@ -737,6 +783,58 @@ def test_remote_worker_command_runner_quotes_base_branch_for_rev_parse(
         call["args"][-1] for call in calls if "rev-parse" in call["args"][-1]
     ]
     assert "git rev-parse 'origin/main; echo injected'" in rev_parse_commands
+
+
+def test_remote_worker_command_runner_cancels_before_tests_with_real_runner(
+    tmp_path: Path,
+) -> None:
+    from ai_company_api.services.remote_worker import (
+        RemoteWorkerCommandRunnerImpl,
+        RemoteWorkerExecutor,
+    )
+
+    calls: list[str] = []
+
+    def fake_run(args, cwd=None, env=None, timeout=None):
+        command = args[-1]
+        calls.append(command)
+        stdout = "ok"
+        if "diff --name-only" in command:
+            stdout = "AI_SCDC_CLOUD_RUN.md\n"
+        elif "git diff --no-ext-diff" in command:
+            stdout = (
+                "diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n"
+                "+ok\n"
+            )
+        elif "rev-parse" in command:
+            stdout = "abc123\n"
+        return fake_completed(stdout=stdout)
+
+    client = FakeWorkerClient(cancel_on_second_heartbeat=True)
+    config = RemoteWorkerConfig(
+        api_base_url="https://api.example.test",
+        cloud_run_id="cloud_run_1",
+        worker_id="worker_1",
+        queue_provider="aliyun_mns",
+        storage_provider="aliyun_oss",
+        callback_token="callback-token-1",
+    )
+    executor = RemoteWorkerExecutor(
+        client=client,
+        checkout=FakeCheckout(),
+        command_runner=RemoteWorkerCommandRunnerImpl(process_run=fake_run),
+    )
+
+    result = executor.run_once(config)
+
+    assert "pytest -q" not in calls
+    assert len(client.heartbeats) == 2
+    assert result["cloud_run"]["status"] == "failed"
+    assert client.completed is not None
+    completion = client.completed["result"]
+    assert completion["failure_reason"] == "cancelled"
+    assert completion["test_result"] == "not_run"
+    assert completion["files_changed"] == ["AI_SCDC_CLOUD_RUN.md"]
 
 
 def test_remote_worker_executor_completes_repo_checkout_failure() -> None:
