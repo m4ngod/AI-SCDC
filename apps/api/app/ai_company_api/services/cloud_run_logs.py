@@ -1,6 +1,7 @@
 import base64
 import binascii
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -14,6 +15,9 @@ from ai_company_api.schemas.api import (
     CloudRunLogWindowEntryRead,
     CloudRunLogWindowRead,
 )
+
+
+BASE64URL_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,8 @@ def list_cloud_run_log_window(
 def _decode_cursor(after: str | None) -> LogWindowCursor | None:
     if after is None:
         return None
+    if not BASE64URL_CURSOR_PATTERN.fullmatch(after):
+        raise HTTPException(status_code=400, detail="Invalid log cursor")
 
     try:
         padding = "=" * (-len(after) % 4)

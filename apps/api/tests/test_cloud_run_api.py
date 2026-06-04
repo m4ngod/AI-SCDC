@@ -4387,6 +4387,10 @@ def test_cloud_run_log_window_returns_bounded_pages_without_duplicates(
 
 
 def test_cloud_run_log_window_rejects_invalid_cursor(tmp_path: Path) -> None:
+    from fastapi import HTTPException
+
+    from ai_company_api.services.cloud_run_logs import _decode_cursor, _encode_cursor
+
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
@@ -4398,14 +4402,68 @@ def test_cloud_run_log_window_rejects_invalid_cursor(tmp_path: Path) -> None:
         f"/tasks/{task_id}/cloud-runs",
         json={"repo_id": repo_id},
     ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        session.add(
+            CloudRunLogEntry(
+                id="xx",
+                cloud_run_id=cloud_run.id,
+                workspace_id=cloud_run.workspace_id,
+                event="invalid_cursor_extra",
+                message="Extra log for cursor generation.",
+                created_at=cloud_run.created_at + timedelta(seconds=1),
+            )
+        )
+        session.add(
+            CloudRunLogEntry(
+                id="yy",
+                cloud_run_id=cloud_run.id,
+                workspace_id=cloud_run.workspace_id,
+                event="invalid_cursor_more",
+                message="Additional log to force another page.",
+                created_at=cloud_run.created_at + timedelta(seconds=2),
+            )
+        )
+        session.commit()
 
-    response = client.get(
-        f"/cloud-runs/{queued['id']}/logs/window",
-        params={"after": "not-a-valid-cursor"},
+    first_response = client.get(f"/cloud-runs/{queued['id']}/logs/window?limit=2")
+    assert first_response.status_code == 200
+    next_cursor = first_response.json()["next_cursor"]
+    assert next_cursor
+
+    for invalid_cursor in [
+        "not-a-valid-cursor",
+        f"{next_cursor}!",
+        f"{next_cursor}$",
+    ]:
+        response = client.get(
+            f"/cloud-runs/{queued['id']}/logs/window",
+            params={"after": invalid_cursor},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid log cursor"
+
+    legal_control_plane_cursor = _encode_cursor(
+        {
+            "source": "control_plane",
+            "created_at": datetime(2026, 6, 5, tzinfo=timezone.utc).isoformat(),
+            "id": "xx",
+            "stream_line": None,
+        }
     )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Invalid log cursor"
+    for invalid_cursor in [
+        f"{legal_control_plane_cursor}!",
+        f"{legal_control_plane_cursor}$",
+    ]:
+        try:
+            _decode_cursor(invalid_cursor)
+        except HTTPException as exc:
+            assert exc.status_code == 400
+            assert exc.detail == "Invalid log cursor"
+        else:
+            raise AssertionError("Expected malformed log cursor to be rejected")
 
 
 def test_docker_cloud_run_redacts_github_token_from_persisted_results(
