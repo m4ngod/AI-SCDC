@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from datetime import timezone
 import os
 
 from fastapi import HTTPException, status
 from sqlmodel import Session, select
 
-from ai_company_api.models.entities import CloudRun, SandboxProfile, Task
+from ai_company_api.models.entities import CloudRun, SandboxProfile, Task, utc_now
 from ai_company_api.schemas.api import (
     RemoteWorkerCommandPayload,
     RemoteWorkerPayloadRead,
@@ -101,6 +102,19 @@ def _get_current_worker_cloud_run_or_409(
             detail="Cloud run lease is not current",
         )
     if cloud_run.status != "running":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cloud run lease is not current",
+        )
+    if cloud_run.completed_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cloud run lease is not current",
+        )
+    lease_expires_at = cloud_run.lease_expires_at
+    if lease_expires_at is not None and lease_expires_at.tzinfo is None:
+        lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+    if lease_expires_at is None or lease_expires_at < utc_now():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cloud run lease is not current",
