@@ -734,10 +734,10 @@ completion callbacks. The raw callback token, token hash, Aliyun secrets, and
 queue receipts must not appear in API responses.
 
 Phase 11 remote workers fetch a protected execution payload after claiming a
-lease. The payload includes the selected sandbox profile commands and a
-run-scoped clone credential for the configured GitHub repository. The clone
-credential is sent only to the callback-token-authenticated worker and must not
-appear in API responses, logs, artifacts, or completion payloads.
+lease. The payload includes the selected sandbox profile commands and the
+repository's active clone credential, returned only through the
+callback-token-protected worker payload. The clone credential must not appear in
+API responses, logs, artifacts, or completion payloads.
 
 Cleanup after smoke:
 

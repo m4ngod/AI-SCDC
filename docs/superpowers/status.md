@@ -61,28 +61,31 @@ tests, README smoke instructions, and git history.
 
 ## Verification
 
-Latest Phase 11 focused verification during implementation:
+Latest Phase 11 final verification:
 
 ```bash
-pytest apps/api/tests/test_cloud_run_api.py -k "payload" -v
 pytest apps/api/tests/test_remote_worker.py -v
-pytest apps/api/tests/test_remote_worker.py apps/api/tests/test_cloud_run_api.py -k "payload or remote_worker or callback_token" -v
+pytest apps/api/tests/test_cloud_run_api.py -k "payload or callback_token or aliyun or artifact_ref or lease" -v
+pytest apps/api/tests
+pnpm typecheck
 git diff --check
+rg -n "ghp_|callback-token|AI_SCDC_CALLBACK_TOKEN|clone_token|AccessKey|ACCESS_KEY_SECRET" apps docs README.md
 ```
 
 Results:
 
-- `pytest apps/api/tests/test_cloud_run_api.py -k "payload" -v`: passed, 8
-  tests, 100 deselected, 1 existing Starlette/httpx warning.
-- `pytest apps/api/tests/test_remote_worker.py -v`: passed, 32 tests.
-- `pytest apps/api/tests/test_remote_worker.py apps/api/tests/test_cloud_run_api.py -k "payload or remote_worker or callback_token" -v`:
-  passed, 48 tests, 93 deselected, 1 existing Starlette/httpx warning.
-- Docs grep over `README.md`, `docs/architecture.md`, and
-  `docs/superpowers/status.md`: no hits for incomplete markers or fake secret
-  values.
-- `git diff --check`: passed with Git LF-to-CRLF working-copy warnings only.
-
-Task 9 final verification has not run in this status update.
+- `pytest apps/api/tests/test_remote_worker.py -v`: passed, 33 tests.
+- `pytest apps/api/tests/test_cloud_run_api.py -k "payload or callback_token or aliyun or artifact_ref or lease" -v`:
+  passed, 42 tests, 66 deselected, 1 existing Starlette/httpx warning.
+- `pytest apps/api/tests`: passed, 387 tests, 1 existing Starlette/httpx
+  warning.
+- `pnpm typecheck`: passed.
+- `git diff --check`: passed.
+- Secret scan hits were limited to environment variable names, schema/field
+  names, README placeholders, historical plan/spec examples, and fake test
+  values; no real credential values were found.
+- Task 8 scoped docs grep over `README.md`, `docs/architecture.md`, and
+  `docs/superpowers/status.md`: no hits for the Task 8 sentinel pattern.
 
 Previous Phase 10D verification:
 

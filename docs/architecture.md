@@ -180,10 +180,11 @@ boundaries.
 
 Phase 11 upgrades the Aliyun ECI remote worker from deterministic smoke output
 to a real execution skeleton. The worker claims a protected lease, fetches a
-callback-token-protected execution payload, clones the GitHub repository with a
-run-scoped clone credential, runs selected sandbox profile commands inside the
-worker container, captures diff and command/test output, uploads artifact refs,
-and completes the lease.
+callback-token-protected execution payload, clones the GitHub repository with
+the repository's active clone credential returned only through that protected
+worker payload, runs selected sandbox profile commands inside the worker
+container, captures diff and command/test output, uploads artifact refs, and
+completes the lease.
 
 Phase 11 does not add direct MNS receive/delete semantics, live log streaming,
 model-backed debugging, Git push, PR creation, automatic merge, production KMS,
