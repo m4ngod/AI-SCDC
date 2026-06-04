@@ -405,6 +405,11 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
       patch_artifact_id: null
     }),
     listCloudRunLogs: vi.fn().mockResolvedValue([]),
+    listCloudRunLogWindow: vi.fn().mockResolvedValue({
+      entries: [],
+      nextCursor: null,
+      hasMore: false
+    }),
     createPullRequest: vi.fn().mockResolvedValue({
       task: {
         ...mergeReadyTaskFixture(),

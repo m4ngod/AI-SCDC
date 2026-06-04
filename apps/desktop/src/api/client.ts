@@ -264,11 +264,6 @@ export type CloudRunLogWindowOptions = {
   includeStream?: boolean;
 };
 
-type ListCloudRunLogWindow = (
-  cloudRunId: string,
-  options?: CloudRunLogWindowOptions
-) => Promise<CloudRunLogWindowCard>;
-
 export type PullRequestCard = {
   id: string;
   workspace_id?: string;
@@ -378,7 +373,10 @@ export type ConsoleApiClient = {
   processCloudRun: (cloudRunId: string) => Promise<CloudRunResult>;
   cancelCloudRun: (cloudRunId: string) => Promise<CloudRunCard>;
   listCloudRunLogs: (cloudRunId: string) => Promise<CloudRunLogEntryCard[]>;
-  listCloudRunLogWindow?: ListCloudRunLogWindow;
+  listCloudRunLogWindow: (
+    cloudRunId: string,
+    options?: CloudRunLogWindowOptions
+  ) => Promise<CloudRunLogWindowCard>;
   createPullRequest: (approvalId: string) => Promise<PullRequestResult>;
   startLocalRun: (taskId: string) => Promise<LocalRunResult>;
   runPatchTests: (patchArtifactId: string) => Promise<PatchTestRunResult>;
@@ -670,7 +668,7 @@ function fakeTaskFromPatchArtifact(patchArtifactId: string) {
   };
 }
 
-export const fakeApiClient: ConsoleApiClient & { listCloudRunLogWindow: ListCloudRunLogWindow } = {
+export const fakeApiClient: ConsoleApiClient = {
   async listTasks() {
     return [...demoTasks];
   },
@@ -1436,9 +1434,7 @@ function mapPullRequestResult(result: ApiPullRequestResult): PullRequestResult {
   };
 }
 
-export function createHttpApiClient(
-  options: HttpApiClientOptions
-): ConsoleApiClient & { listCloudRunLogWindow: ListCloudRunLogWindow } {
+export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiClient {
   let resolvedProjectId = options.projectId;
   const workflowStatuses = new Set([
     "PATCH_READY",
