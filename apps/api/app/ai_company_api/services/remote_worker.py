@@ -730,7 +730,8 @@ class RemoteWorkerExecutor:
             config.callback_token,
         )
         if first_heartbeat.get("cancel_requested") is True:
-            return self._complete_cancelled(config, lease_id)
+            execution = _failed_execution("cancelled")
+            return self._complete_execution(config, lease_id, execution, secrets)
         try:
             repo_path = self.checkout.checkout(payload)
         except RuntimeError as exc:
@@ -798,36 +799,6 @@ class RemoteWorkerExecutor:
             config.worker_id,
             config.callback_token,
             {"result": completion},
-        )
-
-    def _complete_cancelled(
-        self,
-        config: RemoteWorkerConfig,
-        lease_id: str,
-    ) -> dict[str, Any]:
-        return self.client.complete(
-            lease_id,
-            config.worker_id,
-            config.callback_token,
-            {
-                "result": {
-                    "status": "failed",
-                    "runner_kind": "aliyun_eci",
-                    "base_sha": None,
-                    "head_sha": None,
-                    "worktree_ref": None,
-                    "summary": "Remote worker cancelled before checkout.",
-                    "files_changed": [],
-                    "tests_run": [],
-                    "test_result": "not_run",
-                    "risks": [],
-                    "diff_text": "",
-                    "artifact_refs": [],
-                    "command_results": [],
-                    "test_command_results": [],
-                    "failure_reason": "cancelled",
-                }
-            },
         )
 
     def _upload_artifacts(

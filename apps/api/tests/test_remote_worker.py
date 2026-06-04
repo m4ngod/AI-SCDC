@@ -13,11 +13,17 @@ from ai_company_api.services.remote_worker import (
 
 
 class FakeWorkerClient:
-    def __init__(self, *, cancel_on_second_heartbeat: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        cancel_on_first_heartbeat: bool = False,
+        cancel_on_second_heartbeat: bool = False,
+    ) -> None:
         self.claimed_config: RemoteWorkerConfig | None = None
         self.heartbeats: list[dict] = []
         self.uploaded: list[dict] = []
         self.completed: dict | None = None
+        self.cancel_on_first_heartbeat = cancel_on_first_heartbeat
         self.cancel_on_second_heartbeat = cancel_on_second_heartbeat
 
     def claim(self, config: RemoteWorkerConfig) -> dict:
@@ -66,8 +72,8 @@ class FakeWorkerClient:
         )
         return {
             "lease_id": lease_id,
-            "cancel_requested": self.cancel_on_second_heartbeat
-            and len(self.heartbeats) >= 2,
+            "cancel_requested": self.cancel_on_first_heartbeat
+            or (self.cancel_on_second_heartbeat and len(self.heartbeats) >= 2),
         }
 
     def upload_artifact(
@@ -920,6 +926,61 @@ def test_remote_worker_command_runner_cancels_before_tests_with_real_runner(
     assert completion["failure_reason"] == "cancelled"
     assert completion["test_result"] == "not_run"
     assert completion["files_changed"] == ["AI_SCDC_CLOUD_RUN.md"]
+
+
+def test_remote_worker_first_heartbeat_cancel_uploads_failed_execution_artifacts() -> None:
+    from ai_company_api.services.remote_worker import RemoteWorkerExecutor
+
+    class SpyCheckout:
+        def __init__(self) -> None:
+            self.called = False
+
+        def checkout(self, payload: dict) -> str:
+            self.called = True
+            return "/tmp/repo"
+
+    class SpyCommandRunner:
+        def __init__(self) -> None:
+            self.called = False
+
+        def run(self, payload: dict, repo_path: str) -> dict:
+            self.called = True
+            return FakeCommandRunner().run(payload, repo_path)
+
+    client = FakeWorkerClient(cancel_on_first_heartbeat=True)
+    checkout = SpyCheckout()
+    command_runner = SpyCommandRunner()
+    config = RemoteWorkerConfig(
+        api_base_url="https://api.example.test",
+        cloud_run_id="cloud_run_1",
+        worker_id="worker_1",
+        queue_provider="aliyun_mns",
+        storage_provider="aliyun_oss",
+        callback_token="callback-token-1",
+    )
+    executor = RemoteWorkerExecutor(
+        client=client,
+        checkout=checkout,
+        command_runner=command_runner,
+    )
+
+    result = executor.run_once(config)
+
+    assert result["cloud_run"]["status"] == "failed"
+    assert checkout.called is False
+    assert command_runner.called is False
+    assert [upload["ref"]["kind"] for upload in client.uploaded] == [
+        "diff",
+        "command_result",
+        "test_result",
+        "log",
+        "manifest",
+    ]
+    assert client.completed is not None
+    completion = client.completed["result"]
+    assert completion["failure_reason"] == "cancelled"
+    assert completion["artifact_refs"] == [upload["ref"] for upload in client.uploaded]
+    assert completion["diff_text"] == ""
 
 
 def test_remote_worker_stops_at_command_boundary_when_cancel_requested() -> None:
