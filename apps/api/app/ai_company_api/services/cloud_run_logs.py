@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import HTTPException
 from sqlalchemy import and_, or_
@@ -15,9 +16,20 @@ from ai_company_api.schemas.api import (
     CloudRunLogWindowEntryRead,
     CloudRunLogWindowRead,
 )
+from ai_company_api.services.object_storage import (
+    ObjectStorageProviderNotFound,
+    ObjectStorageReadError,
+    ObjectStorageRef,
+    get_object_storage_provider,
+)
 
 
 BASE64URL_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+STREAM_SECRET_PATTERN = re.compile(
+    r"\b(?P<key>access_token|authorization|password|secret|token|sig)\b\s*[:=]\s*\S+",
+    re.IGNORECASE,
+)
+STREAM_BEARER_PATTERN = re.compile(r"\bBearer\s+\S+", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -36,8 +48,6 @@ def list_cloud_run_log_window(
     limit: int = 100,
     include_stream: bool = True,
 ) -> CloudRunLogWindowRead:
-    del include_stream
-
     cloud_run = session.get(CloudRun, cloud_run_id)
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
@@ -49,6 +59,16 @@ def list_cloud_run_log_window(
         cursor=cursor,
         limit=limit + 1,
     )
+    if include_stream and len(entries) <= limit:
+        entries.extend(
+            _log_stream_entries(
+                session,
+                cloud_run=cloud_run,
+                cursor=cursor,
+                limit=limit + 1 - len(entries),
+            )
+        )
+
     if len(entries) > limit:
         returned_entries = entries[:limit]
         return CloudRunLogWindowRead(
@@ -102,6 +122,8 @@ def _cursor_from_payload(payload: dict[str, Any]) -> LogWindowCursor:
     if source == "log_stream":
         stream_line = payload.get("stream_line")
         if stream_line is not None and not isinstance(stream_line, int):
+            raise ValueError
+        if stream_line is not None and stream_line < 0:
             raise ValueError
         return LogWindowCursor(source="log_stream", stream_line=stream_line)
     raise ValueError
@@ -157,7 +179,110 @@ def _log_window_entry_read(
     )
 
 
+def _log_stream_entries(
+    session: Session,
+    *,
+    cloud_run: CloudRun,
+    cursor: LogWindowCursor | None,
+    limit: int,
+) -> list[CloudRunLogWindowEntryRead]:
+    if limit <= 0:
+        return []
+
+    start_line = 0
+    if cursor is not None and cursor.source == "log_stream":
+        start_line = cursor.stream_line or 0
+
+    ref = _log_stream_ref(cloud_run)
+    if ref is None:
+        return []
+
+    provider_name = _object_storage_provider_name(ref.uri)
+    if provider_name is None:
+        return []
+
+    try:
+        text = get_object_storage_provider(provider_name).read_text(session, ref)
+    except (ObjectStorageProviderNotFound, ObjectStorageReadError):
+        return []
+
+    redacted_uri = _redact_uri(ref.uri)
+    entries: list[CloudRunLogWindowEntryRead] = []
+    for line_number, line in enumerate(text.splitlines()):
+        if line_number < start_line:
+            continue
+        entries.append(
+            CloudRunLogWindowEntryRead(
+                id=f"{cloud_run.id}:log-stream:{line_number}",
+                cloud_run_id=cloud_run.id,
+                source="log_stream",
+                level="info",
+                event="log_stream",
+                message=_redact_stream_line(line),
+                payload={
+                    "source": "log_stream",
+                    "line": line_number + 1,
+                    "uri": redacted_uri,
+                },
+                created_at=cloud_run.created_at,
+                sequence=line_number,
+            )
+        )
+        if len(entries) >= limit:
+            break
+    return entries
+
+
+def _log_stream_ref(cloud_run: CloudRun) -> ObjectStorageRef | None:
+    if (
+        cloud_run.log_stream_uri is None
+        or cloud_run.log_stream_sha256 is None
+        or cloud_run.log_stream_size_bytes is None
+        or cloud_run.log_stream_content_type is None
+    ):
+        return None
+    return ObjectStorageRef(
+        kind="log",
+        uri=cloud_run.log_stream_uri,
+        sha256=cloud_run.log_stream_sha256,
+        size_bytes=cloud_run.log_stream_size_bytes,
+        content_type=cloud_run.log_stream_content_type,
+    )
+
+
+def _object_storage_provider_name(uri: str) -> str | None:
+    scheme = urlsplit(uri).scheme
+    if scheme == "local-inline":
+        return "local_inline"
+    if scheme == "oss":
+        return "aliyun_oss"
+    return None
+
+
+def _redact_stream_line(line: str) -> str:
+    redacted = STREAM_SECRET_PATTERN.sub(
+        lambda match: f"{match.group('key')}=[redacted]",
+        line,
+    )
+    return STREAM_BEARER_PATTERN.sub("Bearer [redacted]", redacted)
+
+
+def _redact_uri(uri: str) -> str:
+    parsed = urlsplit(uri)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
 def _entry_cursor(entry: CloudRunLogWindowEntryRead) -> str:
+    if entry.source == "log_stream":
+        return _encode_cursor(
+            {
+                "source": "log_stream",
+                "created_at": None,
+                "id": None,
+                "stream_line": entry.sequence + 1,
+            }
+        )
+
     return _encode_cursor(
         {
             "source": entry.source,

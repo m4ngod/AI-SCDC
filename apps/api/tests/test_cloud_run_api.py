@@ -4386,6 +4386,98 @@ def test_cloud_run_log_window_returns_bounded_pages_without_duplicates(
     assert second_body["next_cursor"] is None
 
 
+def test_cloud_run_log_window_includes_redacted_stream_lines_when_metadata_exists(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        ref = get_object_storage_provider("local_inline").put_text(
+            session,
+            ObjectStorageWrite(
+                workspace_id=cloud_run.workspace_id,
+                cloud_run_id=cloud_run.id,
+                kind="log",
+                content=(
+                    "worker started\n"
+                    "provider token=secret-token Bearer abc.def\n"
+                ),
+                content_type="text/plain",
+            ),
+        )
+        cloud_run.log_stream_uri = ref.uri
+        cloud_run.log_stream_sha256 = ref.sha256
+        cloud_run.log_stream_size_bytes = ref.size_bytes
+        cloud_run.log_stream_content_type = ref.content_type
+        session.add(cloud_run)
+        session.commit()
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"limit": 20, "include_stream": "true"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    stream_entries = [
+        entry for entry in body["entries"] if entry["source"] == "log_stream"
+    ]
+    assert [entry["message"] for entry in stream_entries] == [
+        "worker started",
+        "provider token=[redacted] Bearer [redacted]",
+    ]
+    assert "secret-token" not in str(body)
+    assert "abc.def" not in str(body)
+    assert stream_entries[0]["payload"]["uri"] == ref.uri
+    assert stream_entries[0]["payload"]["line"] == 1
+
+
+def test_cloud_run_log_window_skips_stream_when_metadata_is_missing(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        cloud_run.log_stream_uri = "local-inline://cloud-run-objects/missing"
+        cloud_run.log_stream_sha256 = None
+        cloud_run.log_stream_size_bytes = None
+        cloud_run.log_stream_content_type = None
+        session.add(cloud_run)
+        session.commit()
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "true"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert all(entry["source"] == "control_plane" for entry in body["entries"])
+    assert "local-inline://cloud-run-objects/missing" not in str(body)
+
+
 def test_cloud_run_log_window_rejects_invalid_cursor(tmp_path: Path) -> None:
     from fastapi import HTTPException
 
