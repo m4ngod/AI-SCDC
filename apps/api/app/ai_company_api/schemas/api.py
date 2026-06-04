@@ -369,6 +369,37 @@ class CloudRunLeaseHeartbeat(BaseModel):
     lease_seconds: int = Field(default=60, ge=1, le=3600)
 
 
+class RemoteWorkerPayloadRequest(BaseModel):
+    worker_id: str = Field(min_length=1)
+    callback_token: str | None = Field(default=None, min_length=1)
+
+
+class RemoteWorkerCommandPayload(BaseModel):
+    key: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    command: str = Field(min_length=1)
+    timeout_seconds: int = Field(default=300, ge=1, le=24 * 60 * 60)
+
+
+class RemoteWorkerPayloadRead(BaseModel):
+    cloud_run_id: str
+    task_id: str
+    title: str
+    description: str
+    repo_url: str
+    github_owner: str | None
+    github_repo: str | None
+    base_branch: str
+    head_branch: str
+    allowed_paths: list[str]
+    required_tests: list[str]
+    patch_command: RemoteWorkerCommandPayload
+    test_commands: list[RemoteWorkerCommandPayload]
+    env: dict[str, str]
+    network_enabled: bool
+    clone_token: str = Field(min_length=1)
+
+
 class CloudRunLeaseRequeueExpired(BaseModel):
     queue_provider: str = Field(default="local_db", min_length=1)
     limit: int = Field(default=25, ge=1, le=100)

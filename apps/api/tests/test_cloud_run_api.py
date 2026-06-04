@@ -231,6 +231,47 @@ def test_callback_token_helper_binds_token_to_run_and_worker() -> None:
     assert not verify_callback_token("cloud_run_1", "worker_1", "wrong", stored_hash)
 
 
+def test_remote_worker_payload_schema_has_private_clone_fields() -> None:
+    from ai_company_api.schemas.api import (
+        RemoteWorkerCommandPayload,
+        RemoteWorkerPayloadRead,
+        RemoteWorkerPayloadRequest,
+    )
+
+    request = RemoteWorkerPayloadRequest(
+        worker_id="worker_1",
+        callback_token="callback-token-1",
+    )
+    command = RemoteWorkerCommandPayload(
+        key="patch",
+        label="Patch",
+        command="python patch.py",
+        timeout_seconds=120,
+    )
+    payload = RemoteWorkerPayloadRead(
+        cloud_run_id="cloud_run_1",
+        task_id="task_1",
+        title="Run fake cloud sandbox",
+        description="Create a patch",
+        repo_url="https://github.com/example/demo",
+        github_owner="example",
+        github_repo="demo",
+        base_branch="main",
+        head_branch="ai-scdc/cloud-run",
+        allowed_paths=["AI_SCDC_CLOUD_RUN.md"],
+        required_tests=["pytest -q"],
+        patch_command=command,
+        test_commands=[command],
+        env={"SAFE_ENV": "secret-value"},
+        network_enabled=True,
+        clone_token="ghp_private_clone_token1234",
+    )
+
+    assert request.worker_id == "worker_1"
+    assert payload.patch_command.command == "python patch.py"
+    assert payload.clone_token == "ghp_private_clone_token1234"
+
+
 def test_start_cloud_run_enqueues_fake_run_without_executor_work(
     tmp_path: Path,
     monkeypatch,
