@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from ai_company_api.services.remote_worker import (
     HttpRemoteWorkerClient,
     RemoteWorkerConfig,
@@ -271,6 +273,103 @@ def test_remote_worker_fetches_payload_runs_components_uploads_artifacts_and_com
     assert "ghp_private_clone_token1234" not in str(client.uploaded)
     assert "env-secret-value" not in str(client.uploaded)
     assert "callback-token-1" not in str(client.uploaded)
+
+
+def test_remote_worker_git_checkout_uses_askpass_without_token_in_command(
+    tmp_path: Path,
+) -> None:
+    from ai_company_api.services.remote_worker import RemoteWorkerGitCheckout
+
+    calls: list[dict] = []
+
+    def fake_run(args, cwd=None, env=None, timeout=None):
+        calls.append({"args": args, "cwd": cwd, "env": env, "timeout": timeout})
+        return type(
+            "FakeCompletedProcess",
+            (),
+            {"returncode": 0, "stdout": "", "stderr": ""},
+        )()
+
+    checkout = RemoteWorkerGitCheckout(
+        workspace_root=tmp_path,
+        process_run=fake_run,
+    )
+    payload = {
+        "cloud_run_id": "cloud_run_1",
+        "repo_url": "https://github.com/example/demo",
+        "base_branch": "main",
+        "head_branch": "ai-scdc/cloud-run",
+        "clone_token": "ghp_private_clone_token1234",
+    }
+
+    repo_path = checkout.checkout(payload)
+
+    clone_call = calls[0]
+    assert Path(repo_path).name == "repo"
+    assert clone_call["args"] == [
+        "git",
+        "clone",
+        "--",
+        "https://github.com/example/demo",
+        ".",
+    ]
+    assert clone_call["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert "GIT_ASKPASS" in clone_call["env"]
+    assert "ghp_private_clone_token1234" not in str(calls)
+
+
+def test_remote_worker_command_runner_maps_patch_and_test_results(
+    tmp_path: Path,
+) -> None:
+    from ai_company_api.services.remote_worker import RemoteWorkerCommandRunnerImpl
+
+    calls: list[dict] = []
+
+    def fake_run(args, cwd=None, env=None, timeout=None):
+        calls.append({"args": args, "cwd": cwd, "env": env, "timeout": timeout})
+        command = args[-1]
+        stdout = "ok"
+        if "diff --name-only" in command:
+            stdout = "AI_SCDC_CLOUD_RUN.md\n"
+        elif "git diff --no-ext-diff" in command:
+            stdout = (
+                "diff --git a/AI_SCDC_CLOUD_RUN.md b/AI_SCDC_CLOUD_RUN.md\n"
+                "+ok\n"
+            )
+        elif "rev-parse" in command:
+            stdout = "abc123\n"
+        return type(
+            "FakeCompletedProcess",
+            (),
+            {"returncode": 0, "stdout": stdout, "stderr": ""},
+        )()
+
+    runner = RemoteWorkerCommandRunnerImpl(process_run=fake_run)
+    payload = {
+        "cloud_run_id": "cloud_run_1",
+        "base_branch": "main",
+        "patch_command": {
+            "key": "patch",
+            "command": "python patch.py",
+            "timeout_seconds": 120,
+        },
+        "test_commands": [
+            {
+                "key": "test",
+                "command": "pytest -q",
+                "timeout_seconds": 300,
+            }
+        ],
+        "allowed_paths": ["AI_SCDC_CLOUD_RUN.md"],
+        "env": {"SAFE_REMOTE_ENV": "value"},
+    }
+
+    result = runner.run(payload, str(tmp_path))
+
+    assert result["status"] == "patch_ready"
+    assert result["files_changed"] == ["AI_SCDC_CLOUD_RUN.md"]
+    assert result["test_result"] == "passed"
+    assert result["diff_text"].startswith("diff --git")
 
 
 def test_remote_worker_redacts_secret_bearing_execution_fields() -> None:
