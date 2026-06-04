@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, Phase 10A remote worker control-plane contract, Phase 10B provider-neutral remote execution-plane contract, Phase 10C Aliyun provider MVP, and Phase 10D run-scoped remote worker callback token hardening for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, Phase 10A remote worker control-plane contract, Phase 10B provider-neutral remote execution-plane contract, Phase 10C Aliyun provider MVP, Phase 10D run-scoped remote worker callback token hardening, and Phase 11 real remote worker execution skeleton for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -732,6 +732,13 @@ job ID, and `oss://` artifact/log URIs. The API generates a run-scoped
 requires the worker to send it on lease, heartbeat, artifact-upload, and
 completion callbacks. The raw callback token, token hash, Aliyun secrets, and
 queue receipts must not appear in API responses.
+
+Phase 11 remote workers fetch a protected execution payload after claiming a
+lease. The payload includes the selected sandbox profile commands and the
+repository's active clone credential, returned only through the
+callback-token-protected worker payload. Outside that protected payload
+response, the clone credential must not appear in API responses, logs,
+artifacts, or completion payloads.
 
 Cleanup after smoke:
 

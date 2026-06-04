@@ -221,29 +221,43 @@ def enqueue_cloud_run(
     sandbox_profile_id: str | None = None
     patch_command_key: str | None = None
     test_command_keys: list[str] = []
-    if executor.sandbox_kind == "docker_local":
+    should_validate_sandbox_profile = (
+        executor.sandbox_kind == "docker_local" or data.runtime_provider is not None
+    )
+    if should_validate_sandbox_profile:
         if data.sandbox_profile_id is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Docker cloud runs require a sandbox profile",
+            if data.runtime_provider is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Remote runtime cloud runs require a sandbox profile",
+                )
+            if executor.sandbox_kind == "docker_local":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Docker cloud runs require a sandbox profile",
+                )
+        else:
+            if executor.sandbox_kind == "docker_local":
+                if repository.github_credential_id is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="GitHub credential not found",
+                    )
+                validate_github_repository_url(
+                    repository.repo_url,
+                    owner=repository.github_owner or "",
+                    repo=repository.github_repo or "",
+                )
+            profile = validate_sandbox_profile_for_repo(
+                session,
+                data.sandbox_profile_id,
+                project_id=task.project_id,
+                repo_id=repository.id,
             )
-        if repository.github_credential_id is None:
-            raise HTTPException(status_code=404, detail="GitHub credential not found")
-        validate_github_repository_url(
-            repository.repo_url,
-            owner=repository.github_owner or "",
-            repo=repository.github_repo or "",
-        )
-        profile = validate_sandbox_profile_for_repo(
-            session,
-            data.sandbox_profile_id,
-            project_id=task.project_id,
-            repo_id=repository.id,
-        )
-        patch_command, test_commands = _select_profile_commands(profile, data)
-        sandbox_profile_id = profile.id
-        patch_command_key = patch_command.key
-        test_command_keys = [command.key for command in test_commands]
+            patch_command, test_commands = _select_profile_commands(profile, data)
+            sandbox_profile_id = profile.id
+            patch_command_key = patch_command.key
+            test_command_keys = [command.key for command in test_commands]
 
     cloud_run = CloudRun(
         project_id=task.project_id,
@@ -494,7 +508,7 @@ def claim_next_cloud_run_lease(
             continue
 
         now = utc_now()
-        _verify_cloud_run_callback_token_or_403(
+        verify_cloud_run_callback_token_or_403(
             cloud_run,
             worker_id=worker_id,
             callback_token=callback_token,
@@ -563,7 +577,7 @@ def heartbeat_cloud_run_lease(
         lease_id=lease_id,
         worker_id=worker_id,
     )
-    _verify_cloud_run_callback_token_or_403(
+    verify_cloud_run_callback_token_or_403(
         cloud_run,
         worker_id=worker_id,
         callback_token=callback_token,
@@ -803,7 +817,7 @@ def upload_cloud_run_lease_artifact(
         lease_id=lease_id,
         worker_id=data.worker_id,
     )
-    _verify_cloud_run_callback_token_or_403(
+    verify_cloud_run_callback_token_or_403(
         cloud_run,
         worker_id=data.worker_id,
         callback_token=data.callback_token,
@@ -859,7 +873,7 @@ def complete_cloud_run_lease(
         lease_id=lease_id,
         worker_id=worker_id,
     )
-    _verify_cloud_run_callback_token_or_403(
+    verify_cloud_run_callback_token_or_403(
         cloud_run,
         worker_id=worker_id,
         callback_token=callback_token,
@@ -1691,7 +1705,7 @@ def _get_current_cloud_run_lease_or_409(
     return cloud_run
 
 
-def _verify_cloud_run_callback_token_or_403(
+def verify_cloud_run_callback_token_or_403(
     cloud_run: CloudRun,
     *,
     worker_id: str,

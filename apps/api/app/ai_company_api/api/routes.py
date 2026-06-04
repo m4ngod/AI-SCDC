@@ -48,6 +48,8 @@ from ai_company_api.schemas.api import (
     PullRequestResultRead,
     RepositoryCreate,
     RepositoryRead,
+    RemoteWorkerPayloadRead,
+    RemoteWorkerPayloadRequest,
     ResolvedModelRouteRead,
     SandboxProfileCreate,
     SandboxProfileRead,
@@ -134,6 +136,7 @@ from ai_company_api.services.repository import (
     reject_planner_run,
     transition_task,
 )
+from ai_company_api.services.remote_worker_payload import get_remote_worker_payload
 from ai_company_api.services.sandbox_profiles import (
     create_sandbox_profile,
     get_sandbox_profile_read,
@@ -554,6 +557,18 @@ def post_cloud_run_worker_lease_heartbeat(
         callback_token=data.callback_token,
         lease_seconds=data.lease_seconds,
     )
+
+
+@router.post(
+    "/cloud-run-worker/leases/{lease_id}/payload",
+    response_model=RemoteWorkerPayloadRead,
+)
+def post_cloud_run_worker_payload(
+    lease_id: str,
+    data: RemoteWorkerPayloadRequest,
+    session: SessionDep,
+) -> RemoteWorkerPayloadRead:
+    return get_remote_worker_payload(session, lease_id=lease_id, data=data)
 
 
 @router.post(
