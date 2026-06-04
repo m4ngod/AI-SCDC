@@ -217,6 +217,68 @@ def test_sdk_eci_create_container_group_uses_sdk_environment_var_field(
     assert captured["request"].container[0] is captured["container"]
 
 
+def test_sdk_aliyun_eci_client_delete_container_group_builds_request(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class FakeDeleteContainerGroupRequest:
+        def __init__(self, *, region_id, container_group_id):
+            self.region_id = region_id
+            self.container_group_id = container_group_id
+
+    class FakeClient:
+        def __init__(self, config):
+            self.config = config
+
+        def delete_container_group(self, request):
+            captured["request"] = request
+
+    class FakeConfig:
+        def __init__(self, *, access_key_id, access_key_secret, region_id):
+            self.access_key_id = access_key_id
+            self.access_key_secret = access_key_secret
+            self.region_id = region_id
+
+    eci_package = ModuleType("alibabacloud_eci20180808")
+    eci_client_module = ModuleType("alibabacloud_eci20180808.client")
+    eci_models_module = ModuleType("alibabacloud_eci20180808.models")
+    eci_client_module.Client = FakeClient
+    eci_models_module.DeleteContainerGroupRequest = FakeDeleteContainerGroupRequest
+    eci_package.models = eci_models_module
+
+    openapi_package = ModuleType("alibabacloud_tea_openapi")
+    openapi_models_module = ModuleType("alibabacloud_tea_openapi.models")
+    openapi_models_module.Config = FakeConfig
+    openapi_package.models = openapi_models_module
+
+    monkeypatch.setitem(sys.modules, "alibabacloud_eci20180808", eci_package)
+    monkeypatch.setitem(
+        sys.modules,
+        "alibabacloud_eci20180808.client",
+        eci_client_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "alibabacloud_eci20180808.models",
+        eci_models_module,
+    )
+    monkeypatch.setitem(sys.modules, "alibabacloud_tea_openapi", openapi_package)
+    monkeypatch.setitem(
+        sys.modules,
+        "alibabacloud_tea_openapi.models",
+        openapi_models_module,
+    )
+
+    SdkAliyunEciClient(_aliyun_settings()).delete_container_group(
+        region_id="cn-hangzhou",
+        container_group_id="eci-cg-1",
+    )
+
+    assert captured["request"].region_id == "cn-hangzhou"
+    assert captured["request"].container_group_id == "eci-cg-1"
+
+
 def _aliyun_settings() -> AliyunSettings:
     return AliyunSettings(
         region_id="cn-hangzhou",

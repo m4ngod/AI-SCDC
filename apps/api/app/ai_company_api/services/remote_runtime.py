@@ -162,8 +162,10 @@ class AliyunEciRuntimeProvider:
             "AI_SCDC_STORAGE_PROVIDER": submission.storage_provider or "",
         }
 
+        runtime_job_id: str | None = None
         try:
-            result = get_aliyun_client_bundle(settings).eci.create_container_group(
+            bundle = get_aliyun_client_bundle(settings)
+            result = bundle.eci.create_container_group(
                 AliyunEciCreateContainerGroupRequest(
                     region_id=settings.region_id or "",
                     cloud_run_id=submission.cloud_run_id,
@@ -218,6 +220,14 @@ class AliyunEciRuntimeProvider:
                 artifact_manifest_uri = manifest_ref.uri
                 log_stream_uri = log_ref.uri
         except Exception:
+            if runtime_job_id:
+                try:
+                    get_aliyun_client_bundle(settings).eci.delete_container_group(
+                        region_id=settings.region_id or "",
+                        container_group_id=runtime_job_id,
+                    )
+                except Exception:
+                    pass
             raise RemoteRuntimeSubmissionError(
                 "Cloud runtime provider aliyun_eci failed to submit container group"
             ) from None

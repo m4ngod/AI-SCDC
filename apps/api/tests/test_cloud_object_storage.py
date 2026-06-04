@@ -1,3 +1,4 @@
+import copy
 from hashlib import sha256
 
 import pytest
@@ -229,3 +230,49 @@ def test_aliyun_oss_storage_reads_ref_with_root_prefix(
 
         assert ref.uri.startswith("oss://ai-scdc-dev-artifacts/workspaces/")
         assert provider.read_text(session, ref) == text
+
+
+def test_aliyun_oss_storage_rejects_bucket_prefix_size_and_kind_mismatch(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_oss(monkeypatch)
+    with _build_storage_session(tmp_path) as session:
+        provider = get_object_storage_provider("aliyun_oss")
+        ref = provider.put_text(
+            session,
+            ObjectStorageWrite(
+                workspace_id="dev_workspace",
+                cloud_run_id="cloud_run_1",
+                kind="log",
+                content="safe log",
+            ),
+        )
+
+        wrong_bucket = copy.copy(ref)
+        wrong_bucket.uri = wrong_bucket.uri.replace(
+            "oss://ai-scdc-dev-artifacts/",
+            "oss://other-bucket/",
+            1,
+        )
+        with pytest.raises(ObjectStorageReadError):
+            provider.read_text(session, wrong_bucket)
+
+        wrong_prefix = copy.copy(ref)
+        wrong_prefix.uri = wrong_prefix.uri.replace(
+            "/workspaces/dev_workspace/",
+            "/other/dev_workspace/",
+            1,
+        )
+        with pytest.raises(ObjectStorageReadError):
+            provider.read_text(session, wrong_prefix)
+
+        wrong_size = copy.copy(ref)
+        wrong_size.size_bytes += 1
+        with pytest.raises(ObjectStorageReadError):
+            provider.read_text(session, wrong_size)
+
+        wrong_kind = copy.copy(ref)
+        wrong_kind.kind = "diff"
+        with pytest.raises(ObjectStorageReadError):
+            provider.read_text(session, wrong_kind)

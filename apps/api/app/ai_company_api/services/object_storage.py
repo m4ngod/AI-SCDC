@@ -194,6 +194,8 @@ class AliyunOssObjectStorageProvider:
         expected_prefix = f"{_normalized_oss_prefix(settings.oss_prefix)}workspaces/"
         if not object_key.startswith(expected_prefix):
             raise ObjectStorageReadError("Object storage reference prefix mismatch")
+        if f"/{ref.kind}/" not in f"/{object_key}":
+            raise ObjectStorageReadError("Object storage reference kind mismatch")
         content = get_aliyun_client_bundle(settings).oss.get_object_text(
             bucket,
             object_key,

@@ -65,6 +65,14 @@ class AliyunEciClient(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def delete_container_group(
+        self,
+        *,
+        region_id: str,
+        container_group_id: str,
+    ) -> None:
+        ...
+
 
 @dataclass(frozen=True)
 class AliyunClientBundle:
@@ -239,3 +247,36 @@ class SdkAliyunEciClient:
             "request_id": getattr(body, "request_id", None),
             "cloud_run_id": request.cloud_run_id,
         }
+
+    def delete_container_group(
+        self,
+        *,
+        region_id: str,
+        container_group_id: str,
+    ) -> None:
+        from alibabacloud_eci20180808.client import Client
+        from alibabacloud_eci20180808 import models as eci_models
+        from alibabacloud_tea_openapi import models as openapi_models
+
+        settings = require_aliyun_settings(
+            provider_name="eci",
+            required_names=(
+                "access_key_id",
+                "access_key_secret",
+                "region_id",
+            ),
+            settings=self.settings,
+        )
+        client = Client(
+            openapi_models.Config(
+                access_key_id=settings.access_key_id,
+                access_key_secret=settings.access_key_secret,
+                region_id=region_id,
+            )
+        )
+        client.delete_container_group(
+            eci_models.DeleteContainerGroupRequest(
+                region_id=region_id,
+                container_group_id=container_group_id,
+            )
+        )
