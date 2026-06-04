@@ -736,8 +736,9 @@ queue receipts must not appear in API responses.
 Phase 11 remote workers fetch a protected execution payload after claiming a
 lease. The payload includes the selected sandbox profile commands and the
 repository's active clone credential, returned only through the
-callback-token-protected worker payload. The clone credential must not appear in
-API responses, logs, artifacts, or completion payloads.
+callback-token-protected worker payload. Outside that protected payload
+response, the clone credential must not appear in API responses, logs,
+artifacts, or completion payloads.
 
 Cleanup after smoke:
 

@@ -363,7 +363,9 @@ class RemoteWorkerCommandRunnerImpl:
         failure_reason: str | None = None
         test_result = "not_run"
 
-        if not patch_text:
+        if _cancel_requested(payload):
+            failure_reason = "cancelled"
+        elif not patch_text:
             failure_reason = "patch_command_failed"
         else:
             patch_result = self._run_shell(
@@ -408,10 +410,11 @@ class RemoteWorkerCommandRunnerImpl:
 
         if failure_reason is None:
             test_commands = list(payload.get("test_commands") or [])
-            if _cancel_requested(payload):
-                failure_reason = "cancelled"
-            elif test_commands:
+            if test_commands:
                 for test_command in test_commands:
+                    if _cancel_requested(payload):
+                        failure_reason = "cancelled"
+                        break
                     command = str(test_command.get("command") or "").strip()
                     if not command:
                         continue
@@ -426,13 +429,13 @@ class RemoteWorkerCommandRunnerImpl:
                         ),
                     )
                     test_command_results.append(result.as_dict())
-                if any(
+                if failure_reason is None and any(
                     result.get("timed_out") or result.get("exit_code") != 0
                     for result in test_command_results
                 ):
                     failure_reason = "test_failed"
                     test_result = "failed"
-                else:
+                elif failure_reason is None:
                     test_result = "passed"
 
         status = "patch_ready" if failure_reason is None else "failed"
@@ -745,6 +748,9 @@ class RemoteWorkerExecutor:
         except Exception:
             execution = _failed_execution("worker_execution_failed")
             return self._complete_execution(config, lease_id, execution, secrets)
+        if self._cancel_requested(config, lease_id):
+            execution = _failed_execution("cancelled")
+            return self._complete_execution(config, lease_id, execution, secrets)
         try:
             runner_payload = {
                 **payload,
@@ -792,7 +798,11 @@ class RemoteWorkerExecutor:
         execution: dict[str, Any],
         secrets: list[str],
     ) -> dict[str, Any]:
-        artifact_refs = self._upload_artifacts(config, lease_id, execution, secrets)
+        try:
+            artifact_refs = self._upload_artifacts(config, lease_id, execution, secrets)
+        except Exception:
+            execution = _failed_execution("artifact_upload_failed")
+            artifact_refs = []
         completion = self._completion_payload(execution, artifact_refs, secrets)
         return self.client.complete(
             lease_id,
