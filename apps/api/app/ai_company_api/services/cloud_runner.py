@@ -435,6 +435,24 @@ def enqueue_cloud_run(
         cloud_run.artifact_manifest_uri = runtime_submission.artifact_manifest_uri
         cloud_run.log_stream_uri = runtime_submission.log_stream_uri
         cloud_run.external_status = runtime_submission.external_status
+        if runtime_submission.artifact_manifest_ref is not None:
+            cloud_run.artifact_manifest_sha256 = (
+                runtime_submission.artifact_manifest_ref.sha256
+            )
+            cloud_run.artifact_manifest_size_bytes = (
+                runtime_submission.artifact_manifest_ref.size_bytes
+            )
+            cloud_run.artifact_manifest_content_type = (
+                runtime_submission.artifact_manifest_ref.content_type
+            )
+        if runtime_submission.log_stream_ref is not None:
+            cloud_run.log_stream_sha256 = runtime_submission.log_stream_ref.sha256
+            cloud_run.log_stream_size_bytes = (
+                runtime_submission.log_stream_ref.size_bytes
+            )
+            cloud_run.log_stream_content_type = (
+                runtime_submission.log_stream_ref.content_type
+            )
         _append_cloud_run_log(
             session,
             cloud_run=cloud_run,

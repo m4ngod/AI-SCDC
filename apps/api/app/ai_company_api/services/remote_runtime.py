@@ -14,6 +14,7 @@ from ai_company_api.services.aliyun_clients import (
 )
 from ai_company_api.services.aliyun_config import require_aliyun_settings
 from ai_company_api.services.object_storage import (
+    ObjectStorageRef,
     ObjectStorageWrite,
     get_object_storage_provider,
 )
@@ -60,8 +61,16 @@ class RemoteRuntimeSubmission:
 class RemoteRuntimeSubmissionResult:
     runtime_job_id: str
     external_status: str
-    artifact_manifest_uri: str | None = None
-    log_stream_uri: str | None = None
+    artifact_manifest_ref: ObjectStorageRef | None = None
+    log_stream_ref: ObjectStorageRef | None = None
+
+    @property
+    def artifact_manifest_uri(self) -> str | None:
+        return self.artifact_manifest_ref.uri if self.artifact_manifest_ref else None
+
+    @property
+    def log_stream_uri(self) -> str | None:
+        return self.log_stream_ref.uri if self.log_stream_ref else None
 
 
 class RemoteStubRuntimeProvider:
@@ -75,12 +84,12 @@ class RemoteStubRuntimeProvider:
         session: Session,
         submission: RemoteRuntimeSubmission,
     ) -> RemoteRuntimeSubmissionResult:
-        artifact_manifest_uri: str | None = None
-        log_stream_uri: str | None = None
+        artifact_manifest_ref: ObjectStorageRef | None = None
+        log_stream_ref: ObjectStorageRef | None = None
 
         if submission.storage_provider == "local_inline":
             storage_provider = get_object_storage_provider("local_inline")
-            manifest_ref = storage_provider.put_text(
+            artifact_manifest_ref = storage_provider.put_text(
                 session,
                 ObjectStorageWrite(
                     workspace_id=submission.workspace_id,
@@ -99,7 +108,7 @@ class RemoteStubRuntimeProvider:
                     content_type="application/json",
                 ),
             )
-            log_ref = storage_provider.put_text(
+            log_stream_ref = storage_provider.put_text(
                 session,
                 ObjectStorageWrite(
                     workspace_id=submission.workspace_id,
@@ -109,14 +118,12 @@ class RemoteStubRuntimeProvider:
                     content_type="text/plain",
                 ),
             )
-            artifact_manifest_uri = manifest_ref.uri
-            log_stream_uri = log_ref.uri
 
         return RemoteRuntimeSubmissionResult(
             runtime_job_id=f"remote-stub-job-{submission.cloud_run_id}",
             external_status="submitted",
-            artifact_manifest_uri=artifact_manifest_uri,
-            log_stream_uri=log_stream_uri,
+            artifact_manifest_ref=artifact_manifest_ref,
+            log_stream_ref=log_stream_ref,
         )
 
 
@@ -190,11 +197,11 @@ class AliyunEciRuntimeProvider:
                 )
             )
             runtime_job_id = result.get("container_group_id") or container_group_name
-            artifact_manifest_uri = None
-            log_stream_uri = None
+            artifact_manifest_ref: ObjectStorageRef | None = None
+            log_stream_ref: ObjectStorageRef | None = None
             if submission.storage_provider == "aliyun_oss":
                 storage_provider = get_object_storage_provider("aliyun_oss")
-                manifest_ref = storage_provider.put_text(
+                artifact_manifest_ref = storage_provider.put_text(
                     session,
                     ObjectStorageWrite(
                         workspace_id=submission.workspace_id,
@@ -214,7 +221,7 @@ class AliyunEciRuntimeProvider:
                         content_type="application/json",
                     ),
                 )
-                log_ref = storage_provider.put_text(
+                log_stream_ref = storage_provider.put_text(
                     session,
                     ObjectStorageWrite(
                         workspace_id=submission.workspace_id,
@@ -224,8 +231,6 @@ class AliyunEciRuntimeProvider:
                         content_type="text/plain",
                     ),
                 )
-                artifact_manifest_uri = manifest_ref.uri
-                log_stream_uri = log_ref.uri
         except Exception:
             if runtime_job_id:
                 try:
@@ -242,8 +247,8 @@ class AliyunEciRuntimeProvider:
         return RemoteRuntimeSubmissionResult(
             runtime_job_id=runtime_job_id,
             external_status="submitted",
-            artifact_manifest_uri=artifact_manifest_uri,
-            log_stream_uri=log_stream_uri,
+            artifact_manifest_ref=artifact_manifest_ref,
+            log_stream_ref=log_stream_ref,
         )
 
 

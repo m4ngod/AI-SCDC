@@ -523,6 +523,12 @@ class CloudRun(SQLModel, table=True):
     storage_provider: str | None = Field(default=None, index=True)
     artifact_manifest_uri: str | None = None
     log_stream_uri: str | None = None
+    artifact_manifest_sha256: str | None = None
+    artifact_manifest_size_bytes: int | None = None
+    artifact_manifest_content_type: str | None = None
+    log_stream_sha256: str | None = None
+    log_stream_size_bytes: int | None = None
+    log_stream_content_type: str | None = None
     external_status: str | None = Field(default=None, index=True)
     external_error: str | None = None
     callback_token_hash: str | None = Field(default=None, index=True)

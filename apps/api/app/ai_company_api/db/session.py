@@ -23,6 +23,7 @@ def init_db(engine) -> None:
     _upgrade_sqlite_cloud_run_phase_10a_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10b_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10d_columns(engine)
+    _upgrade_sqlite_cloud_run_phase_12a_columns(engine)
     SQLModel.metadata.create_all(engine)
     _upgrade_sqlite_repository_phase_7_columns(engine)
     _upgrade_sqlite_cloud_run_phase_8_columns(engine)
@@ -303,6 +304,40 @@ def _upgrade_sqlite_cloud_run_phase_10d_columns(engine) -> None:
                     f"ON cloud_run ({column_name})"
                 )
             )
+
+
+def _upgrade_sqlite_cloud_run_phase_12a_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    cloud_run_columns = {
+        "artifact_manifest_sha256": "VARCHAR",
+        "artifact_manifest_size_bytes": "INTEGER",
+        "artifact_manifest_content_type": "VARCHAR",
+        "log_stream_sha256": "VARCHAR",
+        "log_stream_size_bytes": "INTEGER",
+        "log_stream_content_type": "VARCHAR",
+    }
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "cloud_run" not in existing_tables:
+            return
+
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(text("PRAGMA table_info(cloud_run)")).mappings()
+        }
+        for column_name, column_type in cloud_run_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    text(f"ALTER TABLE cloud_run ADD COLUMN {column_name} {column_type}")
+                )
 
 
 def _upgrade_sqlite_local_test_run_nullable_patch_artifact(engine) -> None:

@@ -2538,6 +2538,43 @@ def test_remote_stub_runtime_submission_records_job_metadata(
     )
 
 
+def test_remote_stub_runtime_submission_persists_log_stream_object_metadata(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "runtime_provider": "remote_stub",
+            "storage_provider": "local_inline",
+        },
+    )
+
+    assert response.status_code == 201
+    cloud_run_id = response.json()["cloud_run"]["id"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, cloud_run_id)
+        assert cloud_run is not None
+        assert cloud_run.artifact_manifest_uri is not None
+        assert cloud_run.artifact_manifest_sha256 is not None
+        assert cloud_run.artifact_manifest_size_bytes is not None
+        assert cloud_run.artifact_manifest_content_type == "application/json"
+        assert cloud_run.log_stream_uri is not None
+        assert cloud_run.log_stream_sha256 is not None
+        assert cloud_run.log_stream_size_bytes is not None
+        assert cloud_run.log_stream_content_type == "text/plain"
+
+
 def test_cloud_run_read_redacts_external_uri_query_and_external_error(
     tmp_path: Path,
 ) -> None:
@@ -5932,6 +5969,56 @@ def test_init_db_adds_phase_10d_callback_token_columns(tmp_path: Path) -> None:
     }
     assert ("callback_token_hash",) in indexes
     assert ("callback_token_expires_at",) in indexes
+
+
+def test_init_db_adds_phase_12a_log_stream_metadata_columns(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    SQLModel.metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE cloud_run RENAME TO cloud_run_old")
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE cloud_run (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                workspace_id VARCHAR NOT NULL,
+                project_id VARCHAR NOT NULL,
+                task_id VARCHAR NOT NULL,
+                repo_id VARCHAR NOT NULL,
+                local_run_id VARCHAR,
+                base_branch VARCHAR NOT NULL,
+                head_branch VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                sandbox_kind VARCHAR NOT NULL,
+                cancel_requested BOOLEAN NOT NULL DEFAULT 0,
+                queue_provider VARCHAR NOT NULL DEFAULT 'local_db',
+                runtime_provider VARCHAR,
+                runtime_job_id VARCHAR,
+                storage_provider VARCHAR,
+                artifact_manifest_uri VARCHAR,
+                log_stream_uri VARCHAR,
+                external_status VARCHAR,
+                external_error VARCHAR,
+                callback_token_hash VARCHAR,
+                callback_token_expires_at DATETIME,
+                callback_token_used_at DATETIME,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql("DROP TABLE cloud_run_old")
+
+    init_db(engine)
+    columns = {column["name"] for column in inspect(engine).get_columns("cloud_run")}
+
+    assert "artifact_manifest_sha256" in columns
+    assert "artifact_manifest_size_bytes" in columns
+    assert "artifact_manifest_content_type" in columns
+    assert "log_stream_sha256" in columns
+    assert "log_stream_size_bytes" in columns
+    assert "log_stream_content_type" in columns
 
 
 def test_init_db_allows_cloud_test_run_without_patch_artifact(
