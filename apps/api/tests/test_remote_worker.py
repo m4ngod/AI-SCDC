@@ -158,6 +158,35 @@ class FakeCommandRunner:
         }
 
 
+class FailingCommandRunner:
+    def run(self, payload: dict, repo_path: str) -> dict:
+        return {
+            "status": "failed",
+            "runner_kind": "aliyun_eci",
+            "base_sha": "base123",
+            "head_sha": "base123",
+            "worktree_ref": "remote-worker://cloud_run_1",
+            "summary": "Remote worker failed: no_patch_produced.",
+            "files_changed": [],
+            "tests_run": [],
+            "test_result": "not_run",
+            "risks": [],
+            "diff_text": "",
+            "command_results": [
+                {
+                    "command": "python patch.py",
+                    "exit_code": 0,
+                    "stdout": "patched",
+                    "stderr": "",
+                    "duration_ms": 12,
+                    "timed_out": False,
+                }
+            ],
+            "test_command_results": [],
+            "failure_reason": "no_patch_produced",
+        }
+
+
 class SecretBearingCommandRunner:
     def run(self, payload: dict, repo_path: str) -> dict:
         clone_token = payload["clone_token"]
@@ -1069,6 +1098,32 @@ def test_remote_worker_executor_completes_unexpected_command_runner_failure() ->
     assert completion["failure_reason"] == "worker_execution_failed"
     assert completion["status"] == "failed"
     assert completion["test_result"] == "not_run"
+
+
+def test_remote_worker_completes_failure_reason_from_command_runner() -> None:
+    from ai_company_api.services.remote_worker import RemoteWorkerExecutor
+
+    client = FakeWorkerClient()
+    config = RemoteWorkerConfig(
+        api_base_url="https://api.example.test",
+        cloud_run_id="cloud_run_1",
+        worker_id="worker_1",
+        queue_provider="aliyun_mns",
+        storage_provider="aliyun_oss",
+        callback_token="callback-token-1",
+    )
+    executor = RemoteWorkerExecutor(
+        client=client,
+        checkout=FakeCheckout(),
+        command_runner=FailingCommandRunner(),
+    )
+
+    result = executor.run_once(config)
+
+    assert result["cloud_run"]["status"] == "failed"
+    assert client.completed is not None
+    completion = client.completed["result"]
+    assert completion["failure_reason"] == "no_patch_produced"
 
 
 def test_remote_worker_redacts_secret_bearing_execution_fields() -> None:
