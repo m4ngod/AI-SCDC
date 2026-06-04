@@ -247,6 +247,28 @@ export type CloudRunLogEntryCard = {
   created_at: string;
 };
 
+export type CloudRunLogWindowEntryCard = CloudRunLogEntryCard & {
+  source: "control_plane" | "log_stream";
+  sequence: number;
+};
+
+export type CloudRunLogWindowCard = {
+  entries: CloudRunLogWindowEntryCard[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
+
+export type CloudRunLogWindowOptions = {
+  after?: string | null;
+  limit?: number;
+  includeStream?: boolean;
+};
+
+type ListCloudRunLogWindow = (
+  cloudRunId: string,
+  options?: CloudRunLogWindowOptions
+) => Promise<CloudRunLogWindowCard>;
+
 export type PullRequestCard = {
   id: string;
   workspace_id?: string;
@@ -356,6 +378,7 @@ export type ConsoleApiClient = {
   processCloudRun: (cloudRunId: string) => Promise<CloudRunResult>;
   cancelCloudRun: (cloudRunId: string) => Promise<CloudRunCard>;
   listCloudRunLogs: (cloudRunId: string) => Promise<CloudRunLogEntryCard[]>;
+  listCloudRunLogWindow?: ListCloudRunLogWindow;
   createPullRequest: (approvalId: string) => Promise<PullRequestResult>;
   startLocalRun: (taskId: string) => Promise<LocalRunResult>;
   runPatchTests: (patchArtifactId: string) => Promise<PatchTestRunResult>;
@@ -391,6 +414,17 @@ type ApiLocalTaskRun = LocalTaskRunCard;
 type ApiCloudRun = CloudRunCard;
 
 type ApiCloudRunLogEntry = CloudRunLogEntryCard;
+
+type ApiCloudRunLogWindowEntry = ApiCloudRunLogEntry & {
+  source: "control_plane" | "log_stream";
+  sequence: number;
+};
+
+type ApiCloudRunLogWindow = {
+  entries: ApiCloudRunLogWindowEntry[];
+  next_cursor: string | null;
+  has_more: boolean;
+};
 
 type ApiPatchArtifact = PatchArtifactCard & {
   workspace_id?: string;
@@ -636,7 +670,7 @@ function fakeTaskFromPatchArtifact(patchArtifactId: string) {
   };
 }
 
-export const fakeApiClient: ConsoleApiClient = {
+export const fakeApiClient: ConsoleApiClient & { listCloudRunLogWindow: ListCloudRunLogWindow } = {
   async listTasks() {
     return [...demoTasks];
   },
@@ -842,6 +876,23 @@ export const fakeApiClient: ConsoleApiClient = {
   },
   async listCloudRunLogs(cloudRunId: string) {
     return [...(fakeCloudRunLogsById.get(cloudRunId) ?? [])];
+  },
+  async listCloudRunLogWindow(
+    cloudRunId: string,
+    windowOptions: CloudRunLogWindowOptions = {}
+  ) {
+    const logs = await this.listCloudRunLogs(cloudRunId);
+    const limit = windowOptions.limit ?? logs.length;
+    const entries = logs.slice(0, limit).map((entry, sequence) => ({
+      ...entry,
+      source: "control_plane" as const,
+      sequence
+    }));
+    return {
+      entries,
+      nextCursor: logs.length > entries.length ? String(entries.length) : null,
+      hasMore: logs.length > entries.length
+    };
   },
   async createPullRequest(approvalId: string) {
     const patchArtifactId = approvalId.replace(/^patch_approval_/, "");
@@ -1299,6 +1350,24 @@ function mapCloudRunLogEntryCard(logEntry: ApiCloudRunLogEntry): CloudRunLogEntr
   };
 }
 
+function mapCloudRunLogWindowEntryCard(
+  logEntry: ApiCloudRunLogWindowEntry
+): CloudRunLogWindowEntryCard {
+  return {
+    ...mapCloudRunLogEntryCard(logEntry),
+    source: logEntry.source,
+    sequence: logEntry.sequence
+  };
+}
+
+function mapCloudRunLogWindowCard(window: ApiCloudRunLogWindow): CloudRunLogWindowCard {
+  return {
+    entries: window.entries.map(mapCloudRunLogWindowEntryCard),
+    nextCursor: window.next_cursor,
+    hasMore: window.has_more
+  };
+}
+
 function mapPullRequestCard(pullRequest: ApiPullRequest): PullRequestCard {
   return {
     id: pullRequest.id,
@@ -1367,7 +1436,9 @@ function mapPullRequestResult(result: ApiPullRequestResult): PullRequestResult {
   };
 }
 
-export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiClient {
+export function createHttpApiClient(
+  options: HttpApiClientOptions
+): ConsoleApiClient & { listCloudRunLogWindow: ListCloudRunLogWindow } {
   let resolvedProjectId = options.projectId;
   const workflowStatuses = new Set([
     "PATCH_READY",
@@ -1701,6 +1772,26 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         `GET /cloud-runs/${cloudRunId}/logs`
       );
       return logs.map(mapCloudRunLogEntryCard);
+    },
+    async listCloudRunLogWindow(cloudRunId: string, windowOptions = {}) {
+      const params = new URLSearchParams();
+      if (windowOptions.after) {
+        params.set("after", windowOptions.after);
+      }
+      if (windowOptions.limit !== undefined) {
+        params.set("limit", String(windowOptions.limit));
+      }
+      if (windowOptions.includeStream !== undefined) {
+        params.set("include_stream", String(windowOptions.includeStream));
+      }
+      const query = params.toString();
+      const path = `/cloud-runs/${cloudRunId}/logs/window${query ? `?${query}` : ""}`;
+      const response = await fetch(apiUrl(options.baseUrl, path));
+      const window = await readJsonResponse<ApiCloudRunLogWindow>(
+        response,
+        `GET /cloud-runs/${cloudRunId}/logs/window`
+      );
+      return mapCloudRunLogWindowCard(window);
     },
     async createPullRequest(approvalId: string) {
       const response = await fetch(

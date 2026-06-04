@@ -1241,6 +1241,55 @@ describe("desktop API clients", () => {
     ]);
   });
 
+  it("HTTP client lists cloud run log windows", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({
+        entries: [
+          {
+            id: "cloud_run_api:log-stream:0",
+            cloud_run_id: "cloud_run_api",
+            source: "log_stream",
+            level: "info",
+            event: "log_stream",
+            message: "worker started",
+            payload: { source: "log_stream", line: 1 },
+            created_at: "2026-06-05T02:00:00Z",
+            sequence: 0
+          }
+        ],
+        next_cursor: "cursor_1",
+        has_more: true
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+
+    const window = await client.listCloudRunLogWindow("cloud_run_api", {
+      after: "cursor_0",
+      limit: 25,
+      includeStream: true
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/logs/window?after=cursor_0&limit=25&include_stream=true"
+    );
+    expect(window).toEqual({
+      entries: [
+        expect.objectContaining({
+          id: "cloud_run_api:log-stream:0",
+          source: "log_stream",
+          sequence: 0
+        })
+      ],
+      nextCursor: "cursor_1",
+      hasMore: true
+    });
+  });
+
   it("normalizes phase 10a cloud run lease fields", async () => {
     const cloudRun = {
       id: "cloud_run_1",
