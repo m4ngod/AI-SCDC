@@ -176,6 +176,19 @@ Phase 10D does not add user identity auth for worker endpoints, rotate tokens
 during a running lease, add live log streaming, or change automatic PR/merge
 boundaries.
 
+## Phase 11 Boundary
+
+Phase 11 upgrades the Aliyun ECI remote worker from deterministic smoke output
+to a real execution skeleton. The worker claims a protected lease, fetches a
+callback-token-protected execution payload, clones the GitHub repository with a
+run-scoped clone credential, runs selected sandbox profile commands inside the
+worker container, captures diff and command/test output, uploads artifact refs,
+and completes the lease.
+
+Phase 11 does not add direct MNS receive/delete semantics, live log streaming,
+model-backed debugging, Git push, PR creation, automatic merge, production KMS,
+or a second cloud provider.
+
 ## Roadmap
 
 Completed:
@@ -194,6 +207,7 @@ Completed:
 12. Provider-neutral remote execution-plane contract with queue, local-inline object storage, remote runtime stub, artifact refs, external metadata redaction, and payload size guards.
 13. Aliyun provider MVP with MNS queue enqueue, OSS artifact refs, ECI remote worker submission, ACR worker image path, fake-client tests, and opt-in smoke documentation.
 14. Run-scoped remote worker callback token hardening with token hash storage, ECI env injection, protected worker callbacks, expiry, completion invalidation, and queued-cancel invalidation.
+15. Real remote worker execution skeleton with protected payload fetch, private GitHub clone credential boundary, command/test execution, diff capture, artifact uploads, and redacted completion.
 
 Future:
 

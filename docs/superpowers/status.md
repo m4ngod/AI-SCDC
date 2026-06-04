@@ -4,8 +4,8 @@ Last verified: 2026-06-04
 
 ## Current Phase
 
-The project is through Phase 10D: run-scoped callback token hardening for
-protected remote worker callbacks.
+The project is through Phase 11: real remote worker execution skeleton for
+protected Aliyun ECI workers.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -54,10 +54,24 @@ tests, README smoke instructions, and git history.
     callback token hash storage, ECI worker env injection, protected lease,
     heartbeat, artifact-upload, and completion callbacks, callback-token
     expiry, completion invalidation, and queued-cancel invalidation.
+15. Phase 11 real remote worker execution skeleton: protected execution payload
+    fetch, private GitHub clone credential boundary, selected sandbox profile
+    command/test execution inside the worker container, diff capture, artifact
+    uploads, and redacted completion payloads.
 
 ## Verification
 
-Latest Phase 10D verification:
+Latest Phase 11 focused verification during implementation:
+
+```bash
+pytest apps/api/tests/test_cloud_run_api.py -k "payload or callback_token or artifact_ref or aliyun" -v
+pytest apps/api/tests/test_remote_worker.py -v
+git diff --check
+```
+
+Task 9 final verification has not run in this status update.
+
+Previous Phase 10D verification:
 
 ```bash
 pytest apps/api/tests/test_cloud_run_api.py -k "aliyun or worker_uploads or artifact_ref or lease or callback_token" -v
@@ -111,9 +125,13 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Known Limits
 
-- Phase 10C adds an opt-in Aliyun provider MVP, but live log streaming, SLS,
+- Phase 11 adds a protected real remote worker execution skeleton for Aliyun
+  ECI, but live log streaming, direct MNS receive/delete semantics, SLS,
   Kubernetes/ACK orchestration, billing, and model-backed reviewer/debugger
   agents remain future work.
+- The real remote worker can fetch a protected payload, clone, execute commands,
+  capture diffs, upload artifacts, and complete a lease, but it does not push
+  branches, create pull requests, merge changes, or stream logs.
 - Docker execution is still available as a local-first adapter; `remote_stub`,
   `external_stub`, and `local_inline` remain deterministic development adapters
   for the provider-neutral contract.
@@ -129,14 +147,16 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Recommended Next Phase
 
-The next production hardening phase should build on Phase 10C without widening
+The next production hardening phase should build on Phase 11 without widening
 the approval boundary:
 
 1. Add live log streaming on top of the existing provider-neutral log URI and
    Phase 9 polling/log contract.
-2. Harden Aliyun smoke operations with cleanup automation, least-privilege RAM
-   policy examples, and provider failure runbooks.
+2. Add or harden direct Aliyun MNS receive/delete worker semantics while keeping
+   callback-token-protected payload access and completion boundaries.
 3. Keep fake, `docker_local`, `remote_stub`, `external_stub`, and
    `local_inline` as deterministic development adapters.
-4. Defer model-backed reviewer/debugger agents and commercial beta work until
+4. Harden Aliyun operations with cleanup automation, least-privilege RAM policy
+   examples, provider failure runbooks, and production KMS boundaries.
+5. Defer model-backed reviewer/debugger agents and commercial beta work until
    the remote execution plane is operationally reliable.
