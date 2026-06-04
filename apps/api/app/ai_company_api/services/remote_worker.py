@@ -362,12 +362,18 @@ class RemoteWorkerExecutor:
                 secrets,
             ),
             "summary": _redact_text(execution.get("summary", ""), secrets),
-            "files_changed": execution.get("files_changed", []),
+            "files_changed": _redacted_string_list(
+                execution.get("files_changed", []),
+                secrets,
+            ),
             "tests_run": _redacted_string_list(
                 execution.get("tests_run", []),
                 secrets,
             ),
-            "test_result": execution.get("test_result", "not_run"),
+            "test_result": _redacted_optional_text(
+                execution.get("test_result", "not_run"),
+                secrets,
+            ),
             "risks": _redacted_string_list(execution.get("risks", []), secrets),
             "diff_text": "",
             "artifact_refs": artifact_refs,
