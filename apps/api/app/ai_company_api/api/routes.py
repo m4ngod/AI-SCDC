@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlmodel import Session
 
 from ai_company_api.db.session import get_session_dependency
@@ -15,6 +15,7 @@ from ai_company_api.schemas.api import (
     CloudRunLeaseRead,
     CloudRunLeaseRequeueExpired,
     CloudRunLogEntryRead,
+    CloudRunLogWindowRead,
     CloudRunRead,
     CloudRunResultRead,
     ConversationCreate,
@@ -58,6 +59,7 @@ from ai_company_api.schemas.api import (
     UsageLedgerCreate,
     UsageLedgerRead,
 )
+from ai_company_api.services.cloud_run_logs import list_cloud_run_log_window
 from ai_company_api.services.cloud_runner import (
     cancel_cloud_run,
     claim_next_cloud_run_lease,
@@ -632,6 +634,26 @@ def post_cloud_run_cancel(
     session: SessionDep,
 ) -> CloudRunRead:
     return cancel_cloud_run(session, cloud_run_id=cloud_run_id)
+
+
+@router.get(
+    "/cloud-runs/{cloud_run_id}/logs/window",
+    response_model=CloudRunLogWindowRead,
+)
+def get_cloud_run_log_window(
+    cloud_run_id: str,
+    session: SessionDep,
+    after: str | None = None,
+    limit: int = Query(default=100, ge=1, le=200),
+    include_stream: bool = True,
+) -> CloudRunLogWindowRead:
+    return list_cloud_run_log_window(
+        session,
+        cloud_run_id=cloud_run_id,
+        after=after,
+        limit=limit,
+        include_stream=include_stream,
+    )
 
 
 @router.get("/cloud-runs/{cloud_run_id}/logs", response_model=list[CloudRunLogEntryRead])

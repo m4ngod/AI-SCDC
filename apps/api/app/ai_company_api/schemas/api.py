@@ -349,6 +349,24 @@ class CloudRunLogEntryRead(BaseModel):
     created_at: datetime
 
 
+class CloudRunLogWindowEntryRead(BaseModel):
+    id: str
+    cloud_run_id: str
+    source: Literal["control_plane", "log_stream"]
+    level: str
+    event: str
+    message: str
+    payload: dict[str, Any] | None
+    created_at: datetime
+    sequence: int
+
+
+class CloudRunLogWindowRead(BaseModel):
+    entries: list[CloudRunLogWindowEntryRead]
+    next_cursor: str | None
+    has_more: bool
+
+
 class CloudRunResultRead(BaseModel):
     cloud_run: CloudRunRead
     patch_artifact: PatchArtifactRead | None = None

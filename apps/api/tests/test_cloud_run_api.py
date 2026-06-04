@@ -4331,6 +4331,83 @@ def test_cloud_run_logs_are_ordered_and_redacted(tmp_path: Path) -> None:
     assert same_time_events == ["same_time_a", "same_time_b"]
 
 
+def test_cloud_run_log_window_returns_bounded_pages_without_duplicates(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        base_time = cloud_run.created_at
+        for index in range(3):
+            session.add(
+                CloudRunLogEntry(
+                    id=f"log_window_{index}",
+                    cloud_run_id=cloud_run.id,
+                    workspace_id=cloud_run.workspace_id,
+                    event=f"window_{index}",
+                    message=f"Window log {index}.",
+                    created_at=base_time + timedelta(seconds=index + 1),
+                )
+            )
+        session.commit()
+
+    first_response = client.get(f"/cloud-runs/{queued['id']}/logs/window?limit=2")
+    assert first_response.status_code == 200
+    first_body = first_response.json()
+    assert [entry["event"] for entry in first_body["entries"]] == [
+        "queued",
+        "window_0",
+    ]
+    assert first_body["has_more"] is True
+    assert first_body["next_cursor"]
+
+    second_response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"after": first_body["next_cursor"], "limit": 10},
+    )
+    assert second_response.status_code == 200
+    second_body = second_response.json()
+    assert [entry["event"] for entry in second_body["entries"]] == [
+        "window_1",
+        "window_2",
+    ]
+    assert second_body["has_more"] is False
+    assert second_body["next_cursor"] is None
+
+
+def test_cloud_run_log_window_rejects_invalid_cursor(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"after": "not-a-valid-cursor"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid log cursor"
+
+
 def test_docker_cloud_run_redacts_github_token_from_persisted_results(
     tmp_path: Path,
     monkeypatch,
