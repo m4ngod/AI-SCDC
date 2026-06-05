@@ -1,5 +1,6 @@
 import threading
 import json
+import logging
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -36,6 +37,7 @@ from ai_company_api.services.aliyun_clients import (
     AliyunOssPutObjectRequest,
 )
 from ai_company_api.services.object_storage import (
+    ObjectStorageError,
     ObjectStorageWrite,
     get_object_storage_provider,
 )
@@ -4471,7 +4473,6 @@ def test_cloud_run_log_window_does_not_sync_by_default(
     monkeypatch.setattr(
         "ai_company_api.services.cloud_run_logs.sync_cloud_run_log_stream",
         sync_should_not_run,
-        raising=False,
     )
 
     database_path = tmp_path / "app.db"
@@ -4501,7 +4502,6 @@ def test_cloud_run_log_window_include_stream_false_does_not_sync(
     monkeypatch.setattr(
         "ai_company_api.services.cloud_run_logs.sync_cloud_run_log_stream",
         sync_should_not_run,
-        raising=False,
     )
 
     database_path = tmp_path / "app.db"
@@ -4616,6 +4616,85 @@ def test_cloud_run_log_window_sync_stream_does_not_churn_remote_stub_metadata(
         assert cloud_run is not None
         assert cloud_run.log_stream_uri == first_uri
         assert cloud_run.log_stream_sha256 == first_sha256
+
+
+def test_cloud_run_log_window_failed_sync_rolls_back_partial_session_state(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+) -> None:
+    raw_secret = "provider-secret-token"
+
+    class PartialFlushFailingRuntimeProvider:
+        def sync_logs(self, session, request):
+            cloud_run = session.get(CloudRun, request.cloud_run_id)
+            assert cloud_run is not None
+            cloud_run.log_stream_uri = (
+                f"local-inline://cloud-run-objects/{raw_secret}"
+            )
+            cloud_run.log_stream_sha256 = "0" * 64
+            cloud_run.log_stream_size_bytes = 0
+            cloud_run.log_stream_content_type = "text/plain"
+            session.add(cloud_run)
+            session.add(
+                CloudRunLogEntry(
+                    cloud_run_id=request.cloud_run_id,
+                    workspace_id=request.workspace_id,
+                    event="provider_partial_sync",
+                    message=f"partial sync leaked {raw_secret}",
+                    payload={"error": f"raw provider exception {raw_secret}"},
+                )
+            )
+            session.flush()
+            raise ObjectStorageError(f"raw provider exception {raw_secret}")
+
+    def failing_provider(name: str | None):
+        assert name == "remote_stub"
+        return PartialFlushFailingRuntimeProvider()
+
+    monkeypatch.setattr(
+        "ai_company_api.services.cloud_run_log_sync.get_remote_runtime_provider",
+        failing_provider,
+    )
+    caplog.set_level(
+        logging.WARNING,
+        logger="ai_company_api.services.cloud_run_log_sync",
+    )
+
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        cloud_run.runtime_provider = "remote_stub"
+        cloud_run.runtime_job_id = f"remote-stub-job-{queued['id']}"
+        cloud_run.storage_provider = "local_inline"
+        session.add(cloud_run)
+        session.commit()
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "true", "sync_stream": "true", "limit": 20},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [entry["event"] for entry in body["entries"]] == ["queued"]
+    assert raw_secret not in str(body)
+    assert "raw provider exception" not in str(body)
+    assert raw_secret not in caplog.text
+    assert "raw provider exception" not in caplog.text
+    assert queued["id"] in caplog.text
+    assert "runtime_provider=remote_stub" in caplog.text
 
 
 def test_cloud_run_log_window_includes_redacted_stream_lines_when_metadata_exists(
