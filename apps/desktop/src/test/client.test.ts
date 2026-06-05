@@ -1290,11 +1290,12 @@ describe("desktop API clients", () => {
     const window = await client.listCloudRunLogWindow("cloud_run_api", {
       after: "cursor_0",
       limit: 25,
-      includeStream: true
+      includeStream: true,
+      syncStream: true
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/logs/window?after=cursor_0&limit=25&include_stream=true"
+      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/logs/window?after=cursor_0&limit=25&include_stream=true&sync_stream=true"
     );
     expect(window).toEqual({
       entries: [

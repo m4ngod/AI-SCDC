@@ -262,6 +262,7 @@ export type CloudRunLogWindowOptions = {
   after?: string | null;
   limit?: number;
   includeStream?: boolean;
+  syncStream?: boolean;
 };
 
 export type PullRequestCard = {
@@ -1783,6 +1784,9 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
       }
       if (windowOptions.includeStream !== undefined) {
         params.set("include_stream", String(windowOptions.includeStream));
+      }
+      if (windowOptions.syncStream !== undefined) {
+        params.set("sync_stream", String(windowOptions.syncStream));
       }
       const query = params.toString();
       const path = `/cloud-runs/${cloudRunId}/logs/window${query ? `?${query}` : ""}`;
