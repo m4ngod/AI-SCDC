@@ -21,6 +21,25 @@ class AliyunMnsSendMessageRequest:
 
 
 @dataclass(frozen=True)
+class AliyunMnsReceiveMessageRequest:
+    queue_name: str
+    wait_seconds: int = 3
+
+
+@dataclass(frozen=True)
+class AliyunMnsDeleteMessageRequest:
+    queue_name: str
+    receipt_handle: str
+
+
+@dataclass(frozen=True)
+class AliyunMnsReceivedMessage:
+    message_id: str
+    receipt_handle: str
+    body: str
+
+
+@dataclass(frozen=True)
 class AliyunOssPutObjectRequest:
     bucket: str
     object_key: str
@@ -57,6 +76,14 @@ class AliyunEciDescribeContainerLogRequest:
 
 class AliyunMnsClient(Protocol):
     def send_message(self, request: AliyunMnsSendMessageRequest) -> dict[str, Any]:
+        ...
+
+    def receive_message(
+        self, request: AliyunMnsReceiveMessageRequest
+    ) -> AliyunMnsReceivedMessage | None:
+        ...
+
+    def delete_message(self, request: AliyunMnsDeleteMessageRequest) -> dict[str, str]:
         ...
 
 
@@ -146,6 +173,55 @@ class SdkAliyunMnsClient:
             "message_id": getattr(result, "message_id", None),
             "cloud_run_id": request.cloud_run_id,
         }
+
+    def receive_message(
+        self, request: AliyunMnsReceiveMessageRequest
+    ) -> AliyunMnsReceivedMessage | None:
+        from mns.account import Account
+
+        settings = require_aliyun_settings(
+            provider_name="mns",
+            required_names=(
+                "access_key_id",
+                "access_key_secret",
+                "mns_endpoint",
+            ),
+            settings=self.settings,
+        )
+        queue = Account(
+            settings.mns_endpoint,
+            settings.access_key_id,
+            settings.access_key_secret,
+        ).get_queue(request.queue_name)
+        result = queue.receive_message(wait_seconds=request.wait_seconds)
+        if result is None:
+            return None
+        body = getattr(result, "message_body", None) or getattr(result, "body", "")
+        return AliyunMnsReceivedMessage(
+            message_id=str(getattr(result, "message_id", "")),
+            receipt_handle=str(getattr(result, "receipt_handle", "")),
+            body=str(body),
+        )
+
+    def delete_message(self, request: AliyunMnsDeleteMessageRequest) -> dict[str, str]:
+        from mns.account import Account
+
+        settings = require_aliyun_settings(
+            provider_name="mns",
+            required_names=(
+                "access_key_id",
+                "access_key_secret",
+                "mns_endpoint",
+            ),
+            settings=self.settings,
+        )
+        queue = Account(
+            settings.mns_endpoint,
+            settings.access_key_id,
+            settings.access_key_secret,
+        ).get_queue(request.queue_name)
+        result = queue.delete_message(request.receipt_handle)
+        return result if isinstance(result, dict) else {"deleted": "true"}
 
 
 @dataclass(frozen=True)

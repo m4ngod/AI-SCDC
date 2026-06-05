@@ -2,14 +2,20 @@ import sys
 from types import ModuleType, SimpleNamespace
 from typing import get_type_hints
 
+import pytest
+
 from ai_company_api.services.aliyun_config import AliyunSettings
 from ai_company_api.services.aliyun_clients import (
     AliyunClientBundle,
     AliyunEciCreateContainerGroupRequest,
     AliyunEciDescribeContainerLogRequest,
+    AliyunMnsDeleteMessageRequest,
+    AliyunMnsReceiveMessageRequest,
+    AliyunMnsReceivedMessage,
     AliyunMnsSendMessageRequest,
     AliyunOssPutObjectRequest,
     SdkAliyunEciClient,
+    SdkAliyunMnsClient,
     SdkAliyunOssClient,
     get_aliyun_client_bundle,
     set_aliyun_client_bundle_for_tests,
@@ -17,8 +23,25 @@ from ai_company_api.services.aliyun_clients import (
 
 
 class FakeMnsClient:
+    def __init__(self) -> None:
+        self.receive_requests = []
+        self.delete_requests = []
+        self.next_received_message = None
+
     def send_message(self, request: AliyunMnsSendMessageRequest):
         return {"message_id": f"msg-{request.cloud_run_id}"}
+
+    def receive_message(
+        self, request: AliyunMnsReceiveMessageRequest
+    ) -> AliyunMnsReceivedMessage | None:
+        self.receive_requests.append(request)
+        return self.next_received_message
+
+    def delete_message(
+        self, request: AliyunMnsDeleteMessageRequest
+    ) -> dict[str, str]:
+        self.delete_requests.append(request)
+        return {"deleted": "true"}
 
 
 class FakeOssClient:
@@ -49,6 +72,79 @@ def test_client_bundle_override_is_returned_for_tests() -> None:
 
 def test_oss_put_object_request_content_is_bytes() -> None:
     assert get_type_hints(AliyunOssPutObjectRequest)["content"] is bytes
+
+
+def test_sdk_mns_receive_message_maps_sdk_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_complete_aliyun_env(monkeypatch)
+    captured: dict[str, object] = {}
+
+    class FakeSdkMessage:
+        message_id = "msg-1"
+        receipt_handle = "receipt-1"
+        message_body = '{"cloud_run_id":"cloud_run_1"}'
+
+    class FakeQueue:
+        def receive_message(self, wait_seconds: int | None = None) -> FakeSdkMessage:
+            captured["wait_seconds"] = wait_seconds
+            return FakeSdkMessage()
+
+    class FakeAccount:
+        def __init__(self, endpoint: str, access_key_id: str, access_key_secret: str) -> None:
+            captured["endpoint"] = endpoint
+            captured["access_key_id"] = access_key_id
+            captured["access_key_secret"] = access_key_secret
+
+        def get_queue(self, queue_name: str) -> FakeQueue:
+            captured["queue_name"] = queue_name
+            return FakeQueue()
+
+    account_module = ModuleType("mns.account")
+    account_module.Account = FakeAccount
+    monkeypatch.setitem(sys.modules, "mns.account", account_module)
+
+    client = SdkAliyunMnsClient(_aliyun_settings())
+    result = client.receive_message(
+        AliyunMnsReceiveMessageRequest(queue_name="phase12c-queue", wait_seconds=7)
+    )
+
+    assert result == AliyunMnsReceivedMessage(
+        message_id="msg-1",
+        receipt_handle="receipt-1",
+        body='{"cloud_run_id":"cloud_run_1"}',
+    )
+    assert captured["queue_name"] == "phase12c-queue"
+    assert captured["wait_seconds"] == 7
+
+
+def test_sdk_mns_delete_message_uses_receipt_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_complete_aliyun_env(monkeypatch)
+    captured: dict[str, object] = {}
+
+    class FakeQueue:
+        def delete_message(self, receipt_handle: str) -> dict[str, str]:
+            captured["receipt_handle"] = receipt_handle
+            return {"ok": "true"}
+
+    class FakeAccount:
+        def __init__(self, endpoint: str, access_key_id: str, access_key_secret: str) -> None:
+            captured["endpoint"] = endpoint
+
+        def get_queue(self, queue_name: str) -> FakeQueue:
+            captured["queue_name"] = queue_name
+            return FakeQueue()
+
+    account_module = ModuleType("mns.account")
+    account_module.Account = FakeAccount
+    monkeypatch.setitem(sys.modules, "mns.account", account_module)
+
+    client = SdkAliyunMnsClient(_aliyun_settings())
+    result = client.delete_message(
+        AliyunMnsDeleteMessageRequest(queue_name="phase12c-queue", receipt_handle="receipt-1")
+    )
+
+    assert result == {"ok": "true"}
+    assert captured["queue_name"] == "phase12c-queue"
+    assert captured["receipt_handle"] == "receipt-1"
 
 
 def test_sdk_oss_put_object_passes_bytes_body_to_sdk(monkeypatch) -> None:
@@ -366,6 +462,29 @@ def test_sdk_aliyun_eci_client_describe_container_log_builds_request(
     assert captured["request"].tail == 500
     assert captured["request"].limit_bytes == 1024
     assert captured["request"].timestamps is True
+
+
+def _set_complete_aliyun_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_SCDC_ALIYUN_REGION_ID", "cn-hangzhou")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_ID", "ak-id")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "ak-secret")
+    monkeypatch.setenv(
+        "AI_SCDC_ALIYUN_MNS_ENDPOINT",
+        "https://123456.mns.cn-hangzhou.aliyuncs.com",
+    )
+    monkeypatch.setenv("AI_SCDC_ALIYUN_MNS_QUEUE_NAME", "ai-scdc-cloud-runs-dev")
+    monkeypatch.setenv(
+        "AI_SCDC_ALIYUN_OSS_ENDPOINT",
+        "https://oss-cn-hangzhou.aliyuncs.com",
+    )
+    monkeypatch.setenv("AI_SCDC_ALIYUN_OSS_BUCKET", "ai-scdc-dev-artifacts")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ECI_VSWITCH_ID", "vsw-demo")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ECI_SECURITY_GROUP_ID", "sg-demo")
+    monkeypatch.setenv(
+        "AI_SCDC_ALIYUN_ECI_IMAGE",
+        "registry.cn-hangzhou.aliyuncs.com/ai-scdc/remote-worker:dev",
+    )
+    monkeypatch.setenv("AI_SCDC_API_PUBLIC_BASE_URL", "https://api.example.test")
 
 
 def _aliyun_settings() -> AliyunSettings:
