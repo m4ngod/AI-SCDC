@@ -84,8 +84,8 @@ Results:
   passed, 19 tests, 108 deselected, 1 existing Starlette/httpx warning.
 - `pytest apps/api/tests/test_aliyun_clients.py -v`: passed, 6 tests.
 - `pytest apps/api/tests/test_cloud_object_storage.py -v`: passed, 8 tests.
-- `pytest apps/api/tests -v`: passed after `c074977`, 410 tests, 1
-  existing Starlette/httpx warning.
+- `pytest apps/api/tests -v`: passed, 410 tests, 1 existing
+  Starlette/httpx warning.
 - `pnpm --filter @ai-scdc/desktop test -- client.test.ts`: passed, 1 test
   file, 34 tests.
 - `pnpm typecheck`: passed for `apps/desktop` and
@@ -152,7 +152,8 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
   model-backed reviewer/debugger agents.
 - The real remote worker can fetch a protected payload, clone, execute commands,
   capture diffs, upload artifacts, and complete a lease, but it does not push
-  branches, create pull requests, merge changes, or stream provider-native logs.
+  branches, create pull requests, merge changes, or provide live
+  WebSocket/SSE provider log streaming.
 - Docker execution is still available as a local-first adapter; `remote_stub`,
   `external_stub`, and `local_inline` remain deterministic development adapters
   for the provider-neutral contract.
