@@ -3981,6 +3981,7 @@ def test_aliyun_mns_retained_receipt_recovery_failure_keeps_terminal_state_and_r
     assert result.reason == "mns_message_delete_failed"
     assert result.cloud_run.status == "patch_ready"
     assert result.cloud_run.external_status == "mns_message_delete_failed"
+    assert "receipt-1" not in (result.cloud_run.external_error or "")
     assert "provider-secret" not in (result.cloud_run.external_error or "")
     assert "abc123" not in (result.cloud_run.external_error or "")
 
@@ -4003,6 +4004,85 @@ def test_aliyun_mns_retained_receipt_recovery_failure_keeps_terminal_state_and_r
     assert persisted.status == "patch_ready"
     assert persisted.queue_receipt == "receipt-1"
     assert persisted.external_status == "mns_message_delete_failed"
+    assert "receipt-1" not in (persisted.external_error or "")
+    assert "provider-secret" not in (persisted.external_error or "")
+    assert "abc123" not in (persisted.external_error or "")
+    serialized_logs = "\n".join(
+        f"{entry.event}\n{entry.message}\n"
+        f"{json.dumps(entry.payload, sort_keys=True, default=str)}"
+        for entry in log_entries
+    )
+    assert "mns_message_delete_retry_failed" in serialized_logs
+    assert "receipt-1" not in serialized_logs
+    assert "provider-secret" not in serialized_logs
+    assert "abc123" not in serialized_logs
+
+
+def test_aliyun_mns_retained_receipt_recovery_redacts_raw_provider_error_at_helper_boundary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+    from ai_company_api.services.cloud_queue_providers import CloudQueueProviderError
+
+    class RawErrorProvider:
+        def delete(self, *, queue_receipt: str) -> None:
+            assert queue_receipt == "receipt-1"
+            raise CloudQueueProviderError(
+                "delete failed for receipt-1 secret=provider-secret token=abc123"
+            )
+
+    database_path = tmp_path / "app.db"
+    cloud_run_id, lease_id, fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    fake_mns.delete_error = RuntimeError("delete failed for receipt-1")
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    client = build_client(database_path)
+    payload = remote_stub_completion_payload(cloud_run_id)
+    payload["worker_id"] = queued_payload["worker_id"]
+    payload["callback_token"] = queued_payload["callback_token"]
+
+    completion = client.post(
+        f"/cloud-run-worker/leases/{lease_id}/complete",
+        json=payload,
+    )
+    assert completion.status_code == 200
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "get_cloud_queue_provider",
+        lambda provider: RawErrorProvider(),
+    )
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    with Session(engine) as session:
+        result = cloud_runner.retry_retained_mns_queue_receipt_delete(
+            session,
+            cloud_run_id=cloud_run_id,
+        )
+
+    assert result.status == "failed"
+    assert result.reason == "mns_message_delete_failed"
+    assert result.cloud_run.status == "patch_ready"
+    assert result.cloud_run.external_status == "mns_message_delete_failed"
+    assert "receipt-1" not in (result.cloud_run.external_error or "")
+    assert "provider-secret" not in (result.cloud_run.external_error or "")
+    assert "abc123" not in (result.cloud_run.external_error or "")
+
+    with Session(engine) as session:
+        persisted = session.get(CloudRun, cloud_run_id)
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+            .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+        ).all()
+
+    assert persisted is not None
+    assert persisted.status == "patch_ready"
+    assert persisted.queue_receipt == "receipt-1"
+    assert persisted.external_status == "mns_message_delete_failed"
+    assert "receipt-1" not in (persisted.external_error or "")
     assert "provider-secret" not in (persisted.external_error or "")
     assert "abc123" not in (persisted.external_error or "")
     serialized_logs = "\n".join(

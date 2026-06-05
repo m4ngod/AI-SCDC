@@ -923,11 +923,9 @@ def retry_retained_mns_queue_receipt_delete(
         get_cloud_queue_provider(ALIYUN_MNS_QUEUE_PROVIDER).delete(
             queue_receipt=cloud_run.queue_receipt or ""
         )
-    except CloudQueueProviderError as exc:
+    except CloudQueueProviderError:
         cloud_run.external_status = "mns_message_delete_failed"
-        cloud_run.external_error = (
-            _redact_external_error(str(exc)) or "mns_message_delete_failed"
-        )
+        cloud_run.external_error = "mns_message_delete_failed"
         _append_cloud_run_log(
             session,
             cloud_run=cloud_run,
