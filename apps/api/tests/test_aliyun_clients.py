@@ -147,6 +147,102 @@ def test_sdk_mns_delete_message_uses_receipt_handle(monkeypatch: pytest.MonkeyPa
     assert captured["receipt_handle"] == "receipt-1"
 
 
+def test_sdk_mns_receive_message_returns_none_on_empty_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_complete_aliyun_env(monkeypatch)
+
+    class FakeEmptyQueueError(Exception):
+        type = "MessageNotExist"
+
+    class FakeQueue:
+        def receive_message(self, wait_seconds: int | None = None):
+            raise FakeEmptyQueueError("MessageNotExist")
+
+    class FakeAccount:
+        def __init__(self, endpoint: str, access_key_id: str, access_key_secret: str) -> None:
+            pass
+
+        def get_queue(self, queue_name: str) -> FakeQueue:
+            return FakeQueue()
+
+    account_module = ModuleType("mns.account")
+    account_module.Account = FakeAccount
+    monkeypatch.setitem(sys.modules, "mns.account", account_module)
+
+    client = SdkAliyunMnsClient(_aliyun_settings())
+
+    assert (
+        client.receive_message(
+            AliyunMnsReceiveMessageRequest(queue_name="phase12c-queue", wait_seconds=7)
+        )
+        is None
+    )
+
+
+def test_sdk_mns_receive_message_uses_body_when_message_body_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_complete_aliyun_env(monkeypatch)
+
+    class FakeSdkMessage:
+        message_id = "msg-1"
+        receipt_handle = "receipt-1"
+        body = '{"cloud_run_id":"cloud_run_1"}'
+
+    class FakeQueue:
+        def receive_message(self, wait_seconds: int | None = None) -> FakeSdkMessage:
+            return FakeSdkMessage()
+
+    class FakeAccount:
+        def __init__(self, endpoint: str, access_key_id: str, access_key_secret: str) -> None:
+            pass
+
+        def get_queue(self, queue_name: str) -> FakeQueue:
+            return FakeQueue()
+
+    account_module = ModuleType("mns.account")
+    account_module.Account = FakeAccount
+    monkeypatch.setitem(sys.modules, "mns.account", account_module)
+
+    client = SdkAliyunMnsClient(_aliyun_settings())
+    result = client.receive_message(
+        AliyunMnsReceiveMessageRequest(queue_name="phase12c-queue", wait_seconds=7)
+    )
+
+    assert result == AliyunMnsReceivedMessage(
+        message_id="msg-1",
+        receipt_handle="receipt-1",
+        body='{"cloud_run_id":"cloud_run_1"}',
+    )
+
+
+def test_sdk_mns_delete_message_returns_deleted_when_sdk_result_is_not_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_complete_aliyun_env(monkeypatch)
+
+    class FakeQueue:
+        def delete_message(self, receipt_handle: str):
+            return SimpleNamespace(ok="true")
+
+    class FakeAccount:
+        def __init__(self, endpoint: str, access_key_id: str, access_key_secret: str) -> None:
+            pass
+
+        def get_queue(self, queue_name: str) -> FakeQueue:
+            return FakeQueue()
+
+    account_module = ModuleType("mns.account")
+    account_module.Account = FakeAccount
+    monkeypatch.setitem(sys.modules, "mns.account", account_module)
+
+    client = SdkAliyunMnsClient(_aliyun_settings())
+    result = client.delete_message(
+        AliyunMnsDeleteMessageRequest(queue_name="phase12c-queue", receipt_handle="receipt-1")
+    )
+
+    assert result == {"deleted": "true"}
+
+
 def test_sdk_oss_put_object_passes_bytes_body_to_sdk(monkeypatch) -> None:
     captured_requests = []
 
