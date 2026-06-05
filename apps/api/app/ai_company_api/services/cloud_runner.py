@@ -1228,6 +1228,7 @@ def _mark_claimed_cloud_run_cancelled(
     session.add(cloud_run)
     session.commit()
     session.refresh(cloud_run)
+    _ack_mns_queue_receipt_after_terminal_commit(session, cloud_run=cloud_run)
     return CloudRunResultRead(cloud_run=_cloud_run_read(cloud_run), patch_artifact=None)
 
 

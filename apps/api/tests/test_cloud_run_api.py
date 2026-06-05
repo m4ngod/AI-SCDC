@@ -3704,11 +3704,23 @@ def test_aliyun_mns_cancelled_completion_deletes_receipt_and_clears_internal_rec
     assert response.json()["cloud_run"]["status"] == "cancelled"
     assert response.json()["patch_artifact"] is None
     assert "queue_receipt" not in response.text
+    assert "receipt-1" not in response.text
+    assert "receipt-1" not in json.dumps(response.json(), sort_keys=True, default=str)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
         cloud_run = session.get(CloudRun, cloud_run_id)
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+            .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+        ).all()
     assert cloud_run is not None
     assert cloud_run.status == "cancelled"
     assert cloud_run.queue_receipt is None
+    serialized_logs = "\n".join(
+        f"{entry.message}\n{json.dumps(entry.payload, sort_keys=True, default=str)}"
+        for entry in log_entries
+    )
+    assert "receipt-1" not in serialized_logs
 
 
 def test_aliyun_mns_duplicate_delivery_cannot_claim_second_active_lease(
