@@ -710,6 +710,44 @@ $env:AI_SCDC_ALIYUN_ECI_IMAGE = $AcrImage
 $env:AI_SCDC_API_PUBLIC_BASE_URL = "<URL reachable from ECI>"
 ```
 
+Phase 12C adds the MNS pull-worker capability; it does not replace the
+existing assigned-run launch contract for Aliyun ECI workers. A cloud run
+started with `queue_provider=aliyun_mns` and no remote runtime creates a
+token-bearing MNS assignment for an external pull worker. A cloud run started
+with both `queue_provider=aliyun_mns` and `runtime_provider=aliyun_eci` uses
+the protected ECI assigned-run path and does not create an extra MNS delivery.
+
+MNS pull mode is activated only for worker processes started without
+`AI_SCDC_CLOUD_RUN_ID`. In that mode, the queue and storage providers are set
+explicitly. Queue-only MNS pull cloud-run submissions must also provide a
+`storage_provider`, typically `aliyun_oss`, so the queued worker message is
+consumable:
+
+```text
+AI_SCDC_QUEUE_PROVIDER=aliyun_mns
+AI_SCDC_STORAGE_PROVIDER=aliyun_oss
+AI_SCDC_MNS_WAIT_SECONDS=3
+```
+
+Aliyun ECI launch still supports and currently uses assigned-run mode when the
+protected worker identity and callback environment variables are provided. In
+that mode the API injects:
+
+```text
+AI_SCDC_CLOUD_RUN_ID
+AI_SCDC_WORKER_ID
+AI_SCDC_CALLBACK_TOKEN
+```
+
+For protected Aliyun pull-mode claims, the worker sends queue metadata on
+claim, including the MNS message ID and receipt plus the callback token. The
+API accepts the receipt only when the claimed MNS message ID matches the
+persisted enqueue result for that cloud run. The API owns post-terminal MNS
+receipt deletion or acknowledgement after successful lease completion, so the
+default worker launch path does not double-delete receipts. The API stores
+only the callback token hash, the raw token appears only on controlled
+delivery surfaces, and `queue_receipt` remains internal-only.
+
 Start a cloud run with Aliyun providers:
 
 ```powershell
@@ -726,8 +764,8 @@ $cloudRun = Invoke-RestMethod `
 ```
 
 Expected output includes `queue_provider = aliyun_mns`, `storage_provider =
-aliyun_oss`, `runtime_provider = aliyun_eci`, an MNS message ID, an ECI runtime
-job ID, and `oss://` artifact/log URIs. The API generates a run-scoped
+aliyun_oss`, `runtime_provider = aliyun_eci`, no MNS message ID or receipt, an
+ECI runtime job ID, and `oss://` artifact/log URIs. The API generates a run-scoped
 `AI_SCDC_CALLBACK_TOKEN`, injects it into the ECI worker environment, and
 requires the worker to send it on lease, heartbeat, artifact-upload, and
 completion callbacks. The raw callback token, token hash, Aliyun secrets, and
@@ -757,7 +795,7 @@ Cleanup after smoke:
   container group created before an API-side artifact write failure.
 - Delete OSS objects under the development prefix if lifecycle cleanup has not
   removed them yet.
-- Purge unneeded MNS test messages.
+- Purge unneeded MNS test messages from queue-only pull-worker smoke runs.
 - Release idle NAT gateway or EIP resources that were created only for smoke
   testing.
 

@@ -378,6 +378,8 @@ class CloudRunLeaseCreate(BaseModel):
     queue_provider: str = Field(default="local_db", min_length=1)
     cloud_run_id: str | None = Field(default=None, min_length=1)
     callback_token: str | None = Field(default=None, min_length=1)
+    queue_message_id: str | None = Field(default=None, min_length=1)
+    queue_receipt: str | None = Field(default=None, min_length=1)
     lease_seconds: int = Field(default=60, ge=1, le=3600)
 
 

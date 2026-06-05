@@ -9,6 +9,11 @@ from ai_company_api.services.aliyun_config import (
     require_aliyun_settings,
 )
 
+try:
+    from mns.mns_exception import MNSServerException as _MnsServerException
+except Exception:  # pragma: no cover - SDK may be unavailable in tests
+    _MnsServerException = None
+
 
 @dataclass(frozen=True)
 class AliyunMnsSendMessageRequest:
@@ -193,7 +198,12 @@ class SdkAliyunMnsClient:
             settings.access_key_id,
             settings.access_key_secret,
         ).get_queue(request.queue_name)
-        result = queue.receive_message(wait_seconds=request.wait_seconds)
+        try:
+            result = queue.receive_message(wait_seconds=request.wait_seconds)
+        except Exception as exc:
+            if _is_mns_empty_queue_exception(exc):
+                return None
+            raise
         if result is None:
             return None
         body = getattr(result, "message_body", None) or getattr(result, "body", "")
@@ -222,6 +232,18 @@ class SdkAliyunMnsClient:
         ).get_queue(request.queue_name)
         result = queue.delete_message(request.receipt_handle)
         return result if isinstance(result, dict) else {"deleted": "true"}
+
+
+def _is_mns_empty_queue_exception(exc: Exception) -> bool:
+    if _MnsServerException is None:
+        return False
+    if not isinstance(exc, _MnsServerException):
+        return False
+    for attr_name in ("type", "error_code", "code"):
+        value = getattr(exc, attr_name, None)
+        if isinstance(value, str) and value == "MessageNotExist":
+            return True
+    return False
 
 
 @dataclass(frozen=True)

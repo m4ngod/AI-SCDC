@@ -100,6 +100,8 @@ DEFAULT_QUEUE_PROVIDER = "local_db"
 EXTERNAL_STUB_QUEUE_PROVIDER = "external_stub"
 EXTERNAL_STUB_MESSAGE_PREFIX = "external-stub-message-"
 EXTERNAL_STUB_RECEIPT_PREFIX = "external-stub-receipt-"
+ALIYUN_MNS_QUEUE_PROVIDER = "aliyun_mns"
+ALIYUN_ECI_RUNTIME_PROVIDER = "aliyun_eci"
 DEFAULT_LEASE_SECONDS = 60
 DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT = 25
 
@@ -175,6 +177,15 @@ def start_cloud_run(
 
 
 def _validate_cloud_run_provider_selection(data: CloudRunCreate) -> None:
+    if (
+        data.queue_provider == ALIYUN_MNS_QUEUE_PROVIDER
+        and data.runtime_provider is None
+        and data.storage_provider is None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Aliyun MNS pull cloud runs require storage_provider",
+        )
     try:
         queue_provider = get_cloud_queue_provider(data.queue_provider)
         storage_provider = (
@@ -196,6 +207,28 @@ def _validate_cloud_run_provider_selection(data: CloudRunCreate) -> None:
         RemoteRuntimeProviderNotFound,
     ) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _requires_protected_worker_token(data: CloudRunCreate) -> bool:
+    return (
+        data.runtime_provider is not None
+        or data.queue_provider == ALIYUN_MNS_QUEUE_PROVIDER
+    )
+
+
+def _protected_worker_id(data: CloudRunCreate, cloud_run_id: str) -> str | None:
+    if data.runtime_provider is not None:
+        return _remote_runtime_worker_id(data.runtime_provider, cloud_run_id)
+    if data.queue_provider == ALIYUN_MNS_QUEUE_PROVIDER:
+        return f"aliyun-mns-{cloud_run_id}"
+    return None
+
+
+def _should_enqueue_cloud_queue_message(data: CloudRunCreate) -> bool:
+    return not (
+        data.queue_provider == ALIYUN_MNS_QUEUE_PROVIDER
+        and data.runtime_provider == ALIYUN_ECI_RUNTIME_PROVIDER
+    )
 
 
 def enqueue_cloud_run(
@@ -315,75 +348,105 @@ def enqueue_cloud_run(
     session.refresh(cloud_run)
     session.refresh(local_run)
 
-    try:
-        queue_result = get_cloud_queue_provider(data.queue_provider).enqueue(
-            CloudQueueEnqueueRequest(
-                workspace_id=cloud_run.workspace_id,
-                project_id=cloud_run.project_id,
-                task_id=cloud_run.task_id,
-                cloud_run_id=cloud_run.id,
-                queue_provider=cloud_run.queue_provider,
-                runtime_provider=cloud_run.runtime_provider,
-                storage_provider=cloud_run.storage_provider,
+    remote_runtime_provider = get_remote_runtime_provider(data.runtime_provider)
+    worker_id: str | None = None
+    callback_token: str | None = None
+    callback_token_expires_at: datetime | None = None
+    callback_token_expires_at_text: str | None = None
+    if _requires_protected_worker_token(data):
+        worker_id = _protected_worker_id(data, cloud_run.id)
+        if worker_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Cloud run worker id could not be resolved",
             )
-        )
-    except CloudQueueProviderError as exc:
-        completed_at = utc_now()
-        cloud_run.status = "failed"
-        cloud_run.failure_reason = "queue_enqueue_failed"
-        cloud_run.last_queue_error = "queue_enqueue_failed"
-        cloud_run.external_status = "failed"
-        cloud_run.external_error = str(exc)
-        cloud_run.completed_at = completed_at
-        cloud_run.updated_at = completed_at
-        local_run.status = "failed"
-        local_run.failure_reason = "queue_enqueue_failed"
-        local_run.updated_at = completed_at
-        _append_cloud_run_log(
-            session,
-            cloud_run=cloud_run,
-            event="queue_enqueue_failed",
-            message="Cloud run queue enqueue failed.",
-            level="error",
-            payload={
-                "queue_provider": data.queue_provider,
-                "failure_reason": "queue_enqueue_failed",
-            },
-        )
-        session.add(local_run)
-        session.add(cloud_run)
-        session.commit()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-
-    cloud_run.queue_message_id = queue_result.queue_message_id
-    cloud_run.queue_receipt = queue_result.queue_receipt
-    if queue_result.external_status is not None:
-        cloud_run.external_status = queue_result.external_status
-    cloud_run.updated_at = utc_now()
-    session.add(cloud_run)
-    session.commit()
-    session.refresh(cloud_run)
-
-    runtime_provider = get_remote_runtime_provider(data.runtime_provider)
-    if runtime_provider is not None and data.runtime_provider is not None:
-        cloud_run_id = cloud_run.id
-        callback_token: str | None = None
-        callback_token_expires_at: datetime | None = None
-        worker_id = _remote_runtime_worker_id(data.runtime_provider, cloud_run.id)
         callback_token = generate_callback_token()
         callback_token_expires_at = utc_now() + timedelta(hours=1)
+        cloud_run.worker_id = worker_id
         cloud_run.callback_token_hash = hash_callback_token(
             cloud_run.id,
             worker_id,
             callback_token,
         )
         cloud_run.callback_token_expires_at = callback_token_expires_at
+        cloud_run.callback_token_used_at = None
+        callback_token_expires_at_text = callback_token_expires_at.isoformat()
+        session.add(cloud_run)
+        session.commit()
+        session.refresh(cloud_run)
+
+    if _should_enqueue_cloud_queue_message(data):
+        try:
+            queue_result = get_cloud_queue_provider(data.queue_provider).enqueue(
+                CloudQueueEnqueueRequest(
+                    workspace_id=cloud_run.workspace_id,
+                    project_id=cloud_run.project_id,
+                    task_id=cloud_run.task_id,
+                    cloud_run_id=cloud_run.id,
+                    queue_provider=cloud_run.queue_provider,
+                    runtime_provider=cloud_run.runtime_provider,
+                    storage_provider=cloud_run.storage_provider,
+                    worker_id=worker_id,
+                    callback_token=callback_token,
+                    callback_token_expires_at=callback_token_expires_at_text,
+                )
+            )
+        except CloudQueueProviderError as exc:
+            completed_at = utc_now()
+            cloud_run.status = "failed"
+            cloud_run.failure_reason = "queue_enqueue_failed"
+            cloud_run.last_queue_error = "queue_enqueue_failed"
+            cloud_run.external_status = "failed"
+            cloud_run.external_error = str(exc)
+            cloud_run.completed_at = completed_at
+            cloud_run.updated_at = completed_at
+            local_run.status = "failed"
+            local_run.failure_reason = "queue_enqueue_failed"
+            local_run.updated_at = completed_at
+            _append_cloud_run_log(
+                session,
+                cloud_run=cloud_run,
+                event="queue_enqueue_failed",
+                message="Cloud run queue enqueue failed.",
+                level="error",
+                payload={
+                    "queue_provider": data.queue_provider,
+                    "failure_reason": "queue_enqueue_failed",
+                },
+            )
+            session.add(local_run)
+            session.add(cloud_run)
+            session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=str(exc),
+            ) from exc
+
+        cloud_run.queue_message_id = queue_result.queue_message_id
+        cloud_run.queue_receipt = queue_result.queue_receipt
+        if queue_result.external_status is not None:
+            cloud_run.external_status = queue_result.external_status
+    else:
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="queue_enqueue_skipped",
+            message="Cloud run queue message skipped for assigned remote runtime.",
+            payload={
+                "queue_provider": data.queue_provider,
+                "runtime_provider": data.runtime_provider,
+            },
+        )
+    cloud_run.updated_at = utc_now()
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+
+    if remote_runtime_provider is not None and data.runtime_provider is not None:
+        cloud_run_id = cloud_run.id
         cloud_run.updated_at = utc_now()
         try:
-            runtime_submission = runtime_provider.submit(
+            runtime_submission = remote_runtime_provider.submit(
                 session,
                 RemoteRuntimeSubmission(
                     workspace_id=cloud_run.workspace_id,
@@ -498,6 +561,8 @@ def claim_next_cloud_run_lease(
     queue_provider: str = DEFAULT_QUEUE_PROVIDER,
     cloud_run_id: str | None = None,
     callback_token: str | None = None,
+    queue_message_id: str | None = None,
+    queue_receipt: str | None = None,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> CloudRunLeaseRead | None:
     try:
@@ -519,18 +584,47 @@ def claim_next_cloud_run_lease(
             DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT
         )
     ).all()
+    now = utc_now()
+
+    if not candidate_ids and cloud_run_id is not None:
+        cloud_run = session.get(CloudRun, cloud_run_id)
+        if (
+            cloud_run is not None
+            and cloud_run.queue_provider == queue_provider
+            and cloud_run.status == "running"
+            and cloud_run.completed_at is None
+        ):
+            verify_cloud_run_callback_token_or_403(
+                cloud_run,
+                worker_id=worker_id,
+                callback_token=callback_token,
+                now=now,
+            )
+            lease_expires_at = cloud_run.lease_expires_at
+            if lease_expires_at is not None and lease_expires_at.tzinfo is None:
+                lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+            if lease_expires_at is not None and lease_expires_at >= now:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cloud run already has an active lease",
+                )
 
     for candidate_id in candidate_ids:
         cloud_run = session.get(CloudRun, candidate_id)
         if cloud_run is None:
             continue
 
-        now = utc_now()
         verify_cloud_run_callback_token_or_403(
             cloud_run,
             worker_id=worker_id,
             callback_token=callback_token,
             now=now,
+        )
+        mns_queue_receipt = _validated_aliyun_mns_claim_receipt(
+            cloud_run,
+            queue_provider=queue_provider,
+            queue_message_id=queue_message_id,
+            queue_receipt=queue_receipt,
         )
         lease_id = prefixed_id("lease")
         lease_expires_at = now + timedelta(seconds=lease_seconds)
@@ -554,6 +648,13 @@ def claim_next_cloud_run_lease(
                 )
             cloud_run.queue_receipt = f"{EXTERNAL_STUB_RECEIPT_PREFIX}{lease_id}"
             cloud_run.external_status = "claimed"
+            cloud_run.updated_at = now
+        elif (
+            queue_provider == ALIYUN_MNS_QUEUE_PROVIDER
+            and mns_queue_receipt is not None
+        ):
+            cloud_run.queue_receipt = mns_queue_receipt
+            cloud_run.external_status = "mns_message_claimed"
             cloud_run.updated_at = now
         local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
         local_run.status = "running"
@@ -580,6 +681,38 @@ def claim_next_cloud_run_lease(
         return _cloud_run_lease_read(cloud_run)
 
     return None
+
+
+def _validated_aliyun_mns_claim_receipt(
+    cloud_run: CloudRun,
+    *,
+    queue_provider: str,
+    queue_message_id: str | None,
+    queue_receipt: str | None,
+) -> str | None:
+    if (
+        queue_provider != ALIYUN_MNS_QUEUE_PROVIDER
+        or cloud_run.queue_message_id is None
+    ):
+        return None
+    if (
+        cloud_run.runtime_provider == ALIYUN_ECI_RUNTIME_PROVIDER
+        and cloud_run.queue_receipt is None
+        and queue_message_id is None
+        and queue_receipt is None
+    ):
+        return None
+    if not queue_message_id or not queue_receipt:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="MNS delivery metadata is required",
+        )
+    if queue_message_id != cloud_run.queue_message_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="MNS message id does not match cloud run delivery",
+        )
+    return queue_receipt
 
 
 def heartbeat_cloud_run_lease(
@@ -714,6 +847,31 @@ def requeue_expired_cloud_run_leases(
     for cloud_run in changed:
         session.refresh(cloud_run)
     return [_cloud_run_read(cloud_run) for cloud_run in changed]
+
+
+def _ack_mns_queue_receipt_after_terminal_commit(
+    session: Session,
+    *,
+    cloud_run: CloudRun,
+) -> None:
+    if (
+        cloud_run.queue_provider != ALIYUN_MNS_QUEUE_PROVIDER
+        or not cloud_run.queue_receipt
+    ):
+        return
+    try:
+        get_cloud_queue_provider(ALIYUN_MNS_QUEUE_PROVIDER).delete(
+            queue_receipt=cloud_run.queue_receipt
+        )
+    except CloudQueueProviderError:
+        cloud_run.external_status = "mns_message_delete_failed"
+    else:
+        cloud_run.queue_receipt = None
+        cloud_run.external_status = "mns_message_deleted"
+    cloud_run.updated_at = utc_now()
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
 
 
 def _command_result_from_create(data) -> CommandResult:
@@ -1100,6 +1258,7 @@ def _mark_claimed_cloud_run_failed(
     session.add(cloud_run)
     session.commit()
     session.refresh(cloud_run)
+    _ack_mns_queue_receipt_after_terminal_commit(session, cloud_run=cloud_run)
     return CloudRunResultRead(cloud_run=_cloud_run_read(cloud_run), patch_artifact=None)
 
 
@@ -1154,6 +1313,7 @@ def _mark_claimed_cloud_run_cancelled(
     session.add(cloud_run)
     session.commit()
     session.refresh(cloud_run)
+    _ack_mns_queue_receipt_after_terminal_commit(session, cloud_run=cloud_run)
     return CloudRunResultRead(cloud_run=_cloud_run_read(cloud_run), patch_artifact=None)
 
 
@@ -1507,6 +1667,7 @@ def _finalize_claimed_cloud_run_result(
         session.add(task)
         session.commit()
         session.refresh(cloud_run)
+        _ack_mns_queue_receipt_after_terminal_commit(session, cloud_run=cloud_run)
         return CloudRunResultRead(
             cloud_run=_cloud_run_read(cloud_run),
             patch_artifact=None,
@@ -1615,6 +1776,7 @@ def _finalize_claimed_cloud_run_result(
     session.add(task)
     session.commit()
     session.refresh(cloud_run)
+    _ack_mns_queue_receipt_after_terminal_commit(session, cloud_run=cloud_run)
     session.refresh(artifact)
     return CloudRunResultRead(
         cloud_run=_cloud_run_read(cloud_run),
