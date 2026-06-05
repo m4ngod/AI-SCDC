@@ -1562,7 +1562,15 @@ describe("desktop API clients", () => {
       projectId: "project_missing"
     });
 
-    await expect(client.listTasks()).rejects.toThrow(
+    let error: unknown;
+    try {
+      await client.listTasks();
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
       "GET /projects/project_missing/tasks failed with 404 Not Found: Project not found"
     );
   });
