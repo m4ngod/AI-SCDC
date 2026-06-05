@@ -3,8 +3,10 @@
 ## Scope
 
 Completed Phase 12C documentation updates for Aliyun MNS pull-worker
-operations, including architecture notes, README smoke-test notes, and this
-handoff status summary.
+capability and launch-mode clarification, including architecture notes,
+README smoke-test notes, and this handoff status summary. The docs now state
+that Phase 12C adds token-bearing MNS assignments and pull-mode support
+without changing the current Aliyun ECI assigned-run launch default.
 
 ## Verification
 
@@ -15,6 +17,7 @@ handoff status summary.
 - `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> `1 file passed, 34 tests passed`
 - `pnpm typecheck` -> passed for `packages/agent-protocol` and `apps/desktop`
 - `git diff --check` -> no whitespace errors; Git printed existing LF/CRLF conversion warnings for `README.md` and `docs/architecture.md`
+- `rg -n "Phase 12C|MNS pull|assigned-run|AI_SCDC_CLOUD_RUN_ID|AI_SCDC_MNS_WAIT_SECONDS" README.md docs/architecture.md STATUS.md` -> confirmed the corrected launch-mode wording appears in all three docs
 
 ## Warnings
 

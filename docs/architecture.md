@@ -207,21 +207,31 @@ tested `DescribeContainerLog` client seam.
 
 ## Phase 12C Boundary
 
-Phase 12C adds direct Aliyun MNS pull-worker semantics for protected ECI runs.
-Aliyun MNS assignments now include the worker identity, a short-lived callback
-token, the cloud-run identity, the selected storage provider, and MNS delivery
-metadata needed to correlate the claimed message. The API stores only the
-callback token hash.
+Phase 12C adds the API, provider, and worker capability for Aliyun MNS
+pull-worker operation alongside the existing protected assigned-run launch
+contract. Token-bearing Aliyun MNS assignments now include the worker identity,
+a short-lived callback token, the cloud-run identity, the selected storage
+provider, and MNS delivery metadata needed to correlate the claimed message.
+The API stores only the callback token hash.
 
-Workers claim assigned runs through `POST /cloud-run-worker/leases` or the
-existing worker lease route, and include the callback token plus the claimed
-MNS message ID and receipt in that request. `queue_receipt` remains internal
-only and is never returned through standard cloud-run read responses.
+Aliyun ECI launch still supports and currently uses assigned-run mode when
+`AI_SCDC_CLOUD_RUN_ID`, `AI_SCDC_WORKER_ID`, and `AI_SCDC_CALLBACK_TOKEN` are
+provided to the worker container. MNS pull mode is activated for worker
+processes started without `AI_SCDC_CLOUD_RUN_ID`, using
+`AI_SCDC_QUEUE_PROVIDER=aliyun_mns`,
+`AI_SCDC_STORAGE_PROVIDER=aliyun_oss`, and optional
+`AI_SCDC_MNS_WAIT_SECONDS`.
 
-After terminal completion is committed, the API deletes or acknowledges the MNS
-message. If delete fails, the terminal cloud-run state remains committed and
-the stored receipt is retained for recovery while the public cloud-run status
-exposes only redacted provider metadata.
+In pull mode, workers claim through `POST /cloud-run-worker/leases` or the
+existing worker lease route and include the callback token plus the claimed MNS
+message ID and receipt in that request. `queue_receipt` remains internal only
+and is never returned through standard cloud-run read responses.
+
+After successful terminal lease completion is committed, the API owns MNS
+receipt deletion or acknowledgement. The worker default path does not
+double-delete receipts. If delete fails, the terminal cloud-run state remains
+committed and the stored receipt is retained for recovery while the public
+cloud-run status exposes only redacted provider metadata.
 
 Phase 12 does not add WebSockets, Server-Sent Events, SLS-managed log stores,
 artifact browser UI, model-backed reviewer or debugger agents, production KMS,
