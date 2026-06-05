@@ -181,12 +181,17 @@ class AliyunMnsQueueProvider:
                 "mns_queue_name",
             ),
         )
-        received = get_aliyun_client_bundle(settings).mns.receive_message(
-            AliyunMnsReceiveMessageRequest(
-                queue_name=settings.mns_queue_name or "",
-                wait_seconds=wait_seconds,
+        try:
+            received = get_aliyun_client_bundle(settings).mns.receive_message(
+                AliyunMnsReceiveMessageRequest(
+                    queue_name=settings.mns_queue_name or "",
+                    wait_seconds=wait_seconds,
+                )
             )
-        )
+        except Exception:
+            raise CloudQueueProviderError(
+                "Cloud queue provider aliyun_mns failed to receive message"
+            ) from None
         if received is None:
             return None
         try:
@@ -212,12 +217,17 @@ class AliyunMnsQueueProvider:
                 "mns_queue_name",
             ),
         )
-        get_aliyun_client_bundle(settings).mns.delete_message(
-            AliyunMnsDeleteMessageRequest(
-                queue_name=settings.mns_queue_name or "",
-                receipt_handle=queue_receipt,
+        try:
+            get_aliyun_client_bundle(settings).mns.delete_message(
+                AliyunMnsDeleteMessageRequest(
+                    queue_name=settings.mns_queue_name or "",
+                    receipt_handle=queue_receipt,
+                )
             )
-        )
+        except Exception:
+            raise CloudQueueProviderError(
+                "Cloud queue provider aliyun_mns failed to delete message"
+            ) from None
 
 
 def _parse_mns_received_message(

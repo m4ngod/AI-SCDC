@@ -479,6 +479,7 @@ class FakeAliyunMnsClient:
         self.received_messages: list[AliyunMnsReceivedMessage] = []
         self.receive_requests: list[AliyunMnsReceiveMessageRequest] = []
         self.delete_requests: list[AliyunMnsDeleteMessageRequest] = []
+        self.receive_error: Exception | None = None
         self.delete_error: Exception | None = None
 
     def send_message(self, request: AliyunMnsSendMessageRequest) -> dict:
@@ -489,6 +490,8 @@ class FakeAliyunMnsClient:
         self, request: AliyunMnsReceiveMessageRequest
     ) -> AliyunMnsReceivedMessage | None:
         self.receive_requests.append(request)
+        if self.receive_error is not None:
+            raise self.receive_error
         if not self.received_messages:
             return None
         return self.received_messages.pop(0)
@@ -1031,6 +1034,36 @@ def test_aliyun_mns_queue_provider_receives_and_parses_message(
     ]
 
 
+def test_aliyun_mns_queue_provider_receive_normalizes_client_failure(
+    monkeypatch,
+) -> None:
+    from ai_company_api.services.cloud_queue_providers import (
+        AliyunMnsQueueProvider,
+        CloudQueueProviderError,
+    )
+
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    fake_mns.receive_error = RuntimeError("receive failed with secret=leaked")
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+
+    with pytest.raises(CloudQueueProviderError) as exc:
+        AliyunMnsQueueProvider().receive(wait_seconds=5)
+
+    assert str(exc.value) == "Cloud queue provider aliyun_mns failed to receive message"
+    assert "receive failed with secret=leaked" not in str(exc.value)
+    assert fake_mns.receive_requests == [
+        AliyunMnsReceiveMessageRequest(queue_name="ai-scdc-cloud-runs-dev", wait_seconds=5)
+    ]
+
+
 def test_aliyun_mns_queue_provider_receive_returns_none_for_empty_queue(
     monkeypatch,
 ) -> None:
@@ -1173,6 +1206,18 @@ def test_registered_cloud_queue_providers_reject_receive_and_delete() -> None:
             "callback_token": "token-1",
             "callback_token_expires_at": "2026-06-05T10:00:00+00:00",
         },
+        {
+            "workspace_id": "workspace-1",
+            "project_id": "project-1",
+            "task_id": "task-1",
+            "cloud_run_id": "cloud-run-1",
+            "queue_provider": "aliyun_mns",
+            "runtime_provider": 123,
+            "storage_provider": "aliyun_oss",
+            "worker_id": "worker-1",
+            "callback_token": "token-1",
+            "callback_token_expires_at": "2026-06-05T10:00:00+00:00",
+        },
     ],
 )
 def test_mns_received_message_parser_rejects_malformed_json_payloads(
@@ -1205,6 +1250,39 @@ def test_aliyun_mns_queue_provider_delete_uses_receipt_handle(
 
     AliyunMnsQueueProvider().delete(queue_receipt="receipt-1")
 
+    assert fake_mns.delete_requests == [
+        AliyunMnsDeleteMessageRequest(
+            queue_name="ai-scdc-cloud-runs-dev",
+            receipt_handle="receipt-1",
+        )
+    ]
+
+
+def test_aliyun_mns_queue_provider_delete_normalizes_client_failure(
+    monkeypatch,
+) -> None:
+    from ai_company_api.services.cloud_queue_providers import (
+        AliyunMnsQueueProvider,
+        CloudQueueProviderError,
+    )
+
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    fake_mns.delete_error = RuntimeError("delete failed with secret=leaked")
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+
+    with pytest.raises(CloudQueueProviderError) as exc:
+        AliyunMnsQueueProvider().delete(queue_receipt="receipt-1")
+
+    assert str(exc.value) == "Cloud queue provider aliyun_mns failed to delete message"
+    assert "delete failed with secret=leaked" not in str(exc.value)
     assert fake_mns.delete_requests == [
         AliyunMnsDeleteMessageRequest(
             queue_name="ai-scdc-cloud-runs-dev",
