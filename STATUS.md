@@ -16,12 +16,10 @@ without changing the current Aliyun ECI assigned-run launch default.
 - `pytest apps/api/tests -v` -> `454 passed, 1 warning in 234.71s`
 - `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> `1 file passed, 34 tests passed`
 - `pnpm typecheck` -> passed for `packages/agent-protocol` and `apps/desktop`
-- `git diff --check` -> no whitespace errors; Git printed existing LF/CRLF conversion warnings for `README.md` and `docs/architecture.md`
+- `git diff --check` -> no whitespace errors
 - `rg -n "Phase 12C|MNS pull|assigned-run|AI_SCDC_CLOUD_RUN_ID|AI_SCDC_MNS_WAIT_SECONDS" README.md docs/architecture.md STATUS.md` -> confirmed the corrected launch-mode wording appears in all three docs
 
 ## Warnings
 
 - Existing `StarletteDeprecationWarning`: `starlette.testclient` warns that
   using `httpx` is deprecated and recommends `httpx2`.
-- Existing Git working-copy warning: `README.md` and `docs/architecture.md`
-  will be normalized from LF to CRLF on a future Git write.
