@@ -5,6 +5,7 @@ from typing import get_type_hints
 import pytest
 
 from ai_company_api.services.aliyun_config import AliyunSettings
+import ai_company_api.services.aliyun_clients as aliyun_clients
 from ai_company_api.services.aliyun_clients import (
     AliyunClientBundle,
     AliyunEciCreateContainerGroupRequest,
@@ -147,15 +148,20 @@ def test_sdk_mns_delete_message_uses_receipt_handle(monkeypatch: pytest.MonkeyPa
     assert captured["receipt_handle"] == "receipt-1"
 
 
-def test_sdk_mns_receive_message_returns_none_on_empty_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sdk_mns_receive_message_returns_none_for_sdk_empty_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _set_complete_aliyun_env(monkeypatch)
 
-    class FakeEmptyQueueError(Exception):
-        type = "MessageNotExist"
+    class FakeMnsServerException(Exception):
+        def __init__(self, *args, type: str | None = None, code: str | None = None) -> None:
+            super().__init__(*args)
+            self.type = type
+            self.code = code
 
     class FakeQueue:
         def receive_message(self, wait_seconds: int | None = None):
-            raise FakeEmptyQueueError("MessageNotExist")
+            raise FakeMnsServerException("no message", type="MessageNotExist")
 
     class FakeAccount:
         def __init__(self, endpoint: str, access_key_id: str, access_key_secret: str) -> None:
@@ -164,6 +170,105 @@ def test_sdk_mns_receive_message_returns_none_on_empty_queue(monkeypatch: pytest
         def get_queue(self, queue_name: str) -> FakeQueue:
             return FakeQueue()
 
+    monkeypatch.setattr(aliyun_clients, "_MnsServerException", FakeMnsServerException)
+    account_module = ModuleType("mns.account")
+    account_module.Account = FakeAccount
+    monkeypatch.setitem(sys.modules, "mns.account", account_module)
+
+    client = SdkAliyunMnsClient(_aliyun_settings())
+
+    assert (
+        client.receive_message(
+            AliyunMnsReceiveMessageRequest(queue_name="phase12c-queue", wait_seconds=7)
+        )
+        is None
+    )
+
+
+def test_sdk_mns_receive_message_propagates_other_sdk_server_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_complete_aliyun_env(monkeypatch)
+
+    class FakeMnsServerException(Exception):
+        def __init__(self, *args, type: str | None = None, code: str | None = None) -> None:
+            super().__init__(*args)
+            self.type = type
+            self.code = code
+
+    class FakeQueue:
+        def receive_message(self, wait_seconds: int | None = None):
+            raise FakeMnsServerException("server error", type="SomethingElse")
+
+    class FakeAccount:
+        def __init__(self, endpoint: str, access_key_id: str, access_key_secret: str) -> None:
+            pass
+
+        def get_queue(self, queue_name: str) -> FakeQueue:
+            return FakeQueue()
+
+    monkeypatch.setattr(aliyun_clients, "_MnsServerException", FakeMnsServerException)
+    account_module = ModuleType("mns.account")
+    account_module.Account = FakeAccount
+    monkeypatch.setitem(sys.modules, "mns.account", account_module)
+
+    client = SdkAliyunMnsClient(_aliyun_settings())
+
+    with pytest.raises(FakeMnsServerException):
+        client.receive_message(
+            AliyunMnsReceiveMessageRequest(queue_name="phase12c-queue", wait_seconds=7)
+        )
+
+
+def test_sdk_mns_receive_message_propagates_non_sdk_exception_with_message_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_complete_aliyun_env(monkeypatch)
+
+    class FakeQueue:
+        def receive_message(self, wait_seconds: int | None = None):
+            raise RuntimeError("MessageNotExist")
+
+    class FakeAccount:
+        def __init__(self, endpoint: str, access_key_id: str, access_key_secret: str) -> None:
+            pass
+
+        def get_queue(self, queue_name: str) -> FakeQueue:
+            return FakeQueue()
+
+    monkeypatch.setattr(aliyun_clients, "_MnsServerException", None)
+    account_module = ModuleType("mns.account")
+    account_module.Account = FakeAccount
+    monkeypatch.setitem(sys.modules, "mns.account", account_module)
+
+    client = SdkAliyunMnsClient(_aliyun_settings())
+
+    with pytest.raises(RuntimeError, match="MessageNotExist"):
+        client.receive_message(
+            AliyunMnsReceiveMessageRequest(queue_name="phase12c-queue", wait_seconds=7)
+        )
+
+
+def test_sdk_mns_receive_message_returns_none_on_empty_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_complete_aliyun_env(monkeypatch)
+
+    class FakeMnsServerException(Exception):
+        def __init__(self, *args, type: str | None = None) -> None:
+            super().__init__(*args)
+            self.type = type
+
+    class FakeQueue:
+        def receive_message(self, wait_seconds: int | None = None):
+            raise FakeMnsServerException("no message", type="MessageNotExist")
+
+    class FakeAccount:
+        def __init__(self, endpoint: str, access_key_id: str, access_key_secret: str) -> None:
+            pass
+
+        def get_queue(self, queue_name: str) -> FakeQueue:
+            return FakeQueue()
+
+    monkeypatch.setattr(aliyun_clients, "_MnsServerException", FakeMnsServerException)
     account_module = ModuleType("mns.account")
     account_module.Account = FakeAccount
     monkeypatch.setitem(sys.modules, "mns.account", account_module)

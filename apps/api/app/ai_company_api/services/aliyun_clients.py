@@ -10,7 +10,7 @@ from ai_company_api.services.aliyun_config import (
 )
 
 try:
-    from mns.exception import MNSServerException as _MnsServerException
+    from mns.mns_exception import MNSServerException as _MnsServerException
 except Exception:  # pragma: no cover - SDK may be unavailable in tests
     _MnsServerException = None
 
@@ -237,21 +237,9 @@ class SdkAliyunMnsClient:
 def _is_mns_empty_queue_exception(exc: Exception) -> bool:
     if _MnsServerException is not None and not isinstance(exc, _MnsServerException):
         return False
-    return _message_not_exist_marker(exc)
-
-
-def _message_not_exist_marker(exc: Exception) -> bool:
-    values = (
-        getattr(exc, "type", None),
-        getattr(exc, "error_code", None),
-        getattr(exc, "code", None),
-        getattr(exc, "message", None),
-        *getattr(exc, "args", ()),
-    )
-    for value in values:
-        if isinstance(value, str) and value.strip().lower() == "messagenotexist":
-            return True
-        if isinstance(value, str) and "messagenotexist" in value.replace(" ", "").lower():
+    for attr_name in ("type", "error_code", "code"):
+        value = getattr(exc, attr_name, None)
+        if isinstance(value, str) and value == "MessageNotExist":
             return True
     return False
 
