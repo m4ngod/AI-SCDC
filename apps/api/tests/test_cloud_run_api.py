@@ -2779,6 +2779,71 @@ def test_aliyun_mns_claim_with_wrong_token_does_not_store_receipt(
     assert "wrong-token" not in serialized_logs
 
 
+def _start_claimed_aliyun_mns_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> tuple[str, str, FakeAliyunMnsClient]:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=FakeAliyunOssClient(),
+            eci=FakeAliyunEciClient(),
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    cloud_run = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    ).json()["cloud_run"]
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    lease = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": queued_payload["worker_id"],
+            "worker_kind": "aliyun_eci",
+            "queue_provider": "aliyun_mns",
+            "cloud_run_id": cloud_run["id"],
+            "callback_token": queued_payload["callback_token"],
+            "queue_message_id": "msg-1",
+            "queue_receipt": "receipt-1",
+            "lease_seconds": 60,
+        },
+    )
+
+    assert lease.status_code == 201
+    return cloud_run["id"], lease.json()["lease_id"], fake_mns
+
+
 def test_protected_worker_endpoints_reject_expired_callback_token(
     tmp_path: Path,
     monkeypatch,
@@ -3490,6 +3555,115 @@ def test_external_stub_completion_clears_receipt_and_marks_completed(
         cloud_run = session.get(CloudRun, run["id"])
     assert cloud_run is not None
     assert cloud_run.queue_receipt is None
+
+
+def test_aliyun_mns_completion_deletes_receipt_and_clears_internal_receipt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, lease_id, fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    client = build_client(database_path)
+    payload = remote_stub_completion_payload(cloud_run_id)
+    payload["worker_id"] = queued_payload["worker_id"]
+    payload["callback_token"] = queued_payload["callback_token"]
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease_id}/complete",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    assert fake_mns.delete_requests[0].receipt_handle == "receipt-1"
+    assert "queue_receipt" not in response.text
+    assert "queue_receipt" not in response.json()
+    assert "queue_receipt" not in response.json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, cloud_run_id)
+    assert cloud_run is not None
+    assert cloud_run.status == "patch_ready"
+    assert cloud_run.queue_receipt is None
+
+
+def test_aliyun_mns_completion_delete_failure_keeps_terminal_state_and_redacts_receipt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, lease_id, fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    fake_mns.delete_error = RuntimeError("delete failed for receipt-1")
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    client = build_client(database_path)
+    payload = remote_stub_completion_payload(cloud_run_id)
+    payload["worker_id"] = queued_payload["worker_id"]
+    payload["callback_token"] = queued_payload["callback_token"]
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease_id}/complete",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    assert "receipt-1" not in response.text
+    assert "delete failed for receipt-1" not in response.text
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, cloud_run_id)
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+            .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+        ).all()
+    serialized_logs = "\n".join(
+        f"{entry.message}\n{json.dumps(entry.payload, sort_keys=True, default=str)}"
+        for entry in log_entries
+    )
+    assert "receipt-1" not in serialized_logs
+    assert "delete failed for receipt-1" not in serialized_logs
+    assert cloud_run is not None
+    assert cloud_run.status == "patch_ready"
+    assert cloud_run.queue_receipt == "receipt-1"
+    assert cloud_run.external_status == "mns_message_delete_failed"
+
+
+def test_aliyun_mns_duplicate_delivery_cannot_claim_second_active_lease(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, _lease_id, fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    client = build_client(database_path)
+
+    response = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": queued_payload["worker_id"],
+            "worker_kind": "aliyun_eci",
+            "queue_provider": "aliyun_mns",
+            "cloud_run_id": cloud_run_id,
+            "callback_token": queued_payload["callback_token"],
+            "queue_message_id": "msg-2",
+            "queue_receipt": "receipt-2",
+            "lease_seconds": 60,
+        },
+    )
+
+    assert response.status_code == 409
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, cloud_run_id)
+    assert cloud_run is not None
+    assert cloud_run.queue_message_id == "msg-1"
+    assert cloud_run.queue_receipt == "receipt-1"
 
 
 def test_remote_stub_runtime_submission_records_job_metadata(

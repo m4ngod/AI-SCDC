@@ -100,6 +100,7 @@ DEFAULT_QUEUE_PROVIDER = "local_db"
 EXTERNAL_STUB_QUEUE_PROVIDER = "external_stub"
 EXTERNAL_STUB_MESSAGE_PREFIX = "external-stub-message-"
 EXTERNAL_STUB_RECEIPT_PREFIX = "external-stub-receipt-"
+ALIYUN_MNS_QUEUE_PROVIDER = "aliyun_mns"
 DEFAULT_LEASE_SECONDS = 60
 DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT = 25
 
@@ -534,13 +535,36 @@ def claim_next_cloud_run_lease(
             DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT
         )
     ).all()
+    now = utc_now()
+
+    if not candidate_ids and cloud_run_id is not None:
+        cloud_run = session.get(CloudRun, cloud_run_id)
+        if (
+            cloud_run is not None
+            and cloud_run.queue_provider == queue_provider
+            and cloud_run.status == "running"
+            and cloud_run.completed_at is None
+        ):
+            verify_cloud_run_callback_token_or_403(
+                cloud_run,
+                worker_id=worker_id,
+                callback_token=callback_token,
+                now=now,
+            )
+            lease_expires_at = cloud_run.lease_expires_at
+            if lease_expires_at is not None and lease_expires_at.tzinfo is None:
+                lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+            if lease_expires_at is not None and lease_expires_at >= now:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cloud run already has an active lease",
+                )
 
     for candidate_id in candidate_ids:
         cloud_run = session.get(CloudRun, candidate_id)
         if cloud_run is None:
             continue
 
-        now = utc_now()
         verify_cloud_run_callback_token_or_403(
             cloud_run,
             worker_id=worker_id,
@@ -571,7 +595,7 @@ def claim_next_cloud_run_lease(
             cloud_run.external_status = "claimed"
             cloud_run.updated_at = now
         elif (
-            queue_provider == "aliyun_mns"
+            queue_provider == ALIYUN_MNS_QUEUE_PROVIDER
             and queue_message_id
             and queue_receipt
         ):
@@ -738,6 +762,23 @@ def requeue_expired_cloud_run_leases(
     for cloud_run in changed:
         session.refresh(cloud_run)
     return [_cloud_run_read(cloud_run) for cloud_run in changed]
+
+
+def _delete_mns_queue_receipt_after_terminal(cloud_run: CloudRun) -> None:
+    if (
+        cloud_run.queue_provider != ALIYUN_MNS_QUEUE_PROVIDER
+        or not cloud_run.queue_receipt
+    ):
+        return
+    try:
+        get_cloud_queue_provider(ALIYUN_MNS_QUEUE_PROVIDER).delete(
+            queue_receipt=cloud_run.queue_receipt
+        )
+    except Exception:
+        cloud_run.external_status = "mns_message_delete_failed"
+        return
+    cloud_run.queue_receipt = None
+    cloud_run.external_status = "mns_message_deleted"
 
 
 def _command_result_from_create(data) -> CommandResult:
@@ -1498,6 +1539,7 @@ def _finalize_claimed_cloud_run_result(
         completed_at = utc_now()
         cloud_run.completed_at = completed_at
         cloud_run.updated_at = completed_at
+        _delete_mns_queue_receipt_after_terminal(cloud_run)
         _create_cloud_run_event(
             session,
             event_clock,
@@ -1581,6 +1623,7 @@ def _finalize_claimed_cloud_run_result(
     completed_at = utc_now()
     cloud_run.completed_at = completed_at
     cloud_run.updated_at = completed_at
+    _delete_mns_queue_receipt_after_terminal(cloud_run)
     _create_cloud_run_event(
         session,
         event_clock,
