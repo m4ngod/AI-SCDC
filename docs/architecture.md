@@ -205,9 +205,27 @@ Provider failures degrade to the pre-sync window, refreshed logs still flow
 through object-storage integrity metadata, and Aliyun ECI log sync uses a
 tested `DescribeContainerLog` client seam.
 
-Phase 12 does not add WebSockets, Server-Sent Events, direct MNS receive/delete
-semantics, SLS-managed log stores, artifact browser UI, model-backed reviewer
-or debugger agents, production KMS, or a broad provider package split.
+## Phase 12C Boundary
+
+Phase 12C adds direct Aliyun MNS pull-worker semantics for protected ECI runs.
+Aliyun MNS assignments now include the worker identity, a short-lived callback
+token, the cloud-run identity, the selected storage provider, and MNS delivery
+metadata needed to correlate the claimed message. The API stores only the
+callback token hash.
+
+Workers claim assigned runs through `POST /cloud-run-worker/leases` or the
+existing worker lease route, and include the callback token plus the claimed
+MNS message ID and receipt in that request. `queue_receipt` remains internal
+only and is never returned through standard cloud-run read responses.
+
+After terminal completion is committed, the API deletes or acknowledges the MNS
+message. If delete fails, the terminal cloud-run state remains committed and
+the stored receipt is retained for recovery while the public cloud-run status
+exposes only redacted provider metadata.
+
+Phase 12 does not add WebSockets, Server-Sent Events, SLS-managed log stores,
+artifact browser UI, model-backed reviewer or debugger agents, production KMS,
+or a broad provider package split.
 
 ## Roadmap
 
@@ -229,7 +247,8 @@ Completed:
 14. Run-scoped remote worker callback token hardening with token hash storage, ECI env injection, protected worker callbacks, expiry, completion invalidation, and queued-cancel invalidation.
 15. Real remote worker execution skeleton with protected payload fetch, private GitHub clone credential boundary, command/test execution, diff capture, artifact uploads, and redacted completion.
 16. Bounded cloud-run log polling with cursor windows, safe remote log-stream reads, and optional provider-native log sync.
+17. Aliyun MNS pull-worker claims for protected ECI runs with callback-token hash storage, internal-only queue receipts, and post-terminal MNS acknowledgement or recoverable delete failure handling.
 
 Future:
 
-1. Direct MNS receive/delete worker semantics while preserving callback-token-protected payload access and completion boundaries.
+1. Broader provider coverage beyond the current Aliyun MNS/OSS/ECI production-provider path while preserving callback-token-protected payload access and completion boundaries.

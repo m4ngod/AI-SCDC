@@ -710,6 +710,27 @@ $env:AI_SCDC_ALIYUN_ECI_IMAGE = $AcrImage
 $env:AI_SCDC_API_PUBLIC_BASE_URL = "<URL reachable from ECI>"
 ```
 
+MNS pull-worker mode uses the queue and storage providers explicitly:
+
+```text
+AI_SCDC_QUEUE_PROVIDER=aliyun_mns
+AI_SCDC_STORAGE_PROVIDER=aliyun_oss
+AI_SCDC_MNS_WAIT_SECONDS=3
+```
+
+Assigned-run mode still supports the protected worker identity and callback
+environment variables:
+
+```text
+AI_SCDC_CLOUD_RUN_ID
+AI_SCDC_WORKER_ID
+AI_SCDC_CALLBACK_TOKEN
+```
+
+For protected Aliyun worker claims, the worker sends queue metadata on claim,
+including the MNS message ID and receipt plus the callback token. The API owns
+post-terminal MNS acknowledgement, and the queue receipt remains internal-only.
+
 Start a cloud run with Aliyun providers:
 
 ```powershell
