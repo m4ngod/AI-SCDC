@@ -235,7 +235,9 @@ class SdkAliyunMnsClient:
 
 
 def _is_mns_empty_queue_exception(exc: Exception) -> bool:
-    if _MnsServerException is not None and not isinstance(exc, _MnsServerException):
+    if _MnsServerException is None:
+        return False
+    if not isinstance(exc, _MnsServerException):
         return False
     for attr_name in ("type", "error_code", "code"):
         value = getattr(exc, attr_name, None)
