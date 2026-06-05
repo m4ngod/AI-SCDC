@@ -7,7 +7,31 @@ from ai_company_api.services.aliyun_config import (
 )
 
 
+def _clear_aliyun_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "AI_SCDC_ALIYUN_REGION_ID",
+        "AI_SCDC_ALIYUN_ACCESS_KEY_ID",
+        "AI_SCDC_ALIYUN_ACCESS_KEY_SECRET",
+        "AI_SCDC_ALIYUN_MNS_ENDPOINT",
+        "AI_SCDC_ALIYUN_MNS_QUEUE_NAME",
+        "AI_SCDC_ALIYUN_OSS_ENDPOINT",
+        "AI_SCDC_ALIYUN_OSS_BUCKET",
+        "AI_SCDC_ALIYUN_ECI_VSWITCH_ID",
+        "AI_SCDC_ALIYUN_ECI_SECURITY_GROUP_ID",
+        "AI_SCDC_ALIYUN_ECI_IMAGE",
+        "AI_SCDC_API_PUBLIC_BASE_URL",
+        "AI_SCDC_ALIYUN_ECI_CPU",
+        "AI_SCDC_ALIYUN_ECI_MEMORY_GB",
+        "AI_SCDC_ALIYUN_ECI_AUTO_CREATE_EIP",
+        "AI_SCDC_ALIYUN_ECI_EIP_BANDWIDTH",
+        "AI_SCDC_ALIYUN_ECI_CONTAINER_GROUP_PREFIX",
+        "AI_SCDC_ALIYUN_OSS_PREFIX",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_load_aliyun_settings_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_aliyun_env(monkeypatch)
     monkeypatch.setenv("AI_SCDC_ALIYUN_REGION_ID", "cn-hangzhou")
     monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_ID", "ak-id")
     monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "ak-secret")
@@ -46,6 +70,7 @@ def test_load_aliyun_settings_reads_environment(monkeypatch: pytest.MonkeyPatch)
 def test_aliyun_settings_repr_does_not_include_secret_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clear_aliyun_env(monkeypatch)
     monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "super-secret-value")
 
     settings_repr = repr(load_aliyun_settings())
@@ -56,6 +81,7 @@ def test_aliyun_settings_repr_does_not_include_secret_value(
 def test_require_aliyun_settings_reports_missing_names_without_secret_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clear_aliyun_env(monkeypatch)
     monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "super-secret-value")
 
     with pytest.raises(AliyunConfigurationError) as exc_info:
