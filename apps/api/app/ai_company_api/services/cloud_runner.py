@@ -511,6 +511,8 @@ def claim_next_cloud_run_lease(
     queue_provider: str = DEFAULT_QUEUE_PROVIDER,
     cloud_run_id: str | None = None,
     callback_token: str | None = None,
+    queue_message_id: str | None = None,
+    queue_receipt: str | None = None,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> CloudRunLeaseRead | None:
     try:
@@ -567,6 +569,15 @@ def claim_next_cloud_run_lease(
                 )
             cloud_run.queue_receipt = f"{EXTERNAL_STUB_RECEIPT_PREFIX}{lease_id}"
             cloud_run.external_status = "claimed"
+            cloud_run.updated_at = now
+        elif (
+            queue_provider == "aliyun_mns"
+            and queue_message_id
+            and queue_receipt
+        ):
+            cloud_run.queue_message_id = queue_message_id
+            cloud_run.queue_receipt = queue_receipt
+            cloud_run.external_status = "mns_message_claimed"
             cloud_run.updated_at = now
         local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
         local_run.status = "running"

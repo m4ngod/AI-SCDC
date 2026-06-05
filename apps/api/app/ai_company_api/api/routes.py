@@ -521,6 +521,8 @@ def post_cloud_run_worker_lease(
         queue_provider=data.queue_provider,
         cloud_run_id=data.cloud_run_id,
         callback_token=data.callback_token,
+        queue_message_id=data.queue_message_id,
+        queue_receipt=data.queue_receipt,
         lease_seconds=data.lease_seconds,
     )
     if lease is None:
