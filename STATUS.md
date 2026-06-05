@@ -21,14 +21,15 @@ replaced by a KMS-backed `SecretVault` implementation before commercial beta.
 
 ## Verification
 
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "retained_receipt_recovery or terminal_cleanup or aliyun_mns_completion_delete_failure or aliyun_eci_submission_cleans_up"` -> pending final run
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "aliyun_mns or protected_aliyun or protected_worker or aliyun_eci"` -> pending final run
-- `pytest apps/api/tests/test_aliyun_clients.py -q` -> pending final run
-- `pytest apps/api/tests/test_remote_worker.py -q` -> pending final run
-- `pytest apps/api/tests -q` -> pending final run
-- `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> pending final run
-- `pnpm typecheck` -> pending final run
-- `git diff --check` -> pending final run
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "retained_receipt_recovery or terminal_cleanup or aliyun_mns_completion_delete_failure or aliyun_eci_submission_cleans_up"` -> 9 passed, 151 deselected, 1 warning in 12.93s
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "aliyun_mns or protected_aliyun or protected_worker or aliyun_eci"` -> 40 passed, 120 deselected, 1 warning in 40.81s
+- `pytest apps/api/tests/test_aliyun_clients.py -q` -> 15 passed in 0.05s
+- `pytest apps/api/tests/test_remote_worker.py -q` -> 48 passed in 0.18s
+- `pytest apps/api/tests -q` -> 464 passed, 1 warning in 202.19s
+- `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> 34 passed in 1.84s
+- `pnpm typecheck` -> `apps/desktop` and `packages/agent-protocol` completed
+- `git diff --check` -> passed
+- `rg -n "retry_retained_mns_queue_receipt_delete|cleanup_aliyun_eci_terminal_runtime_job" apps/api/app/ai_company_api/api/routes.py` -> no direct route-level provider helper references found
 
 ## Warnings
 
