@@ -16,6 +16,7 @@ from ai_company_api.schemas.api import (
     CloudRunLogWindowEntryRead,
     CloudRunLogWindowRead,
 )
+from ai_company_api.services.cloud_run_log_sync import sync_cloud_run_log_stream
 from ai_company_api.services.aliyun_config import AliyunConfigurationError
 from ai_company_api.services.object_storage import (
     ObjectStorageProviderNotFound,
@@ -50,12 +51,16 @@ def list_cloud_run_log_window(
     after: str | None = None,
     limit: int = 100,
     include_stream: bool = True,
+    sync_stream: bool = False,
 ) -> CloudRunLogWindowRead:
     cloud_run = session.get(CloudRun, cloud_run_id)
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
 
     cursor = _decode_cursor(after)
+    if include_stream and sync_stream:
+        sync_cloud_run_log_stream(session, cloud_run=cloud_run)
+
     entries = _control_plane_entries(
         session,
         cloud_run=cloud_run,

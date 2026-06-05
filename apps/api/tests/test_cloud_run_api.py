@@ -4461,6 +4461,163 @@ def test_cloud_run_log_window_returns_bounded_pages_without_duplicates(
     assert second_body["next_cursor"] is None
 
 
+def test_cloud_run_log_window_does_not_sync_by_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def sync_should_not_run(session, *, cloud_run):
+        raise AssertionError("sync should not run by default")
+
+    monkeypatch.setattr(
+        "ai_company_api.services.cloud_run_logs.sync_cloud_run_log_stream",
+        sync_should_not_run,
+        raising=False,
+    )
+
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    response = client.get(f"/cloud-runs/{queued['id']}/logs/window")
+
+    assert response.status_code == 200
+
+
+def test_cloud_run_log_window_include_stream_false_does_not_sync(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def sync_should_not_run(session, *, cloud_run):
+        raise AssertionError("sync should not run when include_stream is false")
+
+    monkeypatch.setattr(
+        "ai_company_api.services.cloud_run_logs.sync_cloud_run_log_stream",
+        sync_should_not_run,
+        raising=False,
+    )
+
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "false", "sync_stream": "true"},
+    )
+
+    assert response.status_code == 200
+
+
+def test_cloud_run_log_window_sync_stream_refreshes_remote_stub_log_stream(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "runtime_provider": "remote_stub",
+            "storage_provider": "local_inline",
+        },
+    ).json()["cloud_run"]
+    before_uri = queued["log_stream_uri"]
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "true", "sync_stream": "true", "limit": 20},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    stream_messages = [
+        entry["message"]
+        for entry in body["entries"]
+        if entry["source"] == "log_stream"
+    ]
+    assert stream_messages == [
+        "Remote runtime submitted via remote_stub.",
+        "Remote runtime log sync via remote_stub.",
+    ]
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        assert cloud_run.log_stream_uri != before_uri
+        assert cloud_run.log_stream_sha256 is not None
+        assert cloud_run.log_stream_size_bytes is not None
+        assert cloud_run.log_stream_content_type == "text/plain"
+
+
+def test_cloud_run_log_window_sync_stream_does_not_churn_remote_stub_metadata(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "runtime_provider": "remote_stub",
+            "storage_provider": "local_inline",
+        },
+    ).json()["cloud_run"]
+
+    first = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "true", "sync_stream": "true", "limit": 20},
+    )
+    assert first.status_code == 200
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        first_uri = cloud_run.log_stream_uri
+        first_sha256 = cloud_run.log_stream_sha256
+
+    second = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "true", "sync_stream": "true", "limit": 20},
+    )
+    assert second.status_code == 200
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        assert cloud_run.log_stream_uri == first_uri
+        assert cloud_run.log_stream_sha256 == first_sha256
+
+
 def test_cloud_run_log_window_includes_redacted_stream_lines_when_metadata_exists(
     tmp_path: Path,
 ) -> None:

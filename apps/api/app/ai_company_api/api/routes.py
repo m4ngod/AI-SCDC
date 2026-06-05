@@ -646,6 +646,7 @@ def get_cloud_run_log_window(
     after: str | None = None,
     limit: int = Query(default=100, ge=1, le=200),
     include_stream: bool = True,
+    sync_stream: bool = False,
 ) -> CloudRunLogWindowRead:
     return list_cloud_run_log_window(
         session,
@@ -653,6 +654,7 @@ def get_cloud_run_log_window(
         after=after,
         limit=limit,
         include_stream=include_stream,
+        sync_stream=sync_stream,
     )
 
 
