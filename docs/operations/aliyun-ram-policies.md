@@ -11,14 +11,17 @@ These examples use concrete development values:
 - OSS prefix: `ai-scdc/dev/`
 - ECI container group prefix: `ai-scdc-run-`
 
-Adjust values in the Aliyun RAM console for each deployment. Use the Aliyun RAM
-policy simulator before attaching a policy to a production role.
+Adjust values in the Aliyun RAM console for each deployment. These are starting
+examples to validate with the Aliyun RAM policy simulator, not
+production-certified exact ARNs. Resource-level support can vary by action and
+service.
 
 ## API Control Plane Role
 
-The API process can enqueue queue-only MNS work, acknowledge MNS receipts,
-write and read OSS run artifacts, create ECI containers, sync ECI logs, and
-delete known ECI containers by persisted id.
+The API process can enqueue queue-only MNS work, delete or acknowledge MNS
+receipts through terminal acknowledgement and recovery paths, write and read OSS
+run artifacts, create ECI containers, sync ECI logs, and delete terminal Aliyun
+ECI containers by persisted `runtime_job_id`. Pull workers own MNS receive.
 
 ```json
 {
@@ -28,7 +31,6 @@ delete known ECI containers by persisted id.
       "Effect": "Allow",
       "Action": [
         "mns:SendMessage",
-        "mns:ReceiveMessage",
         "mns:DeleteMessage"
       ],
       "Resource": [

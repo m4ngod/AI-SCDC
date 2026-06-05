@@ -53,7 +53,8 @@ GitHub tokens into operational records.
 2. Treat MNS delete failure as recoverable. The cloud run can remain
    `patch_ready`, `failed`, or `cancelled` while `external_status` records
    `mns_message_delete_failed`.
-3. Delete ECI container groups only by persisted `runtime_job_id`.
+3. Delete ECI container groups only for terminal Aliyun ECI runs by persisted
+   `runtime_job_id`.
 4. Do not delete ECI containers immediately after terminal completion when
    `DescribeContainerLog` may still be needed for provider log sync.
 5. Use Aliyun OSS lifecycle rules for development-prefix retention instead of
@@ -148,20 +149,21 @@ Operator symptom: ECI submission returns a controlled runtime submission
 failure after a container group was created.
 
 Safe fields to inspect: `cloud_run.id`, `failure_reason`,
-`runtime_submission_failed`, `runtime_job_id` when persisted, and fake-client or
-Aliyun-side delete outcome.
+`runtime_submission_failed`, persisted `runtime_job_id` when present, and
+fake-client or Aliyun-side delete outcome.
 
 Fields that must never be pasted: OSS signed query strings, access keys, raw OSS
 exception text, and callback token environment values.
 
-Expected API state: cloud run failed with `runtime_submission_failed`; existing
-submission code attempts to delete the just-created ECI container group.
+Expected API state: cloud run failed with `runtime_submission_failed`.
+Operator cleanup is allowed only after the run is terminal and has a persisted
+`runtime_job_id`.
 
 Recovery action: fix OSS endpoint, bucket, prefix, and RAM permissions for
 `oss:PutObject`, then create a new cloud run.
 
-Escalation: if container deletion also fails, delete the known container group
-from Aliyun console using `runtime_job_id` and record only redacted details.
+Escalation: if a terminal Aliyun ECI run retains a persisted `runtime_job_id`,
+retry cleanup by that persisted id and record only redacted details.
 
 ## Case: OSS Read Fails For URI, Bucket, Prefix, Or Metadata Mismatch
 
@@ -208,21 +210,22 @@ Escalation: use Aliyun console request diagnostics with redacted API logs.
 Operator symptom: ECI create request exists, but API returns controlled runtime
 submission failure.
 
-Safe fields to inspect: known container group id, failed cloud-run id,
-redacted provider status, and whether cleanup was attempted.
+Safe fields to inspect: failed cloud-run id, persisted `runtime_job_id` when
+present, redacted provider status, and whether cleanup was attempted.
 
 Fields that must never be pasted: raw OSS exception, access keys, callback
 token, and full worker environment.
 
-Expected API state: failed cloud run; ECI deletion attempted immediately by the
-submission path if the runtime job id is known.
+Expected API state: failed cloud run. Operator cleanup is allowed only if the
+run is terminal and has a persisted `runtime_job_id`.
 
-Recovery action: check whether the container group still exists. If it exists,
-delete it by known id through Aliyun console or the service cleanup helper once
-the run is terminal and persisted.
+Recovery action: check whether the terminal cloud run has a persisted
+`runtime_job_id`. Cleanup must use only the persisted `runtime_job_id` for a
+terminal Aliyun ECI run. Operators must not delete from transient ids, raw
+provider output, or unpersisted submission responses.
 
-Escalation: if deletion is denied, validate RAM `eci:DeleteContainerGroup`
-scope and capture only redacted status.
+Escalation: if deletion by persisted `runtime_job_id` is denied, validate RAM
+`eci:DeleteContainerGroup` scope and capture only redacted status.
 
 ## Case: ECI Log Sync Returns Empty Or Non-Text Content
 
@@ -258,8 +261,9 @@ environment, callback token, and signed OSS links.
 Expected API state: terminal cloud-run status is unchanged and `runtime_job_id`
 is retained for another cleanup attempt.
 
-Recovery action: verify RAM `eci:DeleteContainerGroup`, confirm the group still
-exists, and retry cleanup by persisted `runtime_job_id`.
+Recovery action: verify RAM `eci:DeleteContainerGroup`, confirm the terminal
+Aliyun ECI run still has a persisted `runtime_job_id`, and retry cleanup by
+persisted `runtime_job_id`.
 
 Escalation: if delete is denied or the group is stuck, use Aliyun console
 support flow with redacted AI-SCDC metadata.
