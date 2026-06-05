@@ -333,6 +333,9 @@ def enqueue_cloud_run(
         cloud_run.callback_token_expires_at = callback_token_expires_at
         cloud_run.callback_token_used_at = None
         callback_token_expires_at_text = callback_token_expires_at.isoformat()
+        session.add(cloud_run)
+        session.commit()
+        session.refresh(cloud_run)
 
     try:
         queue_result = get_cloud_queue_provider(data.queue_provider).enqueue(

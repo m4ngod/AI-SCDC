@@ -986,6 +986,82 @@ def test_aliyun_mns_enqueue_for_eci_includes_callback_token_without_api_leak(
         set_aliyun_client_bundle_for_tests(None)
 
 
+def test_aliyun_mns_enqueue_commits_protected_callback_metadata_before_send(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    class VerifyingAliyunMnsClient(FakeAliyunMnsClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.verified_during_send = False
+
+        def send_message(self, request: AliyunMnsSendMessageRequest) -> dict:
+            payload = json.loads(request.body)
+            with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+                persisted = session.get(CloudRun, request.cloud_run_id)
+                assert persisted is not None
+                assert persisted.worker_id == payload["worker_id"]
+                assert persisted.callback_token_hash is not None
+                assert persisted.callback_token_expires_at is not None
+                assert persisted.callback_token_used_at is None
+                with pytest.raises(HTTPException) as excinfo:
+                    cloud_runner.verify_cloud_run_callback_token_or_403(
+                        persisted,
+                        worker_id=payload["worker_id"],
+                        callback_token="wrong",
+                    )
+                assert excinfo.value.status_code == 403
+                self.verified_during_send = True
+            return super().send_message(request)
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = VerifyingAliyunMnsClient()
+    fake_eci = FakeAliyunEciClient()
+    set_aliyun_client_bundle_for_tests(
+        AliyunClientBundle(mns=fake_mns, oss=FakeAliyunOssClient(), eci=fake_eci)
+    )
+    try:
+        database_path = tmp_path / "app.db"
+        client = build_client(database_path)
+        with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+            project, repository, task = create_cloud_task(session)
+            profile = create_profile_entity(session, project, repository)
+            task_id = task.id
+            repo_id = repository.id
+            profile_id = profile.id
+
+        response = client.post(
+            f"/tasks/{task_id}/cloud-runs",
+            json={
+                "repo_id": repo_id,
+                "sandbox_profile_id": profile_id,
+                "queue_provider": "aliyun_mns",
+                "runtime_provider": "aliyun_eci",
+                "storage_provider": "aliyun_oss",
+            },
+        )
+
+        assert response.status_code == 201
+        assert fake_mns.verified_during_send is True
+    finally:
+        set_aliyun_client_bundle_for_tests(None)
+
+
 def test_aliyun_mns_queue_provider_sends_token_bearing_message_on_enqueue(
     monkeypatch,
 ) -> None:
