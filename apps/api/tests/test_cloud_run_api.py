@@ -5009,6 +5009,10 @@ def test_cloud_run_log_window_includes_redacted_stream_lines_when_metadata_exist
                     "worker started\n"
                     "provider token=secret-token Bearer abc.def\n"
                     "authorization: Bearer abc.def\n"
+                    "callback_token=callback-secret\n"
+                    "AI_SCDC_CALLBACK_TOKEN=env-callback-secret\n"
+                    "access_key_secret=access-secret\n"
+                    "api_key=api-key-secret\n"
                 ),
                 content_type="text/plain",
             ),
@@ -5034,9 +5038,17 @@ def test_cloud_run_log_window_includes_redacted_stream_lines_when_metadata_exist
         "worker started",
         "provider token=[redacted] Bearer [redacted]",
         "authorization=[redacted]",
+        "callback_token=[redacted]",
+        "AI_SCDC_CALLBACK_TOKEN=[redacted]",
+        "access_key_secret=[redacted]",
+        "api_key=[redacted]",
     ]
     assert "secret-token" not in str(body)
     assert "abc.def" not in str(body)
+    assert "callback-secret" not in str(body)
+    assert "env-callback-secret" not in str(body)
+    assert "access-secret" not in str(body)
+    assert "api-key-secret" not in str(body)
     assert stream_entries[0]["payload"]["uri"] == ref.uri
     assert stream_entries[0]["payload"]["line"] == 1
 

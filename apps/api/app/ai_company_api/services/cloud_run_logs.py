@@ -28,7 +28,9 @@ from ai_company_api.services.object_storage import (
 
 BASE64URL_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 STREAM_SECRET_PATTERN = re.compile(
-    r"\b(?P<key>access_token|authorization|password|secret|token|sig)"
+    r"\b(?P<key>[A-Za-z0-9_.-]*"
+    r"(?:access[_-]?token|authorization|password|secret|token|api[_-]?key|sig)"
+    r"[A-Za-z0-9_.-]*)"
     r"\b\s*[:=]\s*(?:Bearer\s+)?\S+",
     re.IGNORECASE,
 )

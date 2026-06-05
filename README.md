@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, Phase 10A remote worker control-plane contract, Phase 10B provider-neutral remote execution-plane contract, Phase 10C Aliyun provider MVP, Phase 10D run-scoped remote worker callback token hardening, Phase 11 real remote worker execution skeleton, and Phase 12A bounded cloud-run log polling and safe remote log-stream reads for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, Phase 10A remote worker control-plane contract, Phase 10B provider-neutral remote execution-plane contract, Phase 10C Aliyun provider MVP, Phase 10D run-scoped remote worker callback token hardening, Phase 11 real remote worker execution skeleton, Phase 12A bounded cloud-run log polling and safe remote log-stream reads, and Phase 12B optional provider-native log sync for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -743,8 +743,13 @@ artifacts, or completion payloads.
 Phase 12A adds `GET /cloud-runs/{cloud_run_id}/logs/window` for bounded log
 polling. The endpoint accepts an opaque `after` cursor, `limit`, and
 `include_stream`; it returns persisted control-plane log entries and, when
-complete object metadata is present, redacted remote log-stream lines. The
-legacy `/logs` endpoint remains available for full-list compatibility.
+complete object metadata is present, redacted remote log-stream lines. Phase
+12B adds optional `sync_stream=true`, which refreshes persisted log-stream
+metadata before polling for providers that support it. The deterministic
+`remote_stub` refreshes a bounded object-storage log snapshot, and
+`aliyun_eci` uses the `DescribeContainerLog` seam. This remains a polling API,
+not live WebSocket or SSE streaming. The legacy `/logs` endpoint remains
+available for full-list compatibility.
 
 Cleanup after smoke:
 
