@@ -1,7 +1,8 @@
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import HTTPException, status
@@ -104,6 +105,15 @@ ALIYUN_MNS_QUEUE_PROVIDER = "aliyun_mns"
 ALIYUN_ECI_RUNTIME_PROVIDER = "aliyun_eci"
 DEFAULT_LEASE_SECONDS = 60
 DEFAULT_LEASE_CLAIM_CANDIDATE_LIMIT = 25
+
+CloudRunProviderOperationStatus = Literal["skipped", "succeeded", "failed"]
+
+
+@dataclass(frozen=True)
+class CloudRunProviderOperationResult:
+    status: CloudRunProviderOperationStatus
+    reason: str
+    cloud_run: CloudRunRead
 
 
 def _is_sensitive_payload_key(key: str) -> bool:
@@ -872,6 +882,99 @@ def _ack_mns_queue_receipt_after_terminal_commit(
     session.add(cloud_run)
     session.commit()
     session.refresh(cloud_run)
+
+
+def retry_retained_mns_queue_receipt_delete(
+    session: Session,
+    *,
+    cloud_run_id: str,
+) -> CloudRunProviderOperationResult:
+    cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    skip_reason = _mns_receipt_recovery_skip_reason(cloud_run)
+    if skip_reason is not None:
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="mns_message_delete_retry_skipped",
+            message="Aliyun MNS receipt recovery skipped.",
+            payload={
+                "queue_provider": cloud_run.queue_provider,
+                "reason": skip_reason,
+            },
+        )
+        cloud_run.updated_at = utc_now()
+        session.add(cloud_run)
+        session.commit()
+        session.refresh(cloud_run)
+        return CloudRunProviderOperationResult(
+            status="skipped",
+            reason=skip_reason,
+            cloud_run=_cloud_run_read(cloud_run),
+        )
+
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="mns_message_delete_retry_attempted",
+        message="Aliyun MNS receipt recovery attempted.",
+        payload={"queue_provider": cloud_run.queue_provider},
+    )
+    try:
+        get_cloud_queue_provider(ALIYUN_MNS_QUEUE_PROVIDER).delete(
+            queue_receipt=cloud_run.queue_receipt or ""
+        )
+    except CloudQueueProviderError as exc:
+        cloud_run.external_status = "mns_message_delete_failed"
+        cloud_run.external_error = (
+            _redact_external_error(str(exc)) or "mns_message_delete_failed"
+        )
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="mns_message_delete_retry_failed",
+            message="Aliyun MNS receipt recovery failed.",
+            level="warning",
+            payload={
+                "queue_provider": cloud_run.queue_provider,
+                "reason": "mns_message_delete_failed",
+                "external_error": cloud_run.external_error,
+            },
+        )
+        result_status: CloudRunProviderOperationStatus = "failed"
+        result_reason = "mns_message_delete_failed"
+    else:
+        cloud_run.queue_receipt = None
+        cloud_run.external_status = "mns_message_deleted"
+        cloud_run.external_error = None
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="mns_message_delete_recovered",
+            message="Aliyun MNS receipt recovered and deleted.",
+            payload={"queue_provider": cloud_run.queue_provider},
+        )
+        result_status = "succeeded"
+        result_reason = "mns_message_deleted"
+
+    cloud_run.updated_at = utc_now()
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    return CloudRunProviderOperationResult(
+        status=result_status,
+        reason=result_reason,
+        cloud_run=_cloud_run_read(cloud_run),
+    )
+
+
+def _mns_receipt_recovery_skip_reason(cloud_run: CloudRun) -> str | None:
+    if cloud_run.queue_provider != ALIYUN_MNS_QUEUE_PROVIDER:
+        return "mns_receipt_recovery_requires_aliyun_mns"
+    if cloud_run.status not in CLOUD_RUN_TERMINAL_STATUSES:
+        return "mns_receipt_recovery_requires_terminal_state"
+    if not cloud_run.queue_receipt:
+        return "mns_receipt_recovery_missing_receipt"
+    return None
 
 
 def _command_result_from_create(data) -> CommandResult:

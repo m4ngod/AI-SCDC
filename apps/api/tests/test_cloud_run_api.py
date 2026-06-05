@@ -3873,6 +3873,149 @@ def test_aliyun_mns_completion_delete_failure_keeps_terminal_state_and_redacts_r
     assert cloud_run.external_status == "mns_message_delete_failed"
 
 
+def test_aliyun_mns_retained_receipt_recovery_deletes_and_clears_receipt_without_leak(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    database_path = tmp_path / "app.db"
+    cloud_run_id, lease_id, fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    fake_mns.delete_error = RuntimeError(
+        "delete failed for receipt-1 secret=first-provider-secret"
+    )
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    client = build_client(database_path)
+    payload = remote_stub_completion_payload(cloud_run_id)
+    payload["worker_id"] = queued_payload["worker_id"]
+    payload["callback_token"] = queued_payload["callback_token"]
+
+    completion = client.post(
+        f"/cloud-run-worker/leases/{lease_id}/complete",
+        json=payload,
+    )
+    assert completion.status_code == 200
+    assert completion.json()["cloud_run"]["status"] == "patch_ready"
+
+    fake_mns.delete_error = None
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    with Session(engine) as session:
+        result = cloud_runner.retry_retained_mns_queue_receipt_delete(
+            session,
+            cloud_run_id=cloud_run_id,
+        )
+
+    assert result.status == "succeeded"
+    assert result.reason == "mns_message_deleted"
+    assert result.cloud_run.status == "patch_ready"
+    assert result.cloud_run.external_status == "mns_message_deleted"
+    assert result.cloud_run.external_error is None
+    assert fake_mns.delete_requests[-1].receipt_handle == "receipt-1"
+
+    response = client.get(f"/cloud-runs/{cloud_run_id}")
+    assert response.status_code == 200
+    assert "queue_receipt" not in response.text
+    assert "receipt-1" not in response.text
+
+    with Session(engine) as session:
+        persisted = session.get(CloudRun, cloud_run_id)
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+            .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+        ).all()
+
+    assert persisted is not None
+    assert persisted.status == "patch_ready"
+    assert persisted.queue_receipt is None
+    assert persisted.external_status == "mns_message_deleted"
+    serialized_logs = "\n".join(
+        f"{entry.event}\n{entry.message}\n"
+        f"{json.dumps(entry.payload, sort_keys=True, default=str)}"
+        for entry in log_entries
+    )
+    assert "mns_message_delete_retry_attempted" in serialized_logs
+    assert "mns_message_delete_recovered" in serialized_logs
+    assert "receipt-1" not in serialized_logs
+    assert "first-provider-secret" not in serialized_logs
+
+
+def test_aliyun_mns_retained_receipt_recovery_failure_keeps_terminal_state_and_redacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    database_path = tmp_path / "app.db"
+    cloud_run_id, lease_id, fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    fake_mns.delete_error = RuntimeError("delete failed for receipt-1")
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    client = build_client(database_path)
+    payload = remote_stub_completion_payload(cloud_run_id)
+    payload["worker_id"] = queued_payload["worker_id"]
+    payload["callback_token"] = queued_payload["callback_token"]
+
+    completion = client.post(
+        f"/cloud-run-worker/leases/{lease_id}/complete",
+        json=payload,
+    )
+    assert completion.status_code == 200
+
+    fake_mns.delete_error = RuntimeError(
+        "delete failed for receipt-1 secret=provider-secret token=abc123"
+    )
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    with Session(engine) as session:
+        result = cloud_runner.retry_retained_mns_queue_receipt_delete(
+            session,
+            cloud_run_id=cloud_run_id,
+        )
+
+    assert result.status == "failed"
+    assert result.reason == "mns_message_delete_failed"
+    assert result.cloud_run.status == "patch_ready"
+    assert result.cloud_run.external_status == "mns_message_delete_failed"
+    assert "provider-secret" not in (result.cloud_run.external_error or "")
+    assert "abc123" not in (result.cloud_run.external_error or "")
+
+    response = client.get(f"/cloud-runs/{cloud_run_id}")
+    assert response.status_code == 200
+    assert "queue_receipt" not in response.text
+    assert "receipt-1" not in response.text
+    assert "provider-secret" not in response.text
+    assert "abc123" not in response.text
+
+    with Session(engine) as session:
+        persisted = session.get(CloudRun, cloud_run_id)
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+            .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+        ).all()
+
+    assert persisted is not None
+    assert persisted.status == "patch_ready"
+    assert persisted.queue_receipt == "receipt-1"
+    assert persisted.external_status == "mns_message_delete_failed"
+    assert "provider-secret" not in (persisted.external_error or "")
+    assert "abc123" not in (persisted.external_error or "")
+    serialized_logs = "\n".join(
+        f"{entry.event}\n{entry.message}\n"
+        f"{json.dumps(entry.payload, sort_keys=True, default=str)}"
+        for entry in log_entries
+    )
+    assert "mns_message_delete_retry_failed" in serialized_logs
+    assert "receipt-1" not in serialized_logs
+    assert "provider-secret" not in serialized_logs
+    assert "abc123" not in serialized_logs
+
+
 def test_aliyun_mns_cancelled_completion_deletes_receipt_and_clears_internal_receipt(
     tmp_path: Path,
     monkeypatch,
