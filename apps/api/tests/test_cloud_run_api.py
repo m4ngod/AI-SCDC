@@ -3589,6 +3589,47 @@ def test_aliyun_mns_completion_deletes_receipt_and_clears_internal_receipt(
     assert cloud_run.queue_receipt is None
 
 
+def test_aliyun_mns_completion_deletes_receipt_only_after_terminal_commit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, lease_id, fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    client = build_client(database_path)
+    observed_states: list[tuple[str | None, bool, str | None]] = []
+    original_delete_message = fake_mns.delete_message
+
+    def delete_message(request):
+        with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+            persisted = session.get(CloudRun, cloud_run_id)
+        assert persisted is not None
+        observed_states.append(
+            (
+                persisted.status,
+                persisted.completed_at is not None,
+                persisted.queue_receipt,
+            )
+        )
+        return original_delete_message(request)
+
+    fake_mns.delete_message = delete_message
+    payload = remote_stub_completion_payload(cloud_run_id)
+    payload["worker_id"] = queued_payload["worker_id"]
+    payload["callback_token"] = queued_payload["callback_token"]
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease_id}/complete",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    assert observed_states == [("patch_ready", True, "receipt-1")]
+
+
 def test_aliyun_mns_completion_delete_failure_keeps_terminal_state_and_redacts_receipt(
     tmp_path: Path,
     monkeypatch,
@@ -3630,6 +3671,44 @@ def test_aliyun_mns_completion_delete_failure_keeps_terminal_state_and_redacts_r
     assert cloud_run.status == "patch_ready"
     assert cloud_run.queue_receipt == "receipt-1"
     assert cloud_run.external_status == "mns_message_delete_failed"
+
+
+def test_aliyun_mns_cancelled_completion_deletes_receipt_and_clears_internal_receipt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, lease_id, fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    client = build_client(database_path)
+
+    cancel = client.post(f"/cloud-runs/{cloud_run_id}/cancel")
+    assert cancel.status_code == 200
+    assert cancel.json()["status"] == "running"
+    assert cancel.json()["cancel_requested"] is True
+
+    payload = remote_stub_completion_payload(cloud_run_id)
+    payload["worker_id"] = queued_payload["worker_id"]
+    payload["callback_token"] = queued_payload["callback_token"]
+
+    response = client.post(
+        f"/cloud-run-worker/leases/{lease_id}/complete",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    assert fake_mns.delete_requests[0].receipt_handle == "receipt-1"
+    assert response.json()["cloud_run"]["status"] == "cancelled"
+    assert response.json()["patch_artifact"] is None
+    assert "queue_receipt" not in response.text
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, cloud_run_id)
+    assert cloud_run is not None
+    assert cloud_run.status == "cancelled"
+    assert cloud_run.queue_receipt is None
 
 
 def test_aliyun_mns_duplicate_delivery_cannot_claim_second_active_lease(

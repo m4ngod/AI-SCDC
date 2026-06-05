@@ -764,7 +764,11 @@ def requeue_expired_cloud_run_leases(
     return [_cloud_run_read(cloud_run) for cloud_run in changed]
 
 
-def _delete_mns_queue_receipt_after_terminal(cloud_run: CloudRun) -> None:
+def _ack_mns_queue_receipt_after_terminal_commit(
+    session: Session,
+    *,
+    cloud_run: CloudRun,
+) -> None:
     if (
         cloud_run.queue_provider != ALIYUN_MNS_QUEUE_PROVIDER
         or not cloud_run.queue_receipt
@@ -774,11 +778,15 @@ def _delete_mns_queue_receipt_after_terminal(cloud_run: CloudRun) -> None:
         get_cloud_queue_provider(ALIYUN_MNS_QUEUE_PROVIDER).delete(
             queue_receipt=cloud_run.queue_receipt
         )
-    except Exception:
+    except CloudQueueProviderError:
         cloud_run.external_status = "mns_message_delete_failed"
-        return
-    cloud_run.queue_receipt = None
-    cloud_run.external_status = "mns_message_deleted"
+    else:
+        cloud_run.queue_receipt = None
+        cloud_run.external_status = "mns_message_deleted"
+    cloud_run.updated_at = utc_now()
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
 
 
 def _command_result_from_create(data) -> CommandResult:
@@ -1165,6 +1173,7 @@ def _mark_claimed_cloud_run_failed(
     session.add(cloud_run)
     session.commit()
     session.refresh(cloud_run)
+    _ack_mns_queue_receipt_after_terminal_commit(session, cloud_run=cloud_run)
     return CloudRunResultRead(cloud_run=_cloud_run_read(cloud_run), patch_artifact=None)
 
 
@@ -1539,7 +1548,6 @@ def _finalize_claimed_cloud_run_result(
         completed_at = utc_now()
         cloud_run.completed_at = completed_at
         cloud_run.updated_at = completed_at
-        _delete_mns_queue_receipt_after_terminal(cloud_run)
         _create_cloud_run_event(
             session,
             event_clock,
@@ -1573,6 +1581,7 @@ def _finalize_claimed_cloud_run_result(
         session.add(task)
         session.commit()
         session.refresh(cloud_run)
+        _ack_mns_queue_receipt_after_terminal_commit(session, cloud_run=cloud_run)
         return CloudRunResultRead(
             cloud_run=_cloud_run_read(cloud_run),
             patch_artifact=None,
@@ -1623,7 +1632,6 @@ def _finalize_claimed_cloud_run_result(
     completed_at = utc_now()
     cloud_run.completed_at = completed_at
     cloud_run.updated_at = completed_at
-    _delete_mns_queue_receipt_after_terminal(cloud_run)
     _create_cloud_run_event(
         session,
         event_clock,
@@ -1682,6 +1690,7 @@ def _finalize_claimed_cloud_run_result(
     session.add(task)
     session.commit()
     session.refresh(cloud_run)
+    _ack_mns_queue_receipt_after_terminal_commit(session, cloud_run=cloud_run)
     session.refresh(artifact)
     return CloudRunResultRead(
         cloud_run=_cloud_run_read(cloud_run),
