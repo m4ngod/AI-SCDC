@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import inspect, text
 from sqlmodel import SQLModel, Session, select
 
@@ -32,8 +33,11 @@ from ai_company_api.services.cloud_sandbox_executor import (
 )
 from ai_company_api.services.aliyun_clients import (
     AliyunClientBundle,
+    AliyunMnsDeleteMessageRequest,
     AliyunEciCreateContainerGroupRequest,
     AliyunEciDescribeContainerLogRequest,
+    AliyunMnsReceivedMessage,
+    AliyunMnsReceiveMessageRequest,
     AliyunMnsSendMessageRequest,
     AliyunOssPutObjectRequest,
 )
@@ -472,10 +476,30 @@ def _set_complete_aliyun_env(monkeypatch) -> None:
 class FakeAliyunMnsClient:
     def __init__(self) -> None:
         self.requests: list[AliyunMnsSendMessageRequest] = []
+        self.received_messages: list[AliyunMnsReceivedMessage] = []
+        self.receive_requests: list[AliyunMnsReceiveMessageRequest] = []
+        self.delete_requests: list[AliyunMnsDeleteMessageRequest] = []
+        self.delete_error: Exception | None = None
 
     def send_message(self, request: AliyunMnsSendMessageRequest) -> dict:
         self.requests.append(request)
         return {"message_id": f"aliyun-mns-message-{request.cloud_run_id}"}
+
+    def receive_message(
+        self, request: AliyunMnsReceiveMessageRequest
+    ) -> AliyunMnsReceivedMessage | None:
+        self.receive_requests.append(request)
+        if not self.received_messages:
+            return None
+        return self.received_messages.pop(0)
+
+    def delete_message(
+        self, request: AliyunMnsDeleteMessageRequest
+    ) -> dict[str, str]:
+        self.delete_requests.append(request)
+        if self.delete_error is not None:
+            raise self.delete_error
+        return {"deleted": "true"}
 
 
 class FailingAliyunMnsClient:
@@ -896,6 +920,144 @@ def test_aliyun_mns_queue_provider_sends_message_on_enqueue(
         "storage_provider": None,
     }
     assert "secret" not in fake_mns.requests[0].body
+
+
+def test_aliyun_mns_queue_provider_receives_and_parses_message(
+    monkeypatch,
+) -> None:
+    from ai_company_api.services.cloud_queue_providers import (
+        AliyunMnsQueueProvider,
+        CloudQueueReceivedMessage,
+    )
+
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    fake_mns.received_messages.append(
+        AliyunMnsReceivedMessage(
+            message_id="msg-1",
+            receipt_handle="receipt-1",
+            body=json.dumps(
+                {
+                    "workspace_id": "workspace-1",
+                    "project_id": "project-1",
+                    "task_id": "task-1",
+                    "cloud_run_id": "cloud-run-1",
+                    "queue_provider": "aliyun_mns",
+                    "runtime_provider": "aliyun_eci",
+                    "storage_provider": "aliyun_oss",
+                    "worker_id": "worker-1",
+                    "callback_token": "token-1",
+                    "callback_token_expires_at": "2026-06-05T10:00:00+00:00",
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+
+    result = AliyunMnsQueueProvider().receive(wait_seconds=5)
+
+    assert result == CloudQueueReceivedMessage(
+        queue_message_id="msg-1",
+        queue_receipt="receipt-1",
+        workspace_id="workspace-1",
+        project_id="project-1",
+        task_id="task-1",
+        cloud_run_id="cloud-run-1",
+        queue_provider="aliyun_mns",
+        runtime_provider="aliyun_eci",
+        storage_provider="aliyun_oss",
+        worker_id="worker-1",
+        callback_token="token-1",
+        callback_token_expires_at="2026-06-05T10:00:00+00:00",
+    )
+    assert fake_mns.receive_requests == [
+        AliyunMnsReceiveMessageRequest(queue_name="ai-scdc-cloud-runs-dev", wait_seconds=5)
+    ]
+
+
+def test_aliyun_mns_queue_provider_receive_returns_none_for_empty_queue(
+    monkeypatch,
+) -> None:
+    from ai_company_api.services.cloud_queue_providers import AliyunMnsQueueProvider
+
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+
+    assert AliyunMnsQueueProvider().receive(wait_seconds=5) is None
+    assert fake_mns.receive_requests == [
+        AliyunMnsReceiveMessageRequest(queue_name="ai-scdc-cloud-runs-dev", wait_seconds=5)
+    ]
+
+
+def test_aliyun_mns_queue_provider_receive_rejects_malformed_message(
+    monkeypatch,
+) -> None:
+    from ai_company_api.services.cloud_queue_providers import (
+        AliyunMnsQueueProvider,
+        CloudQueueProviderError,
+    )
+
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    fake_mns.received_messages.append(
+        AliyunMnsReceivedMessage(
+            message_id="msg-1",
+            receipt_handle="receipt-1",
+            body="not-json",
+        )
+    )
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+
+    with pytest.raises(CloudQueueProviderError, match="invalid MNS message"):
+        AliyunMnsQueueProvider().receive(wait_seconds=5)
+
+
+def test_aliyun_mns_queue_provider_delete_uses_receipt_handle(
+    monkeypatch,
+) -> None:
+    from ai_company_api.services.cloud_queue_providers import AliyunMnsQueueProvider
+
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+
+    AliyunMnsQueueProvider().delete(queue_receipt="receipt-1")
+
+    assert fake_mns.delete_requests == [
+        AliyunMnsDeleteMessageRequest(
+            queue_name="ai-scdc-cloud-runs-dev",
+            receipt_handle="receipt-1",
+        )
+    ]
 
 
 def test_aliyun_eci_runtime_submission_creates_safe_container_request(
