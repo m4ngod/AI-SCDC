@@ -243,6 +243,24 @@ Phase 12 does not add WebSockets, Server-Sent Events, SLS-managed log stores,
 artifact browser UI, model-backed reviewer or debugger agents, production KMS,
 or a broad provider package split.
 
+## Phase 13A Boundary
+
+Phase 13A hardens the Aliyun MNS/OSS/ECI path for operator use without widening
+the product boundary. The API now has service-level seams for retrying retained
+Aliyun MNS receipt deletion and best-effort Aliyun ECI terminal cleanup by
+persisted `runtime_job_id`.
+
+Cleanup failures do not rewind terminal cloud-run status. MNS receipt recovery
+clears only the internal `queue_receipt` after delete succeeds, and ECI cleanup
+retains `runtime_job_id` for audit and repeat attempts. Cleanup logs and
+responses use redacted provider status only and never expose callback tokens,
+queue receipts, access keys, signed URLs, or raw provider exceptions.
+
+Phase 13A also documents Aliyun RAM policy examples, provider failure runbooks,
+OSS lifecycle boundaries, and the production KMS boundary. It does not add a
+public destructive operations API, user auth, organization RBAC, billing, a real
+KMS SDK, API-side OSS deletion, or a second cloud provider.
+
 ## Roadmap
 
 Completed:
@@ -264,7 +282,9 @@ Completed:
 15. Real remote worker execution skeleton with protected payload fetch, private GitHub clone credential boundary, command/test execution, diff capture, artifact uploads, and redacted completion.
 16. Bounded cloud-run log polling with cursor windows, safe remote log-stream reads, and optional provider-native log sync.
 17. Aliyun MNS pull-worker claims for protected MNS deliveries with callback-token hash storage, message-id binding, internal-only queue receipts, and post-terminal MNS acknowledgement or recoverable delete failure handling.
+18. Aliyun operational hardening with retained MNS receipt recovery, best-effort ECI terminal cleanup by persisted runtime id, least-privilege RAM examples, provider failure runbooks, OSS lifecycle guidance, and production KMS boundary documentation.
 
 Future:
 
-1. Broader provider coverage beyond the current Aliyun MNS/OSS/ECI production-provider path while preserving callback-token-protected payload access and completion boundaries.
+1. Authenticated organization-scoped operator controls for cleanup, audit, billing, and production KMS integration before commercial beta.
+2. Broader provider coverage beyond the current Aliyun MNS/OSS/ECI production-provider path while preserving callback-token-protected payload access and completion boundaries.

@@ -1,29 +1,34 @@
-# Phase 12C Status
+# Phase 13A Status
 
 ## Scope
 
-Completed Phase 12C final-review fixes for Aliyun MNS pull-worker capability
-and launch-mode clarification. The API now keeps the default
-`aliyun_mns + aliyun_eci` launch on the protected assigned-run path without
-creating an extra MNS delivery, while queue-only `aliyun_mns` runs create a
-token-bearing MNS assignment for external pull workers. MNS pull claims now
-bind the supplied receipt to the persisted enqueue message ID before storing
-the receipt for post-terminal acknowledgement. Queue-only MNS submissions must
-provide a storage provider, and legacy ECI assigned-run records that already
-persisted an MNS message ID can still claim with assigned-run credentials.
+Completed Aliyun operational hardening for the current MNS/OSS/ECI execution
+path. The API now has service-level helpers for retrying retained MNS receipt
+deletion and best-effort ECI terminal cleanup by persisted runtime id. Cleanup
+success and failure paths append redacted control-plane logs and do not expose
+callback tokens, queue receipts, access keys, signed URLs, or raw provider
+secrets.
+
+No public destructive cleanup endpoint was added. OSS object cleanup remains a
+bucket lifecycle responsibility until authenticated organization-scoped
+operator controls exist. `DevSecretVault` remains development-only and must be
+replaced by a KMS-backed `SecretVault` implementation before commercial beta.
+
+## Operator Docs
+
+- `docs/operations/aliyun-operational-runbook.md`
+- `docs/operations/aliyun-ram-policies.md`
 
 ## Verification
 
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "aliyun_eci_assigned_run_does_not_enqueue_mns_message or aliyun_mns_queue_provider_sends_message_on_enqueue or aliyun_mns_enqueue_commits_protected_callback_metadata_before_send or aliyun_eci_runtime_submission_creates_safe_container_request or aliyun_provider_mvp_enqueue_persists_non_sensitive_metadata or aliyun_mns_claim_persists_receipt or aliyun_mns_claim_rejects_mismatched_message_id or aliyun_mns_completion_deletes_receipt"` -> `9 passed, 142 deselected, 1 warning in 7.36s`
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "aliyun_mns or protected_aliyun or protected_worker or aliyun_eci"` -> `31 passed, 120 deselected, 1 warning in 15.09s`
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "queue_provider_sends_message_on_enqueue or queue_only_requires_storage_provider or mns_queue_provider_failure_is_controlled or legacy_aliyun_eci_assigned_run_with_stored_mns_message_id_can_claim"` -> `4 passed, 149 deselected, 1 warning in 3.94s`
-- `pytest apps/api/tests/test_cloud_run_api.py -q` -> `153 passed, 1 warning in 127.71s`
-- `pytest apps/api/tests/test_aliyun_clients.py -q` -> `15 passed in 0.06s`
-- `pytest apps/api/tests/test_remote_worker.py -q` -> `48 passed in 0.24s`
-- `pytest apps/api/tests -q` -> `457 passed, 1 warning in 197.80s`
-- `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> `1 file passed, 34 tests passed`
-- `pnpm typecheck` -> passed for `packages/agent-protocol` and `apps/desktop`
-- `git diff --check` -> no whitespace errors; Git reported Windows CRLF conversion warnings for touched files
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "retained_receipt_recovery or terminal_cleanup or aliyun_mns_completion_delete_failure or aliyun_eci_submission_cleans_up"` -> pending final run
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "aliyun_mns or protected_aliyun or protected_worker or aliyun_eci"` -> pending final run
+- `pytest apps/api/tests/test_aliyun_clients.py -q` -> pending final run
+- `pytest apps/api/tests/test_remote_worker.py -q` -> pending final run
+- `pytest apps/api/tests -q` -> pending final run
+- `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> pending final run
+- `pnpm typecheck` -> pending final run
+- `git diff --check` -> pending final run
 
 ## Warnings
 

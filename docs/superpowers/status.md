@@ -1,12 +1,12 @@
 # AI-SCDC Project Status
 
-Last verified: 2026-06-05
+Last verified: 2026-06-06
 
 ## Current Phase
 
-The project is through Phase 12B: bounded cloud-run log polling, safe remote
-log-stream reads, and optional provider-native log sync over the existing
-polling API.
+The project is through Phase 13A: Aliyun operational hardening for MNS receipt
+recovery, ECI terminal cleanup, RAM policy examples, provider runbooks, OSS
+lifecycle guidance, and production KMS boundaries.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -63,6 +63,14 @@ tests, README smoke instructions, and git history.
     log-stream metadata, safe object-storage reads, optional `sync_stream`
     provider refresh, deterministic `remote_stub` sync, and Aliyun ECI
     `DescribeContainerLog` sync seam.
+17. Phase 12C Aliyun MNS pull-worker claims: protected MNS deliveries,
+    callback-token hash storage, message-id binding, internal-only queue
+    receipts, and post-terminal MNS acknowledgement or recoverable delete
+    failure handling.
+18. Phase 13A Aliyun operational hardening: service-level MNS receipt recovery,
+    best-effort ECI terminal cleanup, redacted cleanup logs, least-privilege RAM
+    examples, provider failure runbooks, OSS lifecycle guidance, and production
+    KMS boundaries.
 
 ## Verification
 
@@ -146,10 +154,10 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Known Limits
 
-- Phase 12B adds optional provider-native log sync over the polling API, but it
-  does not add WebSockets, Server-Sent Events, direct MNS receive/delete
-  semantics, SLS-managed log stores, Kubernetes/ACK orchestration, billing, or
-  model-backed reviewer/debugger agents.
+- Phase 13A adds service-level Aliyun cleanup and recovery seams plus
+  operations docs, but it does not expose public destructive cleanup endpoints,
+  add user auth/RBAC, add billing, integrate real KMS, delete OSS objects from
+  code, add WebSockets/SSE, or add a second cloud provider.
 - The real remote worker can fetch a protected payload, clone, execute commands,
   capture diffs, upload artifacts, and complete a lease, but it does not push
   branches, create pull requests, merge changes, or provide live
@@ -169,14 +177,5 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Recommended Next Phase
 
-The next production hardening phase should build on Phase 12B without widening
-the approval boundary:
-
-1. Add or harden direct Aliyun MNS receive/delete worker semantics while keeping
-   callback-token-protected payload access and completion boundaries.
-2. Harden Aliyun operations with cleanup automation, least-privilege RAM policy
-   examples, provider failure runbooks, and production KMS boundaries.
-3. Keep fake, `docker_local`, `remote_stub`, `external_stub`, and
-   `local_inline` as deterministic development adapters.
-4. Defer model-backed reviewer/debugger agents and commercial beta work until
-   the remote execution plane is operationally reliable.
+The next production phase should add authenticated organization-scoped
+operator controls and production KMS integration before commercial beta.
