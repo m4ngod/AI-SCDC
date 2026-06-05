@@ -45,6 +45,16 @@ class AliyunEciCreateContainerGroupRequest:
     eip_bandwidth: int = 1
 
 
+@dataclass(frozen=True)
+class AliyunEciDescribeContainerLogRequest:
+    region_id: str
+    container_group_id: str
+    container_name: str
+    tail: int = 2000
+    limit_bytes: int = 1024 * 1024
+    timestamps: bool = False
+
+
 class AliyunMnsClient(Protocol):
     def send_message(self, request: AliyunMnsSendMessageRequest) -> dict[str, Any]:
         ...
@@ -62,6 +72,12 @@ class AliyunEciClient(Protocol):
     def create_container_group(
         self,
         request: AliyunEciCreateContainerGroupRequest,
+    ) -> dict[str, Any]:
+        ...
+
+    def describe_container_log(
+        self,
+        request: AliyunEciDescribeContainerLogRequest,
     ) -> dict[str, Any]:
         ...
 
@@ -246,6 +262,46 @@ class SdkAliyunEciClient:
             "container_group_id": getattr(body, "container_group_id", None),
             "request_id": getattr(body, "request_id", None),
             "cloud_run_id": request.cloud_run_id,
+        }
+
+    def describe_container_log(
+        self,
+        request: AliyunEciDescribeContainerLogRequest,
+    ) -> dict[str, Any]:
+        from alibabacloud_eci20180808.client import Client
+        from alibabacloud_eci20180808 import models as eci_models
+        from alibabacloud_tea_openapi import models as openapi_models
+
+        settings = require_aliyun_settings(
+            provider_name="eci",
+            required_names=(
+                "access_key_id",
+                "access_key_secret",
+                "region_id",
+            ),
+            settings=self.settings,
+        )
+        client = Client(
+            openapi_models.Config(
+                access_key_id=settings.access_key_id,
+                access_key_secret=settings.access_key_secret,
+                region_id=request.region_id,
+            )
+        )
+        result = client.describe_container_log(
+            eci_models.DescribeContainerLogRequest(
+                region_id=request.region_id,
+                container_group_id=request.container_group_id,
+                container_name=request.container_name,
+                tail=request.tail,
+                limit_bytes=request.limit_bytes,
+                timestamps=request.timestamps,
+            )
+        )
+        body = getattr(result, "body", None)
+        return {
+            "content": getattr(body, "content", "") or "",
+            "request_id": getattr(body, "request_id", None),
         }
 
     def delete_container_group(

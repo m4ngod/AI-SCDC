@@ -6,6 +6,7 @@ from ai_company_api.services.aliyun_config import AliyunSettings
 from ai_company_api.services.aliyun_clients import (
     AliyunClientBundle,
     AliyunEciCreateContainerGroupRequest,
+    AliyunEciDescribeContainerLogRequest,
     AliyunMnsSendMessageRequest,
     AliyunOssPutObjectRequest,
     SdkAliyunEciClient,
@@ -277,6 +278,94 @@ def test_sdk_aliyun_eci_client_delete_container_group_builds_request(
 
     assert captured["request"].region_id == "cn-hangzhou"
     assert captured["request"].container_group_id == "eci-cg-1"
+
+
+def test_sdk_aliyun_eci_client_describe_container_log_builds_request(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class FakeDescribeContainerLogRequest:
+        def __init__(
+            self,
+            *,
+            region_id,
+            container_group_id,
+            container_name,
+            tail,
+            limit_bytes,
+            timestamps,
+        ):
+            self.region_id = region_id
+            self.container_group_id = container_group_id
+            self.container_name = container_name
+            self.tail = tail
+            self.limit_bytes = limit_bytes
+            self.timestamps = timestamps
+
+    class FakeClient:
+        def __init__(self, config):
+            self.config = config
+
+        def describe_container_log(self, request):
+            captured["request"] = request
+            body = SimpleNamespace(content="worker log line\n", request_id="req-log-1")
+            return SimpleNamespace(body=body)
+
+    class FakeConfig:
+        def __init__(self, *, access_key_id, access_key_secret, region_id):
+            self.access_key_id = access_key_id
+            self.access_key_secret = access_key_secret
+            self.region_id = region_id
+
+    eci_package = ModuleType("alibabacloud_eci20180808")
+    eci_client_module = ModuleType("alibabacloud_eci20180808.client")
+    eci_models_module = ModuleType("alibabacloud_eci20180808.models")
+    eci_client_module.Client = FakeClient
+    eci_models_module.DescribeContainerLogRequest = FakeDescribeContainerLogRequest
+    eci_package.models = eci_models_module
+
+    openapi_package = ModuleType("alibabacloud_tea_openapi")
+    openapi_models_module = ModuleType("alibabacloud_tea_openapi.models")
+    openapi_models_module.Config = FakeConfig
+    openapi_package.models = openapi_models_module
+
+    monkeypatch.setitem(sys.modules, "alibabacloud_eci20180808", eci_package)
+    monkeypatch.setitem(
+        sys.modules,
+        "alibabacloud_eci20180808.client",
+        eci_client_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "alibabacloud_eci20180808.models",
+        eci_models_module,
+    )
+    monkeypatch.setitem(sys.modules, "alibabacloud_tea_openapi", openapi_package)
+    monkeypatch.setitem(
+        sys.modules,
+        "alibabacloud_tea_openapi.models",
+        openapi_models_module,
+    )
+
+    result = SdkAliyunEciClient(_aliyun_settings()).describe_container_log(
+        AliyunEciDescribeContainerLogRequest(
+            region_id="cn-hangzhou",
+            container_group_id="eci-cg-run-1",
+            container_name="ai-scdc-run-1",
+            tail=500,
+            limit_bytes=1024,
+            timestamps=True,
+        )
+    )
+
+    assert result == {"content": "worker log line\n", "request_id": "req-log-1"}
+    assert captured["request"].region_id == "cn-hangzhou"
+    assert captured["request"].container_group_id == "eci-cg-run-1"
+    assert captured["request"].container_name == "ai-scdc-run-1"
+    assert captured["request"].tail == 500
+    assert captured["request"].limit_bytes == 1024
+    assert captured["request"].timestamps is True
 
 
 def _aliyun_settings() -> AliyunSettings:
