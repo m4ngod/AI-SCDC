@@ -1083,6 +1083,110 @@ def test_aliyun_mns_queue_provider_receive_rejects_malformed_message(
         AliyunMnsQueueProvider().receive(wait_seconds=5)
 
 
+@pytest.mark.parametrize("message_id, receipt_handle", [("", "receipt-1"), ("msg-1", "")])
+def test_aliyun_mns_queue_provider_receive_rejects_blank_delivery_metadata(
+    monkeypatch,
+    message_id: str,
+    receipt_handle: str,
+) -> None:
+    from ai_company_api.services.cloud_queue_providers import (
+        AliyunMnsQueueProvider,
+        CloudQueueProviderError,
+    )
+
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    fake_mns.received_messages.append(
+        AliyunMnsReceivedMessage(
+            message_id=message_id,
+            receipt_handle=receipt_handle,
+            body=json.dumps(
+                {
+                    "workspace_id": "workspace-1",
+                    "project_id": "project-1",
+                    "task_id": "task-1",
+                    "cloud_run_id": "cloud-run-1",
+                    "queue_provider": "aliyun_mns",
+                    "runtime_provider": "aliyun_eci",
+                    "storage_provider": "aliyun_oss",
+                    "worker_id": "worker-1",
+                    "callback_token": "token-1",
+                    "callback_token_expires_at": "2026-06-05T10:00:00+00:00",
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+
+    with pytest.raises(CloudQueueProviderError, match="invalid MNS message"):
+        AliyunMnsQueueProvider().receive(wait_seconds=5)
+
+
+def test_registered_cloud_queue_providers_reject_receive_and_delete() -> None:
+    from ai_company_api.services.cloud_queue_providers import (
+        CloudQueueProviderError,
+        get_cloud_queue_provider,
+    )
+
+    for provider_name in ("local_db", "external_stub"):
+        provider = get_cloud_queue_provider(provider_name)
+
+        with pytest.raises(CloudQueueProviderError, match="does not support receive"):
+            provider.receive()
+
+        with pytest.raises(CloudQueueProviderError, match="does not support delete"):
+            provider.delete(queue_receipt="receipt-1")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {
+            "workspace_id": "workspace-1",
+            "project_id": "project-1",
+            "task_id": "task-1",
+            "cloud_run_id": "cloud-run-1",
+            "queue_provider": "aliyun_mns",
+            "runtime_provider": "aliyun_eci",
+            "storage_provider": "aliyun_oss",
+            "worker_id": 1,
+            "callback_token": "token-1",
+            "callback_token_expires_at": "2026-06-05T10:00:00+00:00",
+        },
+        {
+            "workspace_id": "",
+            "project_id": "project-1",
+            "task_id": "task-1",
+            "cloud_run_id": "cloud-run-1",
+            "queue_provider": "aliyun_mns",
+            "runtime_provider": "aliyun_eci",
+            "storage_provider": "aliyun_oss",
+            "worker_id": "worker-1",
+            "callback_token": "token-1",
+            "callback_token_expires_at": "2026-06-05T10:00:00+00:00",
+        },
+    ],
+)
+def test_mns_received_message_parser_rejects_malformed_json_payloads(
+    payload: object,
+) -> None:
+    from ai_company_api.services.cloud_queue_providers import (
+        CloudQueueProviderError,
+        _parse_mns_received_message,
+    )
+
+    with pytest.raises(CloudQueueProviderError, match="invalid MNS message"):
+        _parse_mns_received_message("msg-1", "receipt-1", payload)
+
+
 def test_aliyun_mns_queue_provider_delete_uses_receipt_handle(
     monkeypatch,
 ) -> None:

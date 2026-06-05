@@ -225,6 +225,14 @@ def _parse_mns_received_message(
     queue_receipt: str,
     payload: object,
 ) -> CloudQueueReceivedMessage:
+    if not isinstance(queue_message_id, str) or queue_message_id == "":
+        raise CloudQueueProviderError(
+            "invalid MNS message: field message_id must be a non-empty string"
+        )
+    if not isinstance(queue_receipt, str) or queue_receipt == "":
+        raise CloudQueueProviderError(
+            "invalid MNS message: field receipt_handle must be a non-empty string"
+        )
     if not isinstance(payload, dict):
         raise CloudQueueProviderError("invalid MNS message: body is not an object")
 
