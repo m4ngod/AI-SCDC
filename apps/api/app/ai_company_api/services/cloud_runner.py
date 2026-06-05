@@ -315,6 +315,25 @@ def enqueue_cloud_run(
     session.refresh(cloud_run)
     session.refresh(local_run)
 
+    remote_runtime_provider = get_remote_runtime_provider(data.runtime_provider)
+    worker_id: str | None = None
+    callback_token: str | None = None
+    callback_token_expires_at: datetime | None = None
+    callback_token_expires_at_text: str | None = None
+    if remote_runtime_provider is not None and data.runtime_provider is not None:
+        worker_id = _remote_runtime_worker_id(data.runtime_provider, cloud_run.id)
+        callback_token = generate_callback_token()
+        callback_token_expires_at = utc_now() + timedelta(hours=1)
+        cloud_run.worker_id = worker_id
+        cloud_run.callback_token_hash = hash_callback_token(
+            cloud_run.id,
+            worker_id,
+            callback_token,
+        )
+        cloud_run.callback_token_expires_at = callback_token_expires_at
+        cloud_run.callback_token_used_at = None
+        callback_token_expires_at_text = callback_token_expires_at.isoformat()
+
     try:
         queue_result = get_cloud_queue_provider(data.queue_provider).enqueue(
             CloudQueueEnqueueRequest(
@@ -325,6 +344,9 @@ def enqueue_cloud_run(
                 queue_provider=cloud_run.queue_provider,
                 runtime_provider=cloud_run.runtime_provider,
                 storage_provider=cloud_run.storage_provider,
+                worker_id=worker_id,
+                callback_token=callback_token,
+                callback_token_expires_at=callback_token_expires_at_text,
             )
         )
     except CloudQueueProviderError as exc:
@@ -367,23 +389,11 @@ def enqueue_cloud_run(
     session.commit()
     session.refresh(cloud_run)
 
-    runtime_provider = get_remote_runtime_provider(data.runtime_provider)
-    if runtime_provider is not None and data.runtime_provider is not None:
+    if remote_runtime_provider is not None and data.runtime_provider is not None:
         cloud_run_id = cloud_run.id
-        callback_token: str | None = None
-        callback_token_expires_at: datetime | None = None
-        worker_id = _remote_runtime_worker_id(data.runtime_provider, cloud_run.id)
-        callback_token = generate_callback_token()
-        callback_token_expires_at = utc_now() + timedelta(hours=1)
-        cloud_run.callback_token_hash = hash_callback_token(
-            cloud_run.id,
-            worker_id,
-            callback_token,
-        )
-        cloud_run.callback_token_expires_at = callback_token_expires_at
         cloud_run.updated_at = utc_now()
         try:
-            runtime_submission = runtime_provider.submit(
+            runtime_submission = remote_runtime_provider.submit(
                 session,
                 RemoteRuntimeSubmission(
                     workspace_id=cloud_run.workspace_id,

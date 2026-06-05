@@ -40,6 +40,7 @@ from ai_company_api.services.aliyun_clients import (
     AliyunMnsReceiveMessageRequest,
     AliyunMnsSendMessageRequest,
     AliyunOssPutObjectRequest,
+    set_aliyun_client_bundle_for_tests,
 )
 from ai_company_api.services.object_storage import (
     ObjectStorageError,
@@ -922,7 +923,67 @@ def test_aliyun_mns_queue_provider_sends_message_on_enqueue(
         "runtime_provider": None,
         "storage_provider": None,
     }
+    assert "callback_token" not in message_body
+    assert "worker_id" not in message_body
+    assert "callback_token_expires_at" not in message_body
     assert "secret" not in fake_mns.requests[0].body
+
+
+def test_aliyun_mns_enqueue_for_eci_includes_callback_token_without_api_leak(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    fake_eci = FakeAliyunEciClient()
+    set_aliyun_client_bundle_for_tests(
+        AliyunClientBundle(mns=fake_mns, oss=FakeAliyunOssClient(), eci=fake_eci)
+    )
+    try:
+        database_path = tmp_path / "app.db"
+        client = build_client(database_path)
+        with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+            project, repository, task = create_cloud_task(session)
+            profile = create_profile_entity(session, project, repository)
+            task_id = task.id
+            repo_id = repository.id
+            profile_id = profile.id
+
+        response = client.post(
+            f"/tasks/{task_id}/cloud-runs",
+            json={
+                "repo_id": repo_id,
+                "sandbox_profile_id": profile_id,
+                "queue_provider": "aliyun_mns",
+                "runtime_provider": "aliyun_eci",
+                "storage_provider": "aliyun_oss",
+            },
+        )
+
+        assert response.status_code == 201
+        response_text = response.text
+        queued_payload = json.loads(fake_mns.requests[0].body)
+        eci_env = fake_eci.requests[0].environment
+        assert queued_payload["worker_id"] == eci_env["AI_SCDC_WORKER_ID"]
+        assert queued_payload["callback_token"] == eci_env["AI_SCDC_CALLBACK_TOKEN"]
+        assert queued_payload["callback_token_expires_at"]
+        assert queued_payload["callback_token"] not in response_text
+        assert "callback_token" not in response.json()
+    finally:
+        set_aliyun_client_bundle_for_tests(None)
 
 
 def test_aliyun_mns_queue_provider_sends_token_bearing_message_on_enqueue(
