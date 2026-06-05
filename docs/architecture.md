@@ -209,23 +209,29 @@ tested `DescribeContainerLog` client seam.
 
 Phase 12C adds the API, provider, and worker capability for Aliyun MNS
 pull-worker operation alongside the existing protected assigned-run launch
-contract. Token-bearing Aliyun MNS assignments now include the worker identity,
+contract. Queue-only Aliyun MNS pull assignments include the worker identity,
 a short-lived callback token, the cloud-run identity, the selected storage
 provider, and MNS delivery metadata needed to correlate the claimed message.
 The API stores only the callback token hash.
 
 Aliyun ECI launch still supports and currently uses assigned-run mode when
 `AI_SCDC_CLOUD_RUN_ID`, `AI_SCDC_WORKER_ID`, and `AI_SCDC_CALLBACK_TOKEN` are
-provided to the worker container. MNS pull mode is activated for worker
+provided to the worker container. The default `aliyun_mns` plus `aliyun_eci`
+path does not enqueue an extra MNS message; `queue_message_id` remains empty
+until a true MNS pull delivery exists. MNS pull mode is activated for worker
 processes started without `AI_SCDC_CLOUD_RUN_ID`, using
 `AI_SCDC_QUEUE_PROVIDER=aliyun_mns`,
 `AI_SCDC_STORAGE_PROVIDER=aliyun_oss`, and optional
-`AI_SCDC_MNS_WAIT_SECONDS`.
+`AI_SCDC_MNS_WAIT_SECONDS`. Queue-only MNS pull cloud-run submissions must
+provide a storage provider so the MNS message carries a worker-consumable
+storage contract.
 
 In pull mode, workers claim through `POST /cloud-run-worker/leases` or the
 existing worker lease route and include the callback token plus the claimed MNS
-message ID and receipt in that request. `queue_receipt` remains internal only
-and is never returned through standard cloud-run read responses.
+message ID and receipt in that request. The API accepts the receipt only when
+the claimed message ID matches the persisted enqueue result for that cloud run.
+`queue_receipt` remains internal only and is never returned through standard
+cloud-run read responses.
 
 After successful terminal lease completion is committed, the API owns MNS
 receipt deletion or acknowledgement. The worker default path does not
@@ -257,7 +263,7 @@ Completed:
 14. Run-scoped remote worker callback token hardening with token hash storage, ECI env injection, protected worker callbacks, expiry, completion invalidation, and queued-cancel invalidation.
 15. Real remote worker execution skeleton with protected payload fetch, private GitHub clone credential boundary, command/test execution, diff capture, artifact uploads, and redacted completion.
 16. Bounded cloud-run log polling with cursor windows, safe remote log-stream reads, and optional provider-native log sync.
-17. Aliyun MNS pull-worker claims for protected ECI runs with callback-token hash storage, internal-only queue receipts, and post-terminal MNS acknowledgement or recoverable delete failure handling.
+17. Aliyun MNS pull-worker claims for protected MNS deliveries with callback-token hash storage, message-id binding, internal-only queue receipts, and post-terminal MNS acknowledgement or recoverable delete failure handling.
 
 Future:
 
