@@ -1571,6 +1571,66 @@ def test_remote_worker_config_from_env_receives_pull_mode_message(monkeypatch) -
     assert consumer.receive_calls == 1
 
 
+@pytest.mark.parametrize(
+    ("env_value", "expected_wait_seconds"),
+    [
+        (None, 3),
+        ("", 3),
+        ("abc", 3),
+        ("0", 3),
+        ("-5", 3),
+        ("7", 7),
+    ],
+)
+def test_remote_worker_config_from_env_sanitizes_mns_wait_seconds(
+    monkeypatch,
+    env_value: str | None,
+    expected_wait_seconds: int,
+) -> None:
+    monkeypatch.setenv("AI_SCDC_API_BASE_URL", "https://api.example.test")
+    monkeypatch.delenv("AI_SCDC_CLOUD_RUN_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_WORKER_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_CALLBACK_TOKEN", raising=False)
+    monkeypatch.setenv("AI_SCDC_QUEUE_PROVIDER", "aliyun_mns")
+    monkeypatch.setenv("AI_SCDC_STORAGE_PROVIDER", "aliyun_oss")
+    if env_value is None:
+        monkeypatch.delenv("AI_SCDC_MNS_WAIT_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("AI_SCDC_MNS_WAIT_SECONDS", env_value)
+
+    consumer = FakeQueueConsumer(
+        RemoteWorkerQueueMessage(
+            cloud_run_id="cloud_run_1",
+            worker_id="worker_1",
+            callback_token="callback-token-1",
+            queue_message_id="msg-1",
+            queue_receipt="receipt-1",
+            storage_provider="aliyun_oss",
+        )
+    )
+
+    config_from_env(queue_consumer=consumer)
+
+    assert consumer.wait_seconds == expected_wait_seconds
+
+
+def test_remote_worker_config_from_env_rejects_non_mns_pull_mode(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AI_SCDC_API_BASE_URL", "https://api.example.test")
+    monkeypatch.delenv("AI_SCDC_CLOUD_RUN_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_WORKER_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_CALLBACK_TOKEN", raising=False)
+    monkeypatch.setenv("AI_SCDC_QUEUE_PROVIDER", "local_db")
+    monkeypatch.setenv("AI_SCDC_STORAGE_PROVIDER", "aliyun_oss")
+
+    with pytest.raises(
+        RuntimeError,
+        match="Remote worker pull mode requires aliyun_mns queue provider",
+    ):
+        config_from_env(queue_consumer=FakeQueueConsumer(None))
+
+
 def test_run_remote_worker_from_env_returns_no_work_when_queue_is_empty(
     monkeypatch,
 ) -> None:
@@ -1587,6 +1647,38 @@ def test_run_remote_worker_from_env_returns_no_work_when_queue_is_empty(
 
     assert result == {"status": "no_work"}
     assert consumer.receive_calls == 1
+
+
+def test_run_remote_worker_from_env_does_not_delete_receipt_without_opt_in(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AI_SCDC_API_BASE_URL", "https://api.example.test")
+    monkeypatch.delenv("AI_SCDC_CLOUD_RUN_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_WORKER_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_CALLBACK_TOKEN", raising=False)
+    monkeypatch.setenv("AI_SCDC_QUEUE_PROVIDER", "aliyun_mns")
+    monkeypatch.setenv("AI_SCDC_STORAGE_PROVIDER", "aliyun_oss")
+
+    consumer = FakeQueueConsumer(
+        RemoteWorkerQueueMessage(
+            cloud_run_id="cloud_run_1",
+            worker_id="worker_1",
+            callback_token="callback-token-1",
+            queue_message_id="msg-1",
+            queue_receipt="receipt-1",
+            storage_provider="aliyun_oss",
+        )
+    )
+
+    result = run_remote_worker_from_env(
+        queue_consumer=consumer,
+        worker_client=FakeWorkerClient(),
+        checkout=FakeCheckout(),
+        command_runner=FakeCommandRunner(),
+    )
+
+    assert result["cloud_run"]["status"] == "patch_ready"
+    assert consumer.delete_receipts == []
 
 
 def test_run_remote_worker_from_env_deletes_receipt_for_injected_consumer_on_terminal_result(
@@ -1615,6 +1707,7 @@ def test_run_remote_worker_from_env_deletes_receipt_for_injected_consumer_on_ter
         worker_client=FakeWorkerClient(),
         checkout=FakeCheckout(),
         command_runner=FakeCommandRunner(),
+        delete_injected_receipt_after_terminal=True,
     )
 
     assert result["cloud_run"]["status"] == "patch_ready"

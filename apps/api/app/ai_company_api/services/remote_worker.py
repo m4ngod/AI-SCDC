@@ -1078,6 +1078,7 @@ def run_remote_worker_from_env(
     worker_client: RemoteWorkerClient | None = None,
     checkout: RemoteWorkerCheckout | None = None,
     command_runner: RemoteWorkerCommandRunner | None = None,
+    delete_injected_receipt_after_terminal: bool = False,
 ) -> dict[str, Any]:
     try:
         config = config_from_env(queue_consumer=queue_consumer)
@@ -1090,7 +1091,8 @@ def run_remote_worker_from_env(
         command_runner=command_runner,
     )
     if (
-        queue_consumer is not None
+        delete_injected_receipt_after_terminal
+        and queue_consumer is not None
         and config.queue_provider == "aliyun_mns"
         and config.queue_receipt
         and _remote_worker_result_is_terminal(result)
@@ -1115,9 +1117,10 @@ def _queue_wait_seconds_from_env() -> int:
     if not raw:
         return 3
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         return 3
+    return value if value > 0 else 3
 
 
 def _remote_worker_result_is_terminal(result: dict[str, Any]) -> bool:
