@@ -2682,9 +2682,20 @@ def test_aliyun_mns_claim_persists_receipt_without_exposing_it(
     assert "queue_receipt" not in response.json()["cloud_run"]
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
         persisted = session.get(CloudRun, cloud_run["id"])
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run["id"])
+            .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+        ).all()
     assert persisted is not None
     assert persisted.queue_message_id == "msg-1"
     assert persisted.queue_receipt == "receipt-1"
+    serialized_logs = "\n".join(
+        f"{entry.message}\n{json.dumps(entry.payload, sort_keys=True, default=str)}"
+        for entry in log_entries
+    )
+    assert "receipt-1" not in serialized_logs
+    assert queued_payload["callback_token"] not in serialized_logs
 
 
 def test_aliyun_mns_claim_with_wrong_token_does_not_store_receipt(
@@ -2752,9 +2763,20 @@ def test_aliyun_mns_claim_with_wrong_token_does_not_store_receipt(
     assert response.status_code == 403
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
         persisted = session.get(CloudRun, cloud_run["id"])
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run["id"])
+            .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+        ).all()
     assert persisted is not None
     assert persisted.queue_message_id == cloud_run["queue_message_id"]
     assert persisted.queue_receipt is None
+    serialized_logs = "\n".join(
+        f"{entry.message}\n{json.dumps(entry.payload, sort_keys=True, default=str)}"
+        for entry in log_entries
+    )
+    assert "receipt-1" not in serialized_logs
+    assert "wrong-token" not in serialized_logs
 
 
 def test_protected_worker_endpoints_reject_expired_callback_token(
