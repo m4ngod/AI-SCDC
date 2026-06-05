@@ -33,6 +33,7 @@ from ai_company_api.services.cloud_sandbox_executor import (
 from ai_company_api.services.aliyun_clients import (
     AliyunClientBundle,
     AliyunEciCreateContainerGroupRequest,
+    AliyunEciDescribeContainerLogRequest,
     AliyunMnsSendMessageRequest,
     AliyunOssPutObjectRequest,
 )
@@ -502,8 +503,10 @@ class FailingAliyunOssClient(FakeAliyunOssClient):
 
 
 class FakeAliyunEciClient:
-    def __init__(self) -> None:
+    def __init__(self, log_content: str = "aliyun worker started\n") -> None:
         self.requests: list[AliyunEciCreateContainerGroupRequest] = []
+        self.describe_log_requests: list[AliyunEciDescribeContainerLogRequest] = []
+        self.log_content = log_content
 
     def create_container_group(
         self,
@@ -511,6 +514,13 @@ class FakeAliyunEciClient:
     ) -> dict:
         self.requests.append(request)
         return {"container_group_id": f"eci-cg-{request.cloud_run_id}"}
+
+    def describe_container_log(
+        self,
+        request: AliyunEciDescribeContainerLogRequest,
+    ) -> dict:
+        self.describe_log_requests.append(request)
+        return {"content": self.log_content, "request_id": "req-log-1"}
 
 
 class CleanupRecordingAliyunEciClient(FakeAliyunEciClient):
@@ -528,6 +538,15 @@ class FailingAliyunEciClient:
         request: AliyunEciCreateContainerGroupRequest,
     ) -> dict:
         raise RuntimeError("eci network failure secret=super-secret-value")
+
+
+class FailingAliyunEciLogClient(FakeAliyunEciClient):
+    def describe_container_log(
+        self,
+        request: AliyunEciDescribeContainerLogRequest,
+    ) -> dict:
+        self.describe_log_requests.append(request)
+        raise RuntimeError("describe log failed with secret=provider-secret")
 
 
 class UnusedAliyunClient:
@@ -984,6 +1003,86 @@ def test_aliyun_eci_runtime_submission_creates_safe_container_request(
         "storage_provider": "aliyun_oss",
     }
     assert "secret" not in str(fake_oss.put_requests)
+
+
+def test_cloud_run_log_window_sync_stream_refreshes_aliyun_eci_log_stream(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    fake_oss = FakeAliyunOssClient()
+    fake_eci = FakeAliyunEciClient(
+        log_content=(
+            "aliyun worker started\n"
+            "provider token=aliyun-secret Bearer abc.def\n"
+        )
+    )
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(mns=fake_mns, oss=fake_oss, eci=fake_eci),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "queue_provider": "aliyun_mns",
+            "runtime_provider": "aliyun_eci",
+            "storage_provider": "aliyun_oss",
+        },
+    ).json()["cloud_run"]
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "true", "sync_stream": "true", "limit": 20},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    stream_messages = [
+        entry["message"]
+        for entry in body["entries"]
+        if entry["source"] == "log_stream"
+    ]
+    assert stream_messages == [
+        "aliyun worker started",
+        "provider token=[redacted] Bearer [redacted]",
+    ]
+    assert "aliyun-secret" not in str(body)
+    assert "abc.def" not in str(body)
+    assert len(fake_eci.describe_log_requests) == 1
+    request = fake_eci.describe_log_requests[0]
+    assert request.region_id == "cn-hangzhou"
+    assert request.container_group_id == queued["runtime_job_id"]
+    assert request.container_name.startswith("ai-scdc-")
+    assert request.tail == 2000
+    assert request.limit_bytes == 1024 * 1024
+    assert fake_oss.put_requests[-1].content == (
+        b"aliyun worker started\nprovider token=aliyun-secret Bearer abc.def\n"
+    )
 
 
 def test_protected_aliyun_worker_claim_requires_callback_token(

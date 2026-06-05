@@ -11,6 +11,7 @@ from sqlmodel import Session
 
 from ai_company_api.services.aliyun_clients import (
     AliyunEciCreateContainerGroupRequest,
+    AliyunEciDescribeContainerLogRequest,
     get_aliyun_client_bundle,
 )
 from ai_company_api.services.aliyun_config import require_aliyun_settings
@@ -320,10 +321,66 @@ class AliyunEciRuntimeProvider:
         session: Session,
         request: RemoteRuntimeLogSyncRequest,
     ) -> RemoteRuntimeLogSyncResult:
-        return RemoteRuntimeLogSyncResult(
-            status="unsupported",
-            reason="aliyun_eci_log_sync_not_enabled",
+        if request.storage_provider != "aliyun_oss":
+            return RemoteRuntimeLogSyncResult(
+                status="skipped",
+                reason="aliyun_eci_log_sync_requires_aliyun_oss_storage",
+            )
+        if request.runtime_job_id is None:
+            return RemoteRuntimeLogSyncResult(
+                status="skipped",
+                reason="aliyun_eci_log_sync_missing_runtime_job_id",
+            )
+
+        settings = require_aliyun_settings(
+            provider_name=self.name,
+            required_names=(
+                "region_id",
+                "access_key_id",
+                "access_key_secret",
+                "oss_endpoint",
+                "oss_bucket",
+            ),
         )
+        container_name = _eci_container_group_name(
+            settings.eci_container_group_prefix,
+            request.cloud_run_id,
+        )
+        result = get_aliyun_client_bundle(settings).eci.describe_container_log(
+            AliyunEciDescribeContainerLogRequest(
+                region_id=settings.region_id or "",
+                container_group_id=request.runtime_job_id,
+                container_name=container_name,
+                tail=2000,
+                limit_bytes=1024 * 1024,
+                timestamps=False,
+            )
+        )
+        content = str(result.get("content") or "")
+        if not content:
+            return RemoteRuntimeLogSyncResult(
+                status="unchanged",
+                reason="aliyun_eci_log_sync_empty_provider_content",
+            )
+
+        digest = sha256(content.encode("utf-8")).hexdigest()
+        if (
+            request.current_log_stream_ref is not None
+            and request.current_log_stream_ref.sha256 == digest
+        ):
+            return RemoteRuntimeLogSyncResult(status="unchanged")
+
+        ref = get_object_storage_provider("aliyun_oss").put_text(
+            session,
+            ObjectStorageWrite(
+                workspace_id=request.workspace_id,
+                cloud_run_id=request.cloud_run_id,
+                kind="log",
+                content=content,
+                content_type="text/plain",
+            ),
+        )
+        return RemoteRuntimeLogSyncResult(status="updated", log_stream_ref=ref)
 
 
 _KNOWN_RUNTIME_PROVIDERS = {
