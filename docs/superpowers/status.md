@@ -74,31 +74,16 @@ tests, README smoke instructions, and git history.
 
 ## Verification
 
-Latest Phase 12B final verification:
+Phase 13A final verification is pending Task 5 final runs:
 
-```bash
-pytest apps/api/tests/test_cloud_run_api.py -k "log_window or log_stream or log_sync or sync_stream or phase_12a or phase_12b" -v
-pytest apps/api/tests/test_aliyun_clients.py -v
-pytest apps/api/tests/test_cloud_object_storage.py -v
-pytest apps/api/tests -v
-pnpm --filter @ai-scdc/desktop test -- client.test.ts
-pnpm typecheck
-git diff --check
-```
-
-Results:
-
-- `pytest apps/api/tests/test_cloud_run_api.py -k "log_window or log_stream or log_sync or sync_stream or phase_12a or phase_12b" -v`:
-  passed, 19 tests, 108 deselected, 1 existing Starlette/httpx warning.
-- `pytest apps/api/tests/test_aliyun_clients.py -v`: passed, 6 tests.
-- `pytest apps/api/tests/test_cloud_object_storage.py -v`: passed, 8 tests.
-- `pytest apps/api/tests -v`: passed, 410 tests, 1 existing
-  Starlette/httpx warning.
-- `pnpm --filter @ai-scdc/desktop test -- client.test.ts`: passed, 1 test
-  file, 34 tests.
-- `pnpm typecheck`: passed for `apps/desktop` and
-  `packages/agent-protocol`.
-- `git diff --check`: passed with Git LF-to-CRLF working-copy warnings only.
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "retained_receipt_recovery or terminal_cleanup or aliyun_mns_completion_delete_failure or aliyun_eci_submission_cleans_up"` -> pending final run
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "aliyun_mns or protected_aliyun or protected_worker or aliyun_eci"` -> pending final run
+- `pytest apps/api/tests/test_aliyun_clients.py -q` -> pending final run
+- `pytest apps/api/tests/test_remote_worker.py -q` -> pending final run
+- `pytest apps/api/tests -q` -> pending final run
+- `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> pending final run
+- `pnpm typecheck` -> pending final run
+- `git diff --check` -> pending final run
 
 Previous Phase 10D verification:
 

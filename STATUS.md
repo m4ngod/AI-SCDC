@@ -16,8 +16,8 @@ replaced by a KMS-backed `SecretVault` implementation before commercial beta.
 
 ## Operator Docs
 
-- `docs/operations/aliyun-operational-runbook.md`
-- `docs/operations/aliyun-ram-policies.md`
+- [Aliyun operational runbook](docs/operations/aliyun-operational-runbook.md)
+- [Aliyun RAM policy examples](docs/operations/aliyun-ram-policies.md)
 
 ## Verification
 

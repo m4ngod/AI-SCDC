@@ -21,8 +21,8 @@ public destructive HTTP routes before auth/RBAC.
 
 Operator references:
 
-- `docs/operations/aliyun-operational-runbook.md`
-- `docs/operations/aliyun-ram-policies.md`
+- [Aliyun operational runbook](docs/operations/aliyun-operational-runbook.md)
+- [Aliyun RAM policy examples](docs/operations/aliyun-ram-policies.md)
 
 Use OSS lifecycle rules for development object retention. Do not add broad
 API-side OSS deletion until authenticated organization-scoped operator controls
