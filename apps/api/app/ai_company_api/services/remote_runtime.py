@@ -356,7 +356,7 @@ class AliyunEciRuntimeProvider:
                 timestamps=False,
             )
         )
-        content = str(result.get("content") or "")
+        content = _aliyun_log_content_text(result.get("content"))
         if not content:
             return RemoteRuntimeLogSyncResult(
                 status="unchanged",
@@ -408,6 +408,23 @@ def _eci_container_group_name(prefix: str, cloud_run_id: str) -> str:
     if not normalized[0].isalpha():
         normalized = f"ai-scdc-run-{normalized}"
     return normalized[:128].rstrip("-")
+
+
+def _aliyun_log_content_text(content: object) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, bytes):
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RemoteRuntimeLogSyncError(
+                "Cloud runtime provider aliyun_eci returned non-UTF-8 log content"
+            ) from exc
+    raise RemoteRuntimeLogSyncError(
+        "Cloud runtime provider aliyun_eci returned non-text log content"
+    )
 
 
 def _eci_client_token(cloud_run_id: str) -> str:

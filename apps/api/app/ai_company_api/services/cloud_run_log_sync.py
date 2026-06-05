@@ -8,6 +8,7 @@ from ai_company_api.models.entities import CloudRun
 from ai_company_api.services.aliyun_config import AliyunConfigurationError
 from ai_company_api.services.object_storage import ObjectStorageError, ObjectStorageRef
 from ai_company_api.services.remote_runtime import (
+    RemoteRuntimeLogSyncError,
     RemoteRuntimeLogSyncRequest,
     RemoteRuntimeLogSyncResult,
     RemoteRuntimeProviderNotFound,
@@ -64,6 +65,19 @@ def sync_cloud_run_log_stream(
         return RemoteRuntimeLogSyncResult(
             status="skipped",
             reason="log_sync_provider_unavailable",
+        )
+    except RemoteRuntimeLogSyncError:
+        _log_failed_sync(
+            reason="log_sync_provider_failed",
+            cloud_run_id=cloud_run_id,
+            runtime_provider=runtime_provider,
+            runtime_job_id=runtime_job_id,
+            storage_provider=storage_provider,
+        )
+        _rollback_and_reload_cloud_run(session, cloud_run_id=cloud_run_id)
+        return RemoteRuntimeLogSyncResult(
+            status="skipped",
+            reason="log_sync_provider_failed",
         )
     except Exception:
         _log_failed_sync(

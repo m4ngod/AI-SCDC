@@ -1077,12 +1077,198 @@ def test_cloud_run_log_window_sync_stream_refreshes_aliyun_eci_log_stream(
     request = fake_eci.describe_log_requests[0]
     assert request.region_id == "cn-hangzhou"
     assert request.container_group_id == queued["runtime_job_id"]
-    assert request.container_name.startswith("ai-scdc-")
+    assert request.container_name == fake_eci.requests[0].container_group_name
     assert request.tail == 2000
     assert request.limit_bytes == 1024 * 1024
     assert fake_oss.put_requests[-1].content == (
         b"aliyun worker started\nprovider token=aliyun-secret Bearer abc.def\n"
     )
+
+
+def test_cloud_run_log_window_sync_stream_skips_aliyun_provider_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_eci = FailingAliyunEciLogClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "queue_provider": "aliyun_mns",
+            "runtime_provider": "aliyun_eci",
+            "storage_provider": "aliyun_oss",
+        },
+    ).json()["cloud_run"]
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "true", "sync_stream": "true", "limit": 20},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "describe log failed" not in str(body)
+    assert "provider-secret" not in str(body)
+    assert len(fake_eci.describe_log_requests) == 1
+
+
+def test_cloud_run_log_window_sync_stream_skips_oversized_aliyun_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_eci = FakeAliyunEciClient(log_content="x" * (1024 * 1024 + 1))
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "queue_provider": "aliyun_mns",
+            "runtime_provider": "aliyun_eci",
+            "storage_provider": "aliyun_oss",
+        },
+    ).json()["cloud_run"]
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "true", "sync_stream": "true", "limit": 20},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert all(entry["source"] == "control_plane" for entry in body["entries"])
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        assert cloud_run.log_stream_size_bytes == 1024 * 1024 + 1
+
+
+def test_cloud_run_log_window_sync_stream_skips_invalid_aliyun_log_content(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_eci = FakeAliyunEciClient(
+        log_content={"error": "provider-secret"}  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "queue_provider": "aliyun_mns",
+            "runtime_provider": "aliyun_eci",
+            "storage_provider": "aliyun_oss",
+        },
+    ).json()["cloud_run"]
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/logs/window",
+        params={"include_stream": "true", "sync_stream": "true", "limit": 20},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    stream_messages = [
+        entry["message"]
+        for entry in body["entries"]
+        if entry["source"] == "log_stream"
+    ]
+    assert stream_messages == ["Remote runtime submitted via aliyun_eci."]
+    assert "provider-secret" not in str(body)
+    assert len(fake_eci.describe_log_requests) == 1
 
 
 def test_protected_aliyun_worker_claim_requires_callback_token(
