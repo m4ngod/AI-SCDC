@@ -4,8 +4,9 @@ Last verified: 2026-06-05
 
 ## Current Phase
 
-The project is through Phase 12A: bounded cloud-run log polling and safe remote
-log-stream reads for provider-backed runs.
+The project is through Phase 12B: bounded cloud-run log polling, safe remote
+log-stream reads, and optional provider-native log sync over the existing
+polling API.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -58,37 +59,38 @@ tests, README smoke instructions, and git history.
     fetch, private GitHub clone credential boundary, selected sandbox profile
     command/test execution inside the worker container, diff capture, artifact
     uploads, and redacted completion payloads.
-16. Phase 12A cloud-run log polling: cursor-based log windows, persisted
-    log-stream object metadata, redacted stream-line reads, and desktop API
-    client support.
+16. Phase 12B provider log sync: cursor-based log windows, persisted
+    log-stream metadata, safe object-storage reads, optional `sync_stream`
+    provider refresh, deterministic `remote_stub` sync, and Aliyun ECI
+    `DescribeContainerLog` sync seam.
 
 ## Verification
 
-Latest Phase 12A final verification:
+Latest Phase 12B final verification:
 
 ```bash
-pytest apps/api/tests/test_cloud_run_api.py -k "log_window or log_stream or phase_12a" -v
-pnpm --filter @ai-scdc/desktop test -- client.test.ts
+pytest apps/api/tests/test_cloud_run_api.py -k "log_window or log_stream or log_sync or sync_stream or phase_12a or phase_12b" -v
+pytest apps/api/tests/test_aliyun_clients.py -v
+pytest apps/api/tests/test_cloud_object_storage.py -v
 pytest apps/api/tests -v
+pnpm --filter @ai-scdc/desktop test -- client.test.ts
 pnpm typecheck
 git diff --check
-rg -n "ghp_|callback-token|AI_SCDC_CALLBACK_TOKEN|clone_token|AccessKey|ACCESS_KEY_SECRET|secret-token|abc\.def" apps docs README.md
 ```
 
 Results:
 
-- `pytest apps/api/tests/test_cloud_run_api.py -k "log_window or log_stream or phase_12a" -v`:
-  passed, 8 tests, 108 deselected, 1 existing Starlette/httpx warning.
-- `pnpm --filter @ai-scdc/desktop test -- client.test.ts`: passed, 34
-  tests.
-- `pytest apps/api/tests -v`: passed, 398 tests, 1 existing Starlette/httpx
-  warning.
-- `pnpm typecheck`: passed.
+- `pytest apps/api/tests/test_cloud_run_api.py -k "log_window or log_stream or log_sync or sync_stream or phase_12a or phase_12b" -v`:
+  passed, 19 tests, 108 deselected, 1 existing Starlette/httpx warning.
+- `pytest apps/api/tests/test_aliyun_clients.py -v`: passed, 6 tests.
+- `pytest apps/api/tests/test_cloud_object_storage.py -v`: passed, 8 tests.
+- `pytest apps/api/tests -v`: passed after `c074977`, 410 tests, 1
+  existing Starlette/httpx warning.
+- `pnpm --filter @ai-scdc/desktop test -- client.test.ts`: passed, 1 test
+  file, 34 tests.
+- `pnpm typecheck`: passed for `apps/desktop` and
+  `packages/agent-protocol`.
 - `git diff --check`: passed with Git LF-to-CRLF working-copy warnings only.
-- Secret scan hits were limited to environment variable names, schema/field
-  names, README placeholders, historical plan/spec examples, fake test values,
-  and explicit redaction regression strings; no real credential values were
-  found.
 
 Previous Phase 10D verification:
 
@@ -144,10 +146,10 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Known Limits
 
-- Phase 12A adds bounded log polling and safe remote log-stream object reads,
-  but provider-native live log streaming, direct MNS receive/delete semantics,
-  SLS, Kubernetes/ACK orchestration, billing, and model-backed
-  reviewer/debugger agents remain future work.
+- Phase 12B adds optional provider-native log sync over the polling API, but it
+  does not add WebSockets, Server-Sent Events, direct MNS receive/delete
+  semantics, SLS-managed log stores, Kubernetes/ACK orchestration, billing, or
+  model-backed reviewer/debugger agents.
 - The real remote worker can fetch a protected payload, clone, execute commands,
   capture diffs, upload artifacts, and complete a lease, but it does not push
   branches, create pull requests, merge changes, or stream provider-native logs.
@@ -166,16 +168,14 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Recommended Next Phase
 
-The next production hardening phase should build on Phase 12A without widening
+The next production hardening phase should build on Phase 12B without widening
 the approval boundary:
 
-1. Add provider-native live log streaming on top of the existing
-   provider-neutral log URI and Phase 9 polling/log contract.
-2. Add or harden direct Aliyun MNS receive/delete worker semantics while keeping
+1. Add or harden direct Aliyun MNS receive/delete worker semantics while keeping
    callback-token-protected payload access and completion boundaries.
+2. Harden Aliyun operations with cleanup automation, least-privilege RAM policy
+   examples, provider failure runbooks, and production KMS boundaries.
 3. Keep fake, `docker_local`, `remote_stub`, `external_stub`, and
    `local_inline` as deterministic development adapters.
-4. Harden Aliyun operations with cleanup automation, least-privilege RAM policy
-   examples, provider failure runbooks, and production KMS boundaries.
-5. Defer model-backed reviewer/debugger agents and commercial beta work until
+4. Defer model-backed reviewer/debugger agents and commercial beta work until
    the remote execution plane is operationally reliable.

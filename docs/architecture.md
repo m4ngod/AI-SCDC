@@ -190,16 +190,24 @@ Phase 11 does not add direct MNS receive/delete semantics, live log streaming,
 model-backed debugging, Git push, PR creation, automatic merge, production KMS,
 or a second cloud provider.
 
-## Phase 12A Boundary
+## Phase 12 Boundary
 
 Phase 12A adds a bounded log polling surface for cloud runs. The API keeps the
 legacy full log list endpoint and adds a cursor-based log window endpoint that
 can return persisted control-plane log rows and redacted remote log-stream
 lines when the run has complete object-storage ref metadata.
 
-Phase 12A does not add WebSockets, provider-native live log streaming, direct
-MNS receive/delete semantics, artifact browser UI, model-backed reviewer or
-debugger agents, production KMS, or a broad `cloud_runner.py` split.
+Phase 12B adds optional provider-native log sync to that polling surface.
+`GET /cloud-runs/{cloud_run_id}/logs/window` accepts `sync_stream=true`; when
+paired with `include_stream=true`, the API asks the configured runtime provider
+to refresh the run's log stream object before returning the same cursor window.
+Provider failures degrade to the pre-sync window, refreshed logs still flow
+through object-storage integrity metadata, and Aliyun ECI log sync uses a
+tested `DescribeContainerLog` client seam.
+
+Phase 12 does not add WebSockets, Server-Sent Events, direct MNS receive/delete
+semantics, SLS-managed log stores, artifact browser UI, model-backed reviewer
+or debugger agents, production KMS, or a broad provider package split.
 
 ## Roadmap
 
@@ -220,9 +228,8 @@ Completed:
 13. Aliyun provider MVP with MNS queue enqueue, OSS artifact refs, ECI remote worker submission, ACR worker image path, fake-client tests, and opt-in smoke documentation.
 14. Run-scoped remote worker callback token hardening with token hash storage, ECI env injection, protected worker callbacks, expiry, completion invalidation, and queued-cancel invalidation.
 15. Real remote worker execution skeleton with protected payload fetch, private GitHub clone credential boundary, command/test execution, diff capture, artifact uploads, and redacted completion.
-16. Bounded cloud-run log polling with cursor windows and safe remote log-stream reads.
+16. Bounded cloud-run log polling with cursor windows, safe remote log-stream reads, and optional provider-native log sync.
 
 Future:
 
-1. Provider-native live log streaming on top of the existing provider-neutral log URI and Phase 9 polling/log contract.
-2. Direct MNS receive/delete worker semantics while preserving callback-token-protected payload access and completion boundaries.
+1. Direct MNS receive/delete worker semantics while preserving callback-token-protected payload access and completion boundaries.
