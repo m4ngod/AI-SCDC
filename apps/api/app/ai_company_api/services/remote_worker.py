@@ -14,6 +14,8 @@ import time
 from typing import Any, Callable, Protocol, Sequence
 from urllib import request as urllib_request
 
+from ai_company_api.services.cloud_queue_providers import get_cloud_queue_provider
+
 
 @dataclass(frozen=True)
 class RemoteWorkerConfig:
@@ -23,6 +25,18 @@ class RemoteWorkerConfig:
     queue_provider: str
     storage_provider: str
     callback_token: str
+    queue_message_id: str | None = None
+    queue_receipt: str | None = None
+
+
+@dataclass(frozen=True)
+class RemoteWorkerQueueMessage:
+    cloud_run_id: str
+    worker_id: str
+    callback_token: str
+    queue_message_id: str
+    queue_receipt: str
+    storage_provider: str
 
 
 @dataclass(frozen=True)
@@ -119,6 +133,18 @@ class RemoteWorkerCommandRunner(Protocol):
         ...
 
 
+class RemoteWorkerQueueConsumer(Protocol):
+    def receive(self, *, wait_seconds: int = 3) -> RemoteWorkerQueueMessage | None:
+        ...
+
+    def delete(self, *, queue_receipt: str) -> None:
+        ...
+
+
+class NoRemoteWorkAvailable(RuntimeError):
+    pass
+
+
 def _run_process(
     args: Sequence[str],
     *,
@@ -142,17 +168,18 @@ class HttpRemoteWorkerClient:
         self._api_base_url = api_base_url.rstrip("/")
 
     def claim(self, config: RemoteWorkerConfig) -> dict[str, Any]:
-        return self._post_json(
-            "/cloud-run-worker/leases",
-            {
-                "worker_id": config.worker_id,
-                "worker_kind": "aliyun_eci",
-                "queue_provider": config.queue_provider,
-                "cloud_run_id": config.cloud_run_id,
-                "callback_token": config.callback_token,
-                "lease_seconds": 300,
-            },
-        )
+        payload: dict[str, Any] = {
+            "worker_id": config.worker_id,
+            "worker_kind": "aliyun_eci",
+            "queue_provider": config.queue_provider,
+            "cloud_run_id": config.cloud_run_id,
+            "callback_token": config.callback_token,
+            "lease_seconds": 300,
+        }
+        if config.queue_message_id and config.queue_receipt:
+            payload["queue_message_id"] = config.queue_message_id
+            payload["queue_receipt"] = config.queue_receipt
+        return self._post_json("/cloud-run-worker/leases", payload)
 
     def heartbeat(
         self,
@@ -341,6 +368,27 @@ class RemoteWorkerGitCheckout:
             raise RuntimeError("repo_checkout_failed") from exc
         if result.returncode != 0:
             raise RuntimeError("repo_checkout_failed")
+
+
+class AliyunMnsRemoteWorkerQueueConsumer:
+    def __init__(self) -> None:
+        self._provider = get_cloud_queue_provider("aliyun_mns")
+
+    def receive(self, *, wait_seconds: int = 3) -> RemoteWorkerQueueMessage | None:
+        message = self._provider.receive(wait_seconds=wait_seconds)
+        if message is None:
+            return None
+        return RemoteWorkerQueueMessage(
+            cloud_run_id=message.cloud_run_id,
+            worker_id=message.worker_id,
+            callback_token=message.callback_token,
+            queue_message_id=message.queue_message_id,
+            queue_receipt=message.queue_receipt,
+            storage_provider=message.storage_provider,
+        )
+
+    def delete(self, *, queue_receipt: str) -> None:
+        self._provider.delete(queue_receipt=queue_receipt)
 
 
 class RemoteWorkerCommandRunnerImpl:
@@ -991,19 +1039,68 @@ def run_deterministic_remote_worker_once(
     )
 
 
-def config_from_env() -> RemoteWorkerConfig:
+def config_from_env(
+    *, queue_consumer: RemoteWorkerQueueConsumer | None = None
+) -> RemoteWorkerConfig:
+    api_base_url = _required_env("AI_SCDC_API_BASE_URL")
+    cloud_run_id = os.getenv("AI_SCDC_CLOUD_RUN_ID", "").strip()
+    queue_provider = os.getenv("AI_SCDC_QUEUE_PROVIDER", "aliyun_mns")
+    if cloud_run_id:
+        return RemoteWorkerConfig(
+            api_base_url=api_base_url,
+            cloud_run_id=cloud_run_id,
+            worker_id=_required_env("AI_SCDC_WORKER_ID"),
+            queue_provider=queue_provider,
+            storage_provider=os.getenv("AI_SCDC_STORAGE_PROVIDER", "aliyun_oss"),
+            callback_token=_required_env("AI_SCDC_CALLBACK_TOKEN"),
+        )
+    if queue_provider != "aliyun_mns":
+        raise RuntimeError("Remote worker pull mode requires aliyun_mns queue provider")
+    resolved_consumer = queue_consumer or AliyunMnsRemoteWorkerQueueConsumer()
+    message = resolved_consumer.receive(wait_seconds=_queue_wait_seconds_from_env())
+    if message is None:
+        raise NoRemoteWorkAvailable()
     return RemoteWorkerConfig(
-        api_base_url=_required_env("AI_SCDC_API_BASE_URL"),
-        cloud_run_id=_required_env("AI_SCDC_CLOUD_RUN_ID"),
-        worker_id=_required_env("AI_SCDC_WORKER_ID"),
-        queue_provider=os.getenv("AI_SCDC_QUEUE_PROVIDER", "aliyun_mns"),
-        storage_provider=os.getenv("AI_SCDC_STORAGE_PROVIDER", "aliyun_oss"),
-        callback_token=_required_env("AI_SCDC_CALLBACK_TOKEN"),
+        api_base_url=api_base_url,
+        cloud_run_id=message.cloud_run_id,
+        worker_id=message.worker_id,
+        queue_provider="aliyun_mns",
+        storage_provider=message.storage_provider,
+        callback_token=message.callback_token,
+        queue_message_id=message.queue_message_id,
+        queue_receipt=message.queue_receipt,
     )
 
 
+def run_remote_worker_from_env(
+    *,
+    queue_consumer: RemoteWorkerQueueConsumer | None = None,
+    worker_client: RemoteWorkerClient | None = None,
+    checkout: RemoteWorkerCheckout | None = None,
+    command_runner: RemoteWorkerCommandRunner | None = None,
+) -> dict[str, Any]:
+    try:
+        config = config_from_env(queue_consumer=queue_consumer)
+    except NoRemoteWorkAvailable:
+        return {"status": "no_work"}
+    result = run_remote_worker_once(
+        config,
+        client=worker_client,
+        checkout=checkout,
+        command_runner=command_runner,
+    )
+    if (
+        queue_consumer is not None
+        and config.queue_provider == "aliyun_mns"
+        and config.queue_receipt
+        and _remote_worker_result_is_terminal(result)
+    ):
+        queue_consumer.delete(queue_receipt=config.queue_receipt)
+    return result
+
+
 def main() -> None:
-    run_remote_worker_once(config_from_env())
+    run_remote_worker_from_env()
 
 
 def _required_env(name: str) -> str:
@@ -1011,6 +1108,29 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
+
+
+def _queue_wait_seconds_from_env() -> int:
+    raw = os.getenv("AI_SCDC_MNS_WAIT_SECONDS", "").strip()
+    if not raw:
+        return 3
+    try:
+        return int(raw)
+    except ValueError:
+        return 3
+
+
+def _remote_worker_result_is_terminal(result: dict[str, Any]) -> bool:
+    status = result.get("status")
+    if status in {"patch_ready", "failed", "cancelled", "succeeded"}:
+        return True
+    cloud_run = result.get("cloud_run")
+    return isinstance(cloud_run, dict) and cloud_run.get("status") in {
+        "patch_ready",
+        "failed",
+        "cancelled",
+        "succeeded",
+    }
 
 
 def _deterministic_diff(cloud_run_id: str) -> str:

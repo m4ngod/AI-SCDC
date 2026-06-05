@@ -6,8 +6,10 @@ import pytest
 from ai_company_api.services.remote_worker import (
     HttpRemoteWorkerClient,
     RemoteWorkerConfig,
+    RemoteWorkerQueueMessage,
     config_from_env,
     run_deterministic_remote_worker_once,
+    run_remote_worker_from_env,
     run_remote_worker_once,
 )
 
@@ -162,6 +164,22 @@ class FakeCommandRunner:
             ],
             "failure_reason": None,
         }
+
+
+class FakeQueueConsumer:
+    def __init__(self, message: RemoteWorkerQueueMessage | None) -> None:
+        self.message = message
+        self.receive_calls = 0
+        self.delete_receipts: list[str] = []
+        self.wait_seconds = 0
+
+    def receive(self, *, wait_seconds: int = 3) -> RemoteWorkerQueueMessage | None:
+        self.receive_calls += 1
+        self.wait_seconds = wait_seconds
+        return self.message
+
+    def delete(self, *, queue_receipt: str) -> None:
+        self.delete_receipts.append(queue_receipt)
 
 
 class FailingCommandRunner:
@@ -1395,6 +1413,8 @@ def test_remote_worker_config_from_env_reads_provider_contract(monkeypatch) -> N
         queue_provider="aliyun_mns",
         storage_provider="aliyun_oss",
         callback_token="callback-token-1",
+        queue_message_id=None,
+        queue_receipt=None,
     )
 
 
@@ -1445,6 +1465,34 @@ def test_http_remote_worker_client_sends_callback_token() -> None:
     ]
 
 
+def test_http_remote_worker_client_sends_queue_delivery_metadata_on_claim() -> None:
+    class RecordingHttpRemoteWorkerClient(HttpRemoteWorkerClient):
+        def __init__(self) -> None:
+            super().__init__("https://api.example.test")
+            self.requests: list[tuple[str, dict]] = []
+
+        def _post_json(self, path: str, payload: dict) -> dict:
+            self.requests.append((path, payload))
+            return {"lease_id": "lease_1", "cloud_run": {"id": "cloud_run_1"}}
+
+    client = RecordingHttpRemoteWorkerClient()
+    config = RemoteWorkerConfig(
+        api_base_url="https://api.example.test",
+        cloud_run_id="cloud_run_1",
+        worker_id="worker_1",
+        queue_provider="aliyun_mns",
+        storage_provider="aliyun_oss",
+        callback_token="callback-token-1",
+        queue_message_id="msg-1",
+        queue_receipt="receipt-1",
+    )
+
+    client.claim(config)
+
+    assert client.requests[0][1]["queue_message_id"] == "msg-1"
+    assert client.requests[0][1]["queue_receipt"] == "receipt-1"
+
+
 def test_http_remote_worker_client_fetches_payload_with_callback_token() -> None:
     class RecordingHttpRemoteWorkerClient(HttpRemoteWorkerClient):
         def __init__(self) -> None:
@@ -1487,3 +1535,87 @@ def test_http_remote_worker_client_fetches_payload_with_callback_token() -> None
             {"worker_id": "worker_1", "callback_token": "callback-token-1"},
         )
     ]
+
+
+def test_remote_worker_config_from_env_receives_pull_mode_message(monkeypatch) -> None:
+    monkeypatch.setenv("AI_SCDC_API_BASE_URL", "https://api.example.test")
+    monkeypatch.delenv("AI_SCDC_CLOUD_RUN_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_WORKER_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_CALLBACK_TOKEN", raising=False)
+    monkeypatch.setenv("AI_SCDC_QUEUE_PROVIDER", "aliyun_mns")
+    monkeypatch.setenv("AI_SCDC_STORAGE_PROVIDER", "aliyun_oss")
+
+    consumer = FakeQueueConsumer(
+        RemoteWorkerQueueMessage(
+            cloud_run_id="cloud_run_1",
+            worker_id="worker_1",
+            callback_token="callback-token-1",
+            queue_message_id="msg-1",
+            queue_receipt="receipt-1",
+            storage_provider="aliyun_oss",
+        )
+    )
+
+    config = config_from_env(queue_consumer=consumer)
+
+    assert config == RemoteWorkerConfig(
+        api_base_url="https://api.example.test",
+        cloud_run_id="cloud_run_1",
+        worker_id="worker_1",
+        queue_provider="aliyun_mns",
+        storage_provider="aliyun_oss",
+        callback_token="callback-token-1",
+        queue_message_id="msg-1",
+        queue_receipt="receipt-1",
+    )
+    assert consumer.receive_calls == 1
+
+
+def test_run_remote_worker_from_env_returns_no_work_when_queue_is_empty(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AI_SCDC_API_BASE_URL", "https://api.example.test")
+    monkeypatch.delenv("AI_SCDC_CLOUD_RUN_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_WORKER_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_CALLBACK_TOKEN", raising=False)
+    monkeypatch.setenv("AI_SCDC_QUEUE_PROVIDER", "aliyun_mns")
+    monkeypatch.setenv("AI_SCDC_STORAGE_PROVIDER", "aliyun_oss")
+
+    consumer = FakeQueueConsumer(None)
+
+    result = run_remote_worker_from_env(queue_consumer=consumer)
+
+    assert result == {"status": "no_work"}
+    assert consumer.receive_calls == 1
+
+
+def test_run_remote_worker_from_env_deletes_receipt_for_injected_consumer_on_terminal_result(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AI_SCDC_API_BASE_URL", "https://api.example.test")
+    monkeypatch.delenv("AI_SCDC_CLOUD_RUN_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_WORKER_ID", raising=False)
+    monkeypatch.delenv("AI_SCDC_CALLBACK_TOKEN", raising=False)
+    monkeypatch.setenv("AI_SCDC_QUEUE_PROVIDER", "aliyun_mns")
+    monkeypatch.setenv("AI_SCDC_STORAGE_PROVIDER", "aliyun_oss")
+
+    consumer = FakeQueueConsumer(
+        RemoteWorkerQueueMessage(
+            cloud_run_id="cloud_run_1",
+            worker_id="worker_1",
+            callback_token="callback-token-1",
+            queue_message_id="msg-1",
+            queue_receipt="receipt-1",
+            storage_provider="aliyun_oss",
+        )
+    )
+
+    result = run_remote_worker_from_env(
+        queue_consumer=consumer,
+        worker_client=FakeWorkerClient(),
+        checkout=FakeCheckout(),
+        command_runner=FakeCommandRunner(),
+    )
+
+    assert result["cloud_run"]["status"] == "patch_ready"
+    assert consumer.delete_receipts == ["receipt-1"]
