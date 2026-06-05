@@ -4241,6 +4241,62 @@ def test_aliyun_eci_terminal_cleanup_deletes_persisted_runtime_job_and_logs_safe
     assert "provider-secret" not in serialized_logs
 
 
+def test_aliyun_eci_terminal_cleanup_skips_after_success_without_second_delete(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    fake_eci = CleanupRecordingAliyunEciClient()
+    database_path = tmp_path / "app.db"
+    cloud_run_id, runtime_job_id = _start_completed_aliyun_eci_run(
+        tmp_path,
+        monkeypatch,
+        fake_eci,
+    )
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+
+    with Session(engine) as session:
+        first_result = cloud_runner.cleanup_aliyun_eci_terminal_runtime_job(
+            session,
+            cloud_run_id=cloud_run_id,
+        )
+
+    assert first_result.status == "succeeded"
+    assert first_result.reason == "runtime_cleanup_deleted"
+    assert fake_eci.deleted_container_group_ids == [runtime_job_id]
+
+    with Session(engine) as session:
+        second_result = cloud_runner.cleanup_aliyun_eci_terminal_runtime_job(
+            session,
+            cloud_run_id=cloud_run_id,
+        )
+
+    assert second_result.status == "skipped"
+    assert second_result.reason == "runtime_cleanup_already_deleted"
+    assert second_result.cloud_run.status == "patch_ready"
+    assert second_result.cloud_run.runtime_job_id == runtime_job_id
+    assert second_result.cloud_run.external_status == "runtime_cleanup_deleted"
+    assert second_result.cloud_run.external_error is None
+    assert fake_eci.deleted_container_group_ids == [runtime_job_id]
+
+    with Session(engine) as session:
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+            .where(CloudRunLogEntry.event == "runtime_cleanup_skipped")
+        ).all()
+
+    assert any(
+        entry.payload
+        == {
+            "runtime_provider": "aliyun_eci",
+            "reason": "runtime_cleanup_already_deleted",
+        }
+        for entry in log_entries
+    )
+
+
 def test_aliyun_eci_terminal_cleanup_failure_keeps_runtime_job_and_redacts(
     tmp_path: Path,
     monkeypatch,

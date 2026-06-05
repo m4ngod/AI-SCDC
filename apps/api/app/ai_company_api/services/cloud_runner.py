@@ -1089,6 +1089,8 @@ def _aliyun_eci_runtime_cleanup_skip_reason(cloud_run: CloudRun) -> str | None:
         return "runtime_cleanup_requires_aliyun_eci"
     if cloud_run.status not in CLOUD_RUN_TERMINAL_STATUSES:
         return "runtime_cleanup_requires_terminal_state"
+    if cloud_run.external_status == "runtime_cleanup_deleted":
+        return "runtime_cleanup_already_deleted"
     if not cloud_run.runtime_job_id:
         return "runtime_cleanup_missing_runtime_job_id"
     return None

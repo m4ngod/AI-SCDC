@@ -74,16 +74,16 @@ tests, README smoke instructions, and git history.
 
 ## Verification
 
-Phase 13A final verification is pending Task 5 final runs:
+Phase 13A final verification has completed:
 
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "retained_receipt_recovery or terminal_cleanup or aliyun_mns_completion_delete_failure or aliyun_eci_submission_cleans_up"` -> pending final run
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "aliyun_mns or protected_aliyun or protected_worker or aliyun_eci"` -> pending final run
-- `pytest apps/api/tests/test_aliyun_clients.py -q` -> pending final run
-- `pytest apps/api/tests/test_remote_worker.py -q` -> pending final run
-- `pytest apps/api/tests -q` -> pending final run
-- `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> pending final run
-- `pnpm typecheck` -> pending final run
-- `git diff --check` -> pending final run
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "retained_receipt_recovery or terminal_cleanup or aliyun_mns_completion_delete_failure or aliyun_eci_submission_cleans_up"` -> 10 passed, 151 deselected, 1 warning in 5.77s
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "aliyun_mns or protected_aliyun or protected_worker or aliyun_eci"` -> 41 passed, 120 deselected, 1 warning in 16.42s
+- `pytest apps/api/tests/test_aliyun_clients.py -q` -> 15 passed in 0.05s
+- `pytest apps/api/tests/test_remote_worker.py -q` -> 48 passed in 0.17s
+- `pytest apps/api/tests -q` -> 465 passed, 1 warning in 196.92s
+- `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> 34 passed in 1.81s
+- `pnpm typecheck` -> `apps/desktop` and `packages/agent-protocol` completed
+- `git diff --check` -> passed
 
 Previous Phase 10D verification:
 
