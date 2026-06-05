@@ -922,6 +922,55 @@ def test_aliyun_mns_queue_provider_sends_message_on_enqueue(
     assert "secret" not in fake_mns.requests[0].body
 
 
+def test_aliyun_mns_queue_provider_sends_token_bearing_message_on_enqueue(
+    monkeypatch,
+) -> None:
+    from ai_company_api.services.cloud_queue_providers import (
+        AliyunMnsQueueProvider,
+        CloudQueueEnqueueRequest,
+    )
+
+    _set_complete_aliyun_env(monkeypatch)
+    fake_mns = FakeAliyunMnsClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=fake_mns,
+            oss=UnusedAliyunClient(),
+            eci=UnusedAliyunClient(),
+        ),
+    )
+
+    AliyunMnsQueueProvider().enqueue(
+        CloudQueueEnqueueRequest(
+            workspace_id="workspace-1",
+            project_id="project-1",
+            task_id="task-1",
+            cloud_run_id="cloud-run-1",
+            queue_provider="aliyun_mns",
+            runtime_provider="aliyun_eci",
+            storage_provider="aliyun_oss",
+            worker_id="worker-1",
+            callback_token="token-1",
+            callback_token_expires_at="2026-06-05T10:00:00+00:00",
+        )
+    )
+
+    assert len(fake_mns.requests) == 1
+    assert json.loads(fake_mns.requests[0].body) == {
+        "workspace_id": "workspace-1",
+        "project_id": "project-1",
+        "task_id": "task-1",
+        "cloud_run_id": "cloud-run-1",
+        "queue_provider": "aliyun_mns",
+        "runtime_provider": "aliyun_eci",
+        "storage_provider": "aliyun_oss",
+        "worker_id": "worker-1",
+        "callback_token": "token-1",
+        "callback_token_expires_at": "2026-06-05T10:00:00+00:00",
+    }
+
+
 def test_aliyun_mns_queue_provider_receives_and_parses_message(
     monkeypatch,
 ) -> None:

@@ -126,18 +126,15 @@ class AliyunMnsQueueProvider:
                 "mns_queue_name",
             ),
         )
-        body = json.dumps(
-            {
-                "workspace_id": request.workspace_id,
-                "project_id": request.project_id,
-                "task_id": request.task_id,
-                "cloud_run_id": request.cloud_run_id,
-                "queue_provider": request.queue_provider,
-                "runtime_provider": request.runtime_provider,
-                "storage_provider": request.storage_provider,
-            },
-            sort_keys=True,
-        )
+        message_body = {
+            "workspace_id": request.workspace_id,
+            "project_id": request.project_id,
+            "task_id": request.task_id,
+            "cloud_run_id": request.cloud_run_id,
+            "queue_provider": request.queue_provider,
+            "runtime_provider": request.runtime_provider,
+            "storage_provider": request.storage_provider,
+        }
         if (
             request.worker_id
             and request.callback_token
@@ -150,6 +147,7 @@ class AliyunMnsQueueProvider:
                     "callback_token_expires_at": request.callback_token_expires_at,
                 }
             )
+        body = json.dumps(message_body, sort_keys=True)
         try:
             result = get_aliyun_client_bundle(settings).mns.send_message(
                 AliyunMnsSendMessageRequest(
