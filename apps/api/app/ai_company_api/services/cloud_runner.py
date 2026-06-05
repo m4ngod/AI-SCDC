@@ -31,7 +31,11 @@ from ai_company_api.schemas.api import (
     CloudRunResultRead,
     PatchArtifactRead,
 )
-from ai_company_api.services.aliyun_config import AliyunConfigurationError
+from ai_company_api.services.aliyun_clients import get_aliyun_client_bundle
+from ai_company_api.services.aliyun_config import (
+    AliyunConfigurationError,
+    require_aliyun_settings,
+)
 from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
     SandboxCommandSelection,
@@ -972,6 +976,113 @@ def _mns_receipt_recovery_skip_reason(cloud_run: CloudRun) -> str | None:
         return "mns_receipt_recovery_requires_terminal_state"
     if not cloud_run.queue_receipt:
         return "mns_receipt_recovery_missing_receipt"
+    return None
+
+
+def cleanup_aliyun_eci_terminal_runtime_job(
+    session: Session,
+    *,
+    cloud_run_id: str,
+) -> CloudRunProviderOperationResult:
+    cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    skip_reason = _aliyun_eci_runtime_cleanup_skip_reason(cloud_run)
+    if skip_reason is not None:
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="runtime_cleanup_skipped",
+            message="Aliyun ECI runtime cleanup skipped.",
+            payload={
+                "reason": skip_reason,
+                "runtime_provider": cloud_run.runtime_provider,
+            },
+        )
+        cloud_run.updated_at = utc_now()
+        session.add(cloud_run)
+        session.commit()
+        session.refresh(cloud_run)
+        return CloudRunProviderOperationResult(
+            status="skipped",
+            reason=skip_reason,
+            cloud_run=_cloud_run_read(cloud_run),
+        )
+
+    runtime_job_id = cloud_run.runtime_job_id or ""
+    _append_cloud_run_log(
+        session,
+        cloud_run=cloud_run,
+        event="runtime_cleanup_attempted",
+        message="Aliyun ECI runtime cleanup attempted.",
+        payload={
+            "runtime_provider": cloud_run.runtime_provider,
+            "runtime_job_id_suffix": runtime_job_id[-6:],
+        },
+    )
+    try:
+        settings = require_aliyun_settings(
+            provider_name="eci",
+            required_names=(
+                "region_id",
+                "access_key_id",
+                "access_key_secret",
+            ),
+        )
+        get_aliyun_client_bundle(settings).eci.delete_container_group(
+            region_id=settings.region_id or "",
+            container_group_id=runtime_job_id,
+        )
+    except Exception:
+        cloud_run.external_status = "runtime_cleanup_failed"
+        cloud_run.external_error = "runtime_cleanup_failed"
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="runtime_cleanup_failed",
+            message="Aliyun ECI runtime cleanup failed.",
+            level="warning",
+            payload={
+                "external_error": cloud_run.external_error,
+                "reason": "runtime_cleanup_failed",
+                "runtime_provider": cloud_run.runtime_provider,
+                "runtime_job_id_suffix": runtime_job_id[-6:],
+            },
+        )
+        result_status: CloudRunProviderOperationStatus = "failed"
+        result_reason = "runtime_cleanup_failed"
+    else:
+        cloud_run.external_status = "runtime_cleanup_deleted"
+        cloud_run.external_error = None
+        _append_cloud_run_log(
+            session,
+            cloud_run=cloud_run,
+            event="runtime_cleanup_deleted",
+            message="Aliyun ECI runtime cleanup deleted.",
+            payload={
+                "runtime_provider": cloud_run.runtime_provider,
+                "runtime_job_id_suffix": runtime_job_id[-6:],
+            },
+        )
+        result_status = "succeeded"
+        result_reason = "runtime_cleanup_deleted"
+
+    cloud_run.updated_at = utc_now()
+    session.add(cloud_run)
+    session.commit()
+    session.refresh(cloud_run)
+    return CloudRunProviderOperationResult(
+        status=result_status,
+        reason=result_reason,
+        cloud_run=_cloud_run_read(cloud_run),
+    )
+
+
+def _aliyun_eci_runtime_cleanup_skip_reason(cloud_run: CloudRun) -> str | None:
+    if cloud_run.runtime_provider != ALIYUN_ECI_RUNTIME_PROVIDER:
+        return "runtime_cleanup_requires_aliyun_eci"
+    if cloud_run.status not in CLOUD_RUN_TERMINAL_STATUSES:
+        return "runtime_cleanup_requires_terminal_state"
+    if not cloud_run.runtime_job_id:
+        return "runtime_cleanup_missing_runtime_job_id"
     return None
 
 

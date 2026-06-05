@@ -560,6 +560,14 @@ class CleanupRecordingAliyunEciClient(FakeAliyunEciClient):
         self.deleted_container_group_ids.append(container_group_id)
 
 
+class DeleteFailingAliyunEciClient(CleanupRecordingAliyunEciClient):
+    def delete_container_group(self, *, region_id: str, container_group_id: str) -> None:
+        self.deleted_container_group_ids.append(container_group_id)
+        raise RuntimeError(
+            "delete failed secret=provider-secret token=abc123 Signature=signed-url"
+        )
+
+
 class FailingAliyunEciClient:
     def create_container_group(
         self,
@@ -3043,6 +3051,82 @@ def _start_claimed_aliyun_mns_run(
     return cloud_run["id"], lease.json()["lease_id"], fake_mns
 
 
+def _start_completed_aliyun_eci_run(
+    tmp_path: Path,
+    monkeypatch,
+    fake_eci,
+) -> tuple[str, str]:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    queued_response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    )
+    assert queued_response.status_code == 201
+    cloud_run = queued_response.json()["cloud_run"]
+    worker_id = f"aliyun-eci-{cloud_run['id']}"
+    callback_token = fake_eci.requests[0].environment["AI_SCDC_CALLBACK_TOKEN"]
+
+    lease_response = client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": worker_id,
+            "worker_kind": "aliyun_eci",
+            "queue_provider": "aliyun_mns",
+            "cloud_run_id": cloud_run["id"],
+            "callback_token": callback_token,
+            "lease_seconds": 60,
+        },
+    )
+    assert lease_response.status_code == 201
+
+    completion_payload = remote_stub_completion_payload(cloud_run["id"])
+    completion_payload["worker_id"] = worker_id
+    completion_payload["callback_token"] = callback_token
+    completion_response = client.post(
+        f"/cloud-run-worker/leases/{lease_response.json()['lease_id']}/complete",
+        json=completion_payload,
+    )
+    assert completion_response.status_code == 200
+    assert completion_response.json()["cloud_run"]["status"] == "patch_ready"
+    return cloud_run["id"], cloud_run["runtime_job_id"]
+
+
 def test_protected_worker_endpoints_reject_expired_callback_token(
     tmp_path: Path,
     monkeypatch,
@@ -4094,6 +4178,193 @@ def test_aliyun_mns_retained_receipt_recovery_redacts_raw_provider_error_at_help
     assert "receipt-1" not in serialized_logs
     assert "provider-secret" not in serialized_logs
     assert "abc123" not in serialized_logs
+
+
+def test_aliyun_eci_terminal_cleanup_deletes_persisted_runtime_job_and_logs_safe_success(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    fake_eci = CleanupRecordingAliyunEciClient()
+    database_path = tmp_path / "app.db"
+    cloud_run_id, runtime_job_id = _start_completed_aliyun_eci_run(
+        tmp_path,
+        monkeypatch,
+        fake_eci,
+    )
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+
+    with Session(engine) as session:
+        result = cloud_runner.cleanup_aliyun_eci_terminal_runtime_job(
+            session,
+            cloud_run_id=cloud_run_id,
+        )
+
+    assert result.status == "succeeded"
+    assert result.reason == "runtime_cleanup_deleted"
+    assert result.cloud_run.status == "patch_ready"
+    assert result.cloud_run.runtime_job_id == runtime_job_id
+    assert result.cloud_run.external_status == "runtime_cleanup_deleted"
+    assert result.cloud_run.external_error is None
+    assert fake_eci.deleted_container_group_ids == [runtime_job_id]
+
+    with Session(engine) as session:
+        persisted = session.get(CloudRun, cloud_run_id)
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+            .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+        ).all()
+
+    assert persisted is not None
+    assert persisted.status == "patch_ready"
+    assert persisted.runtime_job_id == runtime_job_id
+    assert persisted.external_status == "runtime_cleanup_deleted"
+    assert persisted.external_error is None
+    serialized_logs = "\n".join(
+        f"{entry.event}\n{entry.message}\n"
+        f"{json.dumps(entry.payload, sort_keys=True, default=str)}"
+        for entry in log_entries
+    )
+    assert "runtime_cleanup_attempted" in serialized_logs
+    assert "runtime_cleanup_deleted" in serialized_logs
+    assert "AI_SCDC_ALIYUN_ACCESS_KEY_ID" not in serialized_logs
+    assert "AI_SCDC_ALIYUN_ACCESS_KEY_SECRET" not in serialized_logs
+    assert "provider-secret" not in serialized_logs
+
+
+def test_aliyun_eci_terminal_cleanup_failure_keeps_runtime_job_and_redacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    fake_eci = DeleteFailingAliyunEciClient()
+    database_path = tmp_path / "app.db"
+    cloud_run_id, runtime_job_id = _start_completed_aliyun_eci_run(
+        tmp_path,
+        monkeypatch,
+        fake_eci,
+    )
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+
+    with Session(engine) as session:
+        result = cloud_runner.cleanup_aliyun_eci_terminal_runtime_job(
+            session,
+            cloud_run_id=cloud_run_id,
+        )
+
+    assert result.status == "failed"
+    assert result.reason == "runtime_cleanup_failed"
+    assert result.cloud_run.status == "patch_ready"
+    assert result.cloud_run.runtime_job_id == runtime_job_id
+    assert result.cloud_run.external_status == "runtime_cleanup_failed"
+    assert result.cloud_run.external_error == "runtime_cleanup_failed"
+    assert fake_eci.deleted_container_group_ids == [runtime_job_id]
+    for leaked_value in ("provider-secret", "abc123", "signed-url"):
+        assert leaked_value not in (result.cloud_run.external_error or "")
+
+    with Session(engine) as session:
+        persisted = session.get(CloudRun, cloud_run_id)
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+            .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+        ).all()
+
+    assert persisted is not None
+    assert persisted.status == "patch_ready"
+    assert persisted.runtime_job_id == runtime_job_id
+    assert persisted.external_status == "runtime_cleanup_failed"
+    assert persisted.external_error == "runtime_cleanup_failed"
+    serialized_logs = "\n".join(
+        f"{entry.event}\n{entry.message}\n"
+        f"{json.dumps(entry.payload, sort_keys=True, default=str)}"
+        for entry in log_entries
+    )
+    assert "runtime_cleanup_failed" in serialized_logs
+    for leaked_value in ("provider-secret", "abc123", "signed-url"):
+        assert leaked_value not in (persisted.external_error or "")
+        assert leaked_value not in serialized_logs
+
+
+def test_aliyun_eci_terminal_cleanup_skips_non_terminal_run_without_delete(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    class FakeExecutorShouldNotRun:
+        sandbox_kind = "fake"
+
+        def run(self, _request):
+            raise AssertionError("executor should not run during enqueue")
+
+    monkeypatch.setattr(
+        cloud_runner,
+        "select_cloud_sandbox_executor",
+        lambda: FakeExecutorShouldNotRun(),
+    )
+    _set_complete_aliyun_env(monkeypatch)
+    fake_eci = CleanupRecordingAliyunEciClient()
+    monkeypatch.setattr(
+        "ai_company_api.services.aliyun_clients._CLIENT_BUNDLE_OVERRIDE",
+        AliyunClientBundle(
+            mns=FakeAliyunMnsClient(),
+            oss=FakeAliyunOssClient(),
+            eci=fake_eci,
+        ),
+    )
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        project, repository, task = create_cloud_task(session)
+        profile = create_profile_entity(session, project, repository)
+        task_id = task.id
+        repo_id = repository.id
+        profile_id = profile.id
+
+    queued_response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={
+            "repo_id": repo_id,
+            "sandbox_profile_id": profile_id,
+            "queue_provider": "aliyun_mns",
+            "storage_provider": "aliyun_oss",
+            "runtime_provider": "aliyun_eci",
+        },
+    )
+    assert queued_response.status_code == 201
+    cloud_run_id = queued_response.json()["cloud_run"]["id"]
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+
+    with Session(engine) as session:
+        result = cloud_runner.cleanup_aliyun_eci_terminal_runtime_job(
+            session,
+            cloud_run_id=cloud_run_id,
+        )
+
+    assert result.status == "skipped"
+    assert result.reason == "runtime_cleanup_requires_terminal_state"
+    assert result.cloud_run.status == "queued"
+    assert fake_eci.deleted_container_group_ids == []
+
+    with Session(engine) as session:
+        persisted = session.get(CloudRun, cloud_run_id)
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+            .where(CloudRunLogEntry.event == "runtime_cleanup_skipped")
+        ).all()
+
+    assert persisted is not None
+    assert persisted.status == "queued"
+    assert len(log_entries) == 1
+    assert log_entries[0].payload == {
+        "reason": "runtime_cleanup_requires_terminal_state",
+        "runtime_provider": "aliyun_eci",
+    }
 
 
 def test_aliyun_mns_cancelled_completion_deletes_receipt_and_clears_internal_receipt(
