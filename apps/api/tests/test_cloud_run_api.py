@@ -39,6 +39,10 @@ from ai_company_api.services.object_storage import (
     ObjectStorageWrite,
     get_object_storage_provider,
 )
+from ai_company_api.services.remote_runtime import (
+    RemoteRuntimeLogSyncRequest,
+    RemoteStubRuntimeProvider,
+)
 from ai_company_api.services.secret_vault import DevSecretVault
 from ai_company_api.services.task_state import TaskStatus
 
@@ -2573,6 +2577,77 @@ def test_remote_stub_runtime_submission_persists_log_stream_object_metadata(
         assert cloud_run.log_stream_sha256 is not None
         assert cloud_run.log_stream_size_bytes is not None
         assert cloud_run.log_stream_content_type == "text/plain"
+
+
+def test_remote_stub_log_sync_writes_deterministic_log_ref(tmp_path: Path) -> None:
+    database_path = tmp_path / "remote-stub-log-sync.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    init_db(engine)
+    with Session(engine) as session:
+        result = RemoteStubRuntimeProvider().sync_logs(
+            session,
+            RemoteRuntimeLogSyncRequest(
+                workspace_id="dev_workspace",
+                project_id="project_1",
+                task_id="task_1",
+                cloud_run_id="cloud_run_1",
+                runtime_job_id="remote-stub-job-cloud_run_1",
+                storage_provider="local_inline",
+                current_log_stream_ref=None,
+            ),
+        )
+
+        assert result.status == "updated"
+        assert result.log_stream_ref is not None
+        assert result.log_stream_ref.kind == "log"
+        assert result.log_stream_ref.content_type == "text/plain"
+        text = get_object_storage_provider("local_inline").read_text(
+            session,
+            result.log_stream_ref,
+        )
+        assert text == (
+            "Remote runtime submitted via remote_stub.\n"
+            "Remote runtime log sync via remote_stub.\n"
+        )
+
+
+def test_remote_stub_log_sync_is_unchanged_when_digest_matches(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "remote-stub-log-sync-unchanged.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    init_db(engine)
+    with Session(engine) as session:
+        provider = RemoteStubRuntimeProvider()
+        first = provider.sync_logs(
+            session,
+            RemoteRuntimeLogSyncRequest(
+                workspace_id="dev_workspace",
+                project_id="project_1",
+                task_id="task_1",
+                cloud_run_id="cloud_run_1",
+                runtime_job_id="remote-stub-job-cloud_run_1",
+                storage_provider="local_inline",
+                current_log_stream_ref=None,
+            ),
+        )
+        assert first.log_stream_ref is not None
+
+        second = provider.sync_logs(
+            session,
+            RemoteRuntimeLogSyncRequest(
+                workspace_id="dev_workspace",
+                project_id="project_1",
+                task_id="task_1",
+                cloud_run_id="cloud_run_1",
+                runtime_job_id="remote-stub-job-cloud_run_1",
+                storage_provider="local_inline",
+                current_log_stream_ref=first.log_stream_ref,
+            ),
+        )
+
+        assert second.status == "unchanged"
+        assert second.log_stream_ref is None
 
 
 def test_cloud_run_read_redacts_external_uri_query_and_external_error(

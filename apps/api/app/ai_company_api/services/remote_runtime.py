@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from hashlib import sha256
 import json
 import re
-from typing import Protocol
+from typing import Literal, Protocol
 
 from sqlmodel import Session
 
@@ -28,6 +29,10 @@ class RemoteRuntimeSubmissionError(Exception):
     pass
 
 
+class RemoteRuntimeLogSyncError(Exception):
+    pass
+
+
 class RemoteRuntimeProvider(Protocol):
     name: str
 
@@ -39,6 +44,13 @@ class RemoteRuntimeProvider(Protocol):
         session: Session,
         submission: "RemoteRuntimeSubmission",
     ) -> "RemoteRuntimeSubmissionResult":
+        ...
+
+    def sync_logs(
+        self,
+        session: Session,
+        request: "RemoteRuntimeLogSyncRequest",
+    ) -> "RemoteRuntimeLogSyncResult":
         ...
 
 
@@ -71,6 +83,24 @@ class RemoteRuntimeSubmissionResult:
     @property
     def log_stream_uri(self) -> str | None:
         return self.log_stream_ref.uri if self.log_stream_ref else None
+
+
+@dataclass(frozen=True)
+class RemoteRuntimeLogSyncRequest:
+    workspace_id: str
+    project_id: str
+    task_id: str
+    cloud_run_id: str
+    runtime_job_id: str | None
+    storage_provider: str | None
+    current_log_stream_ref: ObjectStorageRef | None
+
+
+@dataclass(frozen=True)
+class RemoteRuntimeLogSyncResult:
+    status: Literal["updated", "unchanged", "skipped", "unsupported"]
+    log_stream_ref: ObjectStorageRef | None = None
+    reason: str | None = None
 
 
 class RemoteStubRuntimeProvider:
@@ -125,6 +155,40 @@ class RemoteStubRuntimeProvider:
             artifact_manifest_ref=artifact_manifest_ref,
             log_stream_ref=log_stream_ref,
         )
+
+    def sync_logs(
+        self,
+        session: Session,
+        request: RemoteRuntimeLogSyncRequest,
+    ) -> RemoteRuntimeLogSyncResult:
+        if request.storage_provider != "local_inline":
+            return RemoteRuntimeLogSyncResult(
+                status="skipped",
+                reason="remote_stub_log_sync_requires_local_inline_storage",
+            )
+
+        content = (
+            "Remote runtime submitted via remote_stub.\n"
+            "Remote runtime log sync via remote_stub.\n"
+        )
+        digest = sha256(content.encode("utf-8")).hexdigest()
+        if (
+            request.current_log_stream_ref is not None
+            and request.current_log_stream_ref.sha256 == digest
+        ):
+            return RemoteRuntimeLogSyncResult(status="unchanged")
+
+        ref = get_object_storage_provider("local_inline").put_text(
+            session,
+            ObjectStorageWrite(
+                workspace_id=request.workspace_id,
+                cloud_run_id=request.cloud_run_id,
+                kind="log",
+                content=content,
+                content_type="text/plain",
+            ),
+        )
+        return RemoteRuntimeLogSyncResult(status="updated", log_stream_ref=ref)
 
 
 class AliyunEciRuntimeProvider:
@@ -249,6 +313,16 @@ class AliyunEciRuntimeProvider:
             external_status="submitted",
             artifact_manifest_ref=artifact_manifest_ref,
             log_stream_ref=log_stream_ref,
+        )
+
+    def sync_logs(
+        self,
+        session: Session,
+        request: RemoteRuntimeLogSyncRequest,
+    ) -> RemoteRuntimeLogSyncResult:
+        return RemoteRuntimeLogSyncResult(
+            status="unsupported",
+            reason="aliyun_eci_log_sync_not_enabled",
         )
 
 
