@@ -979,6 +979,14 @@ def _mns_receipt_recovery_skip_reason(cloud_run: CloudRun) -> str | None:
     return None
 
 
+def _runtime_job_id_log_suffix(value: str | None) -> str:
+    if not value:
+        return "missing"
+    if len(value) <= 6:
+        return "short-runtime-id"
+    return value[-6:]
+
+
 def cleanup_aliyun_eci_terminal_runtime_job(
     session: Session,
     *,
@@ -1015,7 +1023,7 @@ def cleanup_aliyun_eci_terminal_runtime_job(
         message="Aliyun ECI runtime cleanup attempted.",
         payload={
             "runtime_provider": cloud_run.runtime_provider,
-            "runtime_job_id_suffix": runtime_job_id[-6:],
+            "runtime_job_id_suffix": _runtime_job_id_log_suffix(runtime_job_id),
         },
     )
     try:
@@ -1044,7 +1052,7 @@ def cleanup_aliyun_eci_terminal_runtime_job(
                 "external_error": cloud_run.external_error,
                 "reason": "runtime_cleanup_failed",
                 "runtime_provider": cloud_run.runtime_provider,
-                "runtime_job_id_suffix": runtime_job_id[-6:],
+                "runtime_job_id_suffix": _runtime_job_id_log_suffix(runtime_job_id),
             },
         )
         result_status: CloudRunProviderOperationStatus = "failed"
@@ -1059,7 +1067,7 @@ def cleanup_aliyun_eci_terminal_runtime_job(
             message="Aliyun ECI runtime cleanup deleted.",
             payload={
                 "runtime_provider": cloud_run.runtime_provider,
-                "runtime_job_id_suffix": runtime_job_id[-6:],
+                "runtime_job_id_suffix": _runtime_job_id_log_suffix(runtime_job_id),
             },
         )
         result_status = "succeeded"

@@ -4222,13 +4222,20 @@ def test_aliyun_eci_terminal_cleanup_deletes_persisted_runtime_job_and_logs_safe
     assert persisted.runtime_job_id == runtime_job_id
     assert persisted.external_status == "runtime_cleanup_deleted"
     assert persisted.external_error is None
+    cleanup_log_entries = [
+        entry
+        for entry in log_entries
+        if entry.event in {"runtime_cleanup_attempted", "runtime_cleanup_deleted"}
+    ]
     serialized_logs = "\n".join(
         f"{entry.event}\n{entry.message}\n"
         f"{json.dumps(entry.payload, sort_keys=True, default=str)}"
-        for entry in log_entries
+        for entry in cleanup_log_entries
     )
     assert "runtime_cleanup_attempted" in serialized_logs
     assert "runtime_cleanup_deleted" in serialized_logs
+    assert runtime_job_id not in serialized_logs
+    assert runtime_job_id[-6:] in serialized_logs
     assert "AI_SCDC_ALIYUN_ACCESS_KEY_ID" not in serialized_logs
     assert "AI_SCDC_ALIYUN_ACCESS_KEY_SECRET" not in serialized_logs
     assert "provider-secret" not in serialized_logs
@@ -4278,15 +4285,80 @@ def test_aliyun_eci_terminal_cleanup_failure_keeps_runtime_job_and_redacts(
     assert persisted.runtime_job_id == runtime_job_id
     assert persisted.external_status == "runtime_cleanup_failed"
     assert persisted.external_error == "runtime_cleanup_failed"
+    cleanup_log_entries = [
+        entry
+        for entry in log_entries
+        if entry.event in {"runtime_cleanup_attempted", "runtime_cleanup_failed"}
+    ]
     serialized_logs = "\n".join(
         f"{entry.event}\n{entry.message}\n"
         f"{json.dumps(entry.payload, sort_keys=True, default=str)}"
-        for entry in log_entries
+        for entry in cleanup_log_entries
     )
     assert "runtime_cleanup_failed" in serialized_logs
+    assert runtime_job_id not in serialized_logs
+    assert runtime_job_id[-6:] in serialized_logs
+    assert "short-runtime-id" not in serialized_logs
     for leaked_value in ("provider-secret", "abc123", "signed-url"):
         assert leaked_value not in (persisted.external_error or "")
         assert leaked_value not in serialized_logs
+
+
+def test_aliyun_eci_terminal_cleanup_masks_short_runtime_job_id_in_logs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ai_company_api.services import cloud_runner
+
+    fake_eci = CleanupRecordingAliyunEciClient()
+    database_path = tmp_path / "app.db"
+    cloud_run_id, _runtime_job_id = _start_completed_aliyun_eci_run(
+        tmp_path,
+        monkeypatch,
+        fake_eci,
+    )
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    runtime_job_id = "abc123"
+    with Session(engine) as session:
+        persisted = session.get(CloudRun, cloud_run_id)
+        assert persisted is not None
+        persisted.runtime_job_id = runtime_job_id
+        session.add(persisted)
+        session.commit()
+
+    with Session(engine) as session:
+        result = cloud_runner.cleanup_aliyun_eci_terminal_runtime_job(
+            session,
+            cloud_run_id=cloud_run_id,
+        )
+
+    assert result.status == "succeeded"
+    assert result.reason == "runtime_cleanup_deleted"
+    assert result.cloud_run.status == "patch_ready"
+    assert result.cloud_run.runtime_job_id == runtime_job_id
+    assert fake_eci.deleted_container_group_ids == [runtime_job_id]
+
+    with Session(engine) as session:
+        log_entries = session.exec(
+            select(CloudRunLogEntry)
+            .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
+            .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
+        ).all()
+
+    cleanup_log_entries = [
+        entry
+        for entry in log_entries
+        if entry.event in {"runtime_cleanup_attempted", "runtime_cleanup_deleted"}
+    ]
+    serialized_logs = "\n".join(
+        f"{entry.event}\n{entry.message}\n"
+        f"{json.dumps(entry.payload, sort_keys=True, default=str)}"
+        for entry in cleanup_log_entries
+    )
+    assert "runtime_cleanup_attempted" in serialized_logs
+    assert "runtime_cleanup_deleted" in serialized_logs
+    assert "short-runtime-id" in serialized_logs
+    assert runtime_job_id not in serialized_logs
 
 
 def test_aliyun_eci_terminal_cleanup_skips_non_terminal_run_without_delete(
