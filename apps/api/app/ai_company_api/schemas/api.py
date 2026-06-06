@@ -407,6 +407,36 @@ class CloudRunArtifactContentRead(BaseModel):
     content: str
 
 
+class CloudRunArtifactDownloadRead(BaseModel):
+    artifact: CloudRunArtifactDescriptorRead
+    download_url: str
+    expires_at: datetime | None
+    content_type: str
+    size_bytes: int
+    sha256: str
+
+
+class CloudRunArtifactCleanupRequest(BaseModel):
+    before: datetime | None = None
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
+class CloudRunArtifactCleanupItemRead(BaseModel):
+    artifact_id: str
+    cloud_run_id: str
+    provider: str
+    action: Literal["deleted", "lifecycle_only"]
+    redacted_uri: str
+    reason: str
+
+
+class CloudRunArtifactCleanupResultRead(BaseModel):
+    before: datetime
+    deleted_count: int
+    lifecycle_only_count: int
+    items: list[CloudRunArtifactCleanupItemRead]
+
+
 class CloudRunResultRead(BaseModel):
     cloud_run: CloudRunRead
     patch_artifact: PatchArtifactRead | None = None

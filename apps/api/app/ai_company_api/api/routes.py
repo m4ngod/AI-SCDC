@@ -6,8 +6,11 @@ from sqlmodel import Session
 from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     AgentRole,
+    CloudRunArtifactCleanupRequest,
+    CloudRunArtifactCleanupResultRead,
     CloudRunArtifactContentRead,
     CloudRunArtifactDescriptorRead,
+    CloudRunArtifactDownloadRead,
     CloudRunArtifactManifestRead,
     CloudRunArtifactRefCreate,
     CloudRunArtifactUploadCreate,
@@ -64,6 +67,8 @@ from ai_company_api.schemas.api import (
 )
 from ai_company_api.services.artifact_plane import (
     build_cloud_run_artifact_manifest,
+    build_cloud_run_artifact_download,
+    cleanup_expired_cloud_run_artifacts,
     get_cloud_run_artifact_descriptor,
     list_cloud_run_artifacts,
     read_cloud_run_artifact_content,
@@ -699,6 +704,33 @@ def get_cloud_run_artifact_content(
         cloud_run_id=cloud_run_id,
         artifact_id=artifact_id,
     )
+
+
+@router.post(
+    "/cloud-runs/{cloud_run_id}/artifacts/{artifact_id}/download",
+    response_model=CloudRunArtifactDownloadRead,
+)
+def post_cloud_run_artifact_download(
+    cloud_run_id: str,
+    artifact_id: str,
+    session: SessionDep,
+) -> CloudRunArtifactDownloadRead:
+    return build_cloud_run_artifact_download(
+        session,
+        cloud_run_id=cloud_run_id,
+        artifact_id=artifact_id,
+    )
+
+
+@router.post(
+    "/cloud-runs/artifacts/cleanup-expired",
+    response_model=CloudRunArtifactCleanupResultRead,
+)
+def post_cloud_run_artifact_cleanup_expired(
+    data: CloudRunArtifactCleanupRequest,
+    session: SessionDep,
+) -> CloudRunArtifactCleanupResultRead:
+    return cleanup_expired_cloud_run_artifacts(session, request=data)
 
 
 @router.get(

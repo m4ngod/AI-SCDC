@@ -6900,6 +6900,181 @@ def test_cloud_run_artifact_manifest_redacts_uri_userinfo(
     assert "frag" not in str(manifest)
 
 
+def test_cloud_run_artifact_external_refs_are_redacted_and_download_is_local(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        cloud_run.artifact_manifest_uri = (
+            "oss://ai-scdc-dev-artifacts/workspaces/dev_workspace/"
+            "cloud-runs/cloud_run/artifacts/manifest.json?signature=secret#frag"
+        )
+        cloud_run.artifact_manifest_sha256 = "a" * 64
+        cloud_run.artifact_manifest_size_bytes = 41
+        cloud_run.artifact_manifest_content_type = "application/json"
+        session.add(cloud_run)
+        session.commit()
+
+    manifest_response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/manifest"
+    )
+    assert manifest_response.status_code == 200
+    manifest = manifest_response.json()
+    manifest_artifact = manifest["artifacts"][0]
+    assert manifest_artifact["kind"] == "manifest"
+    assert manifest_artifact["provider"] == "aliyun_oss"
+    assert "signature=secret" not in str(manifest)
+    assert "#frag" not in str(manifest)
+    assert manifest_artifact["uri"].endswith("/manifest.json")
+    assert manifest_artifact["redacted_uri"] == manifest_artifact["uri"]
+
+    download_response = client.post(
+        f"/cloud-runs/{queued['id']}/artifacts/{manifest_artifact['id']}/download"
+    )
+    assert download_response.status_code == 200
+    download = download_response.json()
+    assert download["artifact"] == manifest_artifact
+    assert download["download_url"] == (
+        f"/cloud-runs/{queued['id']}/artifacts/"
+        f"{manifest_artifact['id']}/content"
+    )
+    assert download["sha256"] == "a" * 64
+    assert download["size_bytes"] == 41
+    assert "signature=secret" not in str(download)
+    assert "https://" not in str(download)
+
+
+def test_cloud_run_artifact_cleanup_expired_deletes_local_and_reports_external(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    expired_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        local_ref = store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="log",
+            content="expired local log",
+            expires_at=expired_at,
+            retention_policy="development_default",
+        )
+        external_object = CloudRunStoredObject(
+            workspace_id=cloud_run.workspace_id,
+            cloud_run_id=cloud_run.id,
+            kind="manifest",
+            uri=(
+                "oss://ai-scdc-dev-artifacts/workspaces/dev_workspace/"
+                "cloud-runs/cloud_run/manifest.json?signature=secret#frag"
+            ),
+            sha256="b" * 64,
+            size_bytes=17,
+            content_type="application/json",
+            text_content="",
+            expires_at=expired_at,
+            retention_policy="oss_lifecycle",
+        )
+        session.add(external_object)
+        session.commit()
+        local_object_id = local_ref.uri.removeprefix(
+            "local-inline://cloud-run-objects/"
+        )
+        external_object_id = external_object.id
+
+    response = client.post(
+        "/cloud-runs/artifacts/cleanup-expired",
+        json={
+            "before": "2026-06-06T00:00:00+00:00",
+            "limit": 10,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted_count"] == 1
+    assert body["lifecycle_only_count"] == 1
+    actions = {item["action"] for item in body["items"]}
+    assert actions == {"deleted", "lifecycle_only"}
+    assert "signature=secret" not in str(body)
+    lifecycle_item = next(
+        item
+        for item in body["items"]
+        if item["action"] == "lifecycle_only"
+    )
+    assert lifecycle_item["provider"] == "aliyun_oss"
+    assert lifecycle_item["reason"] == "external_provider_cleanup_not_supported_by_api"
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        assert session.get(CloudRunStoredObject, local_object_id) is None
+        assert session.get(CloudRunStoredObject, external_object_id) is not None
+
+
+def test_cloud_run_artifact_content_returns_gone_for_expired_local_object(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="diff",
+            content="diff --git a/expired b/expired\n+expired\n",
+            content_type="text/x-diff",
+            expires_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            retention_policy="development_default",
+        )
+        session.commit()
+
+    manifest = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/manifest"
+    ).json()
+    diff_artifact = next(
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["kind"] == "diff"
+    )
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/{diff_artifact['id']}/content"
+    )
+    assert response.status_code == 410
+    assert response.json()["detail"] == "Cloud run artifact expired"
+
+
 def test_cloud_run_log_window_returns_bounded_pages_without_duplicates(
     tmp_path: Path,
 ) -> None:

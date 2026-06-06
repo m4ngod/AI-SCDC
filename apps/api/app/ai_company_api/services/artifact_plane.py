@@ -17,7 +17,11 @@ from ai_company_api.schemas.api import (
     ArtifactKind,
     ArtifactRetentionRead,
     CloudRunArtifactContentRead,
+    CloudRunArtifactCleanupItemRead,
+    CloudRunArtifactCleanupRequest,
+    CloudRunArtifactCleanupResultRead,
     CloudRunArtifactDescriptorRead,
+    CloudRunArtifactDownloadRead,
     CloudRunArtifactManifestRead,
 )
 from ai_company_api.services.aliyun_config import AliyunConfigurationError
@@ -138,6 +142,90 @@ def read_cloud_run_artifact_content(
     return CloudRunArtifactContentRead(
         artifact=source.descriptor,
         content=content,
+    )
+
+
+def build_cloud_run_artifact_download(
+    session: Session,
+    *,
+    cloud_run_id: str,
+    artifact_id: str,
+) -> CloudRunArtifactDownloadRead:
+    source = _get_cloud_run_artifact_source(
+        session,
+        cloud_run_id=cloud_run_id,
+        artifact_id=artifact_id,
+    )
+    return CloudRunArtifactDownloadRead(
+        artifact=source.descriptor,
+        download_url=source.descriptor.download_url,
+        expires_at=source.descriptor.expires_at,
+        content_type=source.descriptor.content_type,
+        size_bytes=source.descriptor.size_bytes,
+        sha256=source.descriptor.sha256,
+    )
+
+
+def cleanup_expired_cloud_run_artifacts(
+    session: Session,
+    *,
+    request: CloudRunArtifactCleanupRequest,
+) -> CloudRunArtifactCleanupResultRead:
+    before = request.before or utc_now()
+    normalized_before = _as_utc(before)
+
+    stored_objects = session.exec(
+        select(CloudRunStoredObject)
+        .where(CloudRunStoredObject.expires_at.is_not(None))
+        .where(CloudRunStoredObject.expires_at <= normalized_before)
+        .order_by(CloudRunStoredObject.expires_at, CloudRunStoredObject.id)
+        .limit(request.limit)
+    ).all()
+
+    items: list[CloudRunArtifactCleanupItemRead] = []
+    deleted_count = 0
+    lifecycle_only_count = 0
+    for stored_object in stored_objects:
+        kind = _artifact_kind_or_none(stored_object.kind)
+        if kind is None:
+            continue
+
+        provider = _provider_name_from_uri(stored_object.uri)
+        redacted_uri = _redact_uri(stored_object.uri)
+        artifact_id = _stable_artifact_id(kind, redacted_uri, stored_object.sha256)
+        if provider == "local_inline":
+            items.append(
+                CloudRunArtifactCleanupItemRead(
+                    artifact_id=artifact_id,
+                    cloud_run_id=stored_object.cloud_run_id,
+                    provider=provider,
+                    action="deleted",
+                    redacted_uri=redacted_uri,
+                    reason="local_inline_expired",
+                )
+            )
+            session.delete(stored_object)
+            deleted_count += 1
+            continue
+
+        items.append(
+            CloudRunArtifactCleanupItemRead(
+                artifact_id=artifact_id,
+                cloud_run_id=stored_object.cloud_run_id,
+                provider=provider,
+                action="lifecycle_only",
+                redacted_uri=redacted_uri,
+                reason="external_provider_cleanup_not_supported_by_api",
+            )
+        )
+        lifecycle_only_count += 1
+
+    session.commit()
+    return CloudRunArtifactCleanupResultRead(
+        before=normalized_before,
+        deleted_count=deleted_count,
+        lifecycle_only_count=lifecycle_only_count,
+        items=items,
     )
 
 
