@@ -1949,25 +1949,27 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
       return mapCloudRunLogWindowCard(window);
     },
     async getCloudRunArtifactManifest(cloudRunId: string) {
+      const encodedCloudRunId = encodeURIComponent(cloudRunId);
       const response = await fetch(
-        apiUrl(options.baseUrl, `/cloud-runs/${cloudRunId}/artifacts/manifest`)
+        apiUrl(options.baseUrl, `/cloud-runs/${encodedCloudRunId}/artifacts/manifest`)
       );
       return readJsonResponse<ApiCloudRunArtifactManifest>(
         response,
-        `GET /cloud-runs/${cloudRunId}/artifacts/manifest`
+        `GET /cloud-runs/${encodedCloudRunId}/artifacts/manifest`
       );
     },
     async getCloudRunArtifactContent(cloudRunId: string, artifactId: string) {
+      const encodedCloudRunId = encodeURIComponent(cloudRunId);
       const encodedArtifactId = encodeURIComponent(artifactId);
       const response = await fetch(
         apiUrl(
           options.baseUrl,
-          `/cloud-runs/${cloudRunId}/artifacts/${encodedArtifactId}/content`
+          `/cloud-runs/${encodedCloudRunId}/artifacts/${encodedArtifactId}/content`
         )
       );
       return readJsonResponse<ApiCloudRunArtifactContent>(
         response,
-        `GET /cloud-runs/${cloudRunId}/artifacts/${encodedArtifactId}/content`
+        `GET /cloud-runs/${encodedCloudRunId}/artifacts/${encodedArtifactId}/content`
       );
     },
     async createPullRequest(approvalId: string) {

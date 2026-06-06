@@ -1296,7 +1296,7 @@ describe("desktop API clients", () => {
       .mockResolvedValueOnce(
         jsonResponse({
           version: 1,
-          cloud_run_id: "cloud_run_api",
+          cloud_run_id: "cloud/run api",
           workspace_id: "workspace_api",
           generated_at: "2026-06-06T00:00:00Z",
           retention: {
@@ -1306,8 +1306,8 @@ describe("desktop API clients", () => {
           },
           artifacts: [
             {
-              id: "diff_abc",
-              cloud_run_id: "cloud_run_api",
+              id: "diff/abc ?x",
+              cloud_run_id: "cloud/run api",
               kind: "diff",
               label: "Unified diff",
               provider: "local_inline",
@@ -1319,7 +1319,8 @@ describe("desktop API clients", () => {
               created_at: "2026-06-06T00:00:00Z",
               expires_at: "2026-06-13T00:00:00Z",
               retention_policy: "development_default",
-              download_url: "/cloud-runs/cloud_run_api/artifacts/diff_abc/content"
+              download_url:
+                "/cloud-runs/cloud%2Frun%20api/artifacts/diff%2Fabc%20%3Fx/content"
             }
           ]
         })
@@ -1327,8 +1328,8 @@ describe("desktop API clients", () => {
       .mockResolvedValueOnce(
         jsonResponse({
           artifact: {
-            id: "diff_abc",
-            cloud_run_id: "cloud_run_api",
+            id: "diff/abc ?x",
+            cloud_run_id: "cloud/run api",
             kind: "diff",
             label: "Unified diff",
             provider: "local_inline",
@@ -1340,7 +1341,8 @@ describe("desktop API clients", () => {
             created_at: "2026-06-06T00:00:00Z",
             expires_at: "2026-06-13T00:00:00Z",
             retention_policy: "development_default",
-            download_url: "/cloud-runs/cloud_run_api/artifacts/diff_abc/content"
+            download_url:
+              "/cloud-runs/cloud%2Frun%20api/artifacts/diff%2Fabc%20%3Fx/content"
           },
           content: "diff --git a/file b/file\n+api"
         })
@@ -1351,18 +1353,18 @@ describe("desktop API clients", () => {
       baseUrl: "http://127.0.0.1:8000/",
       projectId: "project_demo"
     });
-    const manifest = await client.getCloudRunArtifactManifest("cloud_run_api");
-    const content = await client.getCloudRunArtifactContent("cloud_run_api", "diff_abc");
+    const manifest = await client.getCloudRunArtifactManifest("cloud/run api");
+    const content = await client.getCloudRunArtifactContent("cloud/run api", "diff/abc ?x");
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/artifacts/manifest"
+      "http://127.0.0.1:8000/cloud-runs/cloud%2Frun%20api/artifacts/manifest"
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/artifacts/diff_abc/content"
+      "http://127.0.0.1:8000/cloud-runs/cloud%2Frun%20api/artifacts/diff%2Fabc%20%3Fx/content"
     );
-    expect(manifest.artifacts[0].id).toBe("diff_abc");
+    expect(manifest.artifacts[0].id).toBe("diff/abc ?x");
     expect(content.content).toContain("diff --git");
   });
 

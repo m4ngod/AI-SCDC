@@ -59,13 +59,6 @@ export function TaskBoard({
     return `${artifact.kind} | ${artifact.content_type} | ${artifact.size_bytes} bytes`;
   }
 
-  function isTextArtifact(artifact: CloudRunArtifactCard) {
-    return (
-      artifact.content_type.startsWith("text/") ||
-      artifact.content_type === "application/json"
-    );
-  }
-
   function artifactGroups(artifacts: CloudRunArtifactCard[]) {
     return artifacts.reduce<Array<{ kind: string; artifacts: CloudRunArtifactCard[] }>>(
       (groups, artifact) => {
@@ -315,7 +308,7 @@ export function TaskBoard({
                       <ul className="task-artifact-list">
                         {group.artifacts.map((artifact) => (
                           <li className="task-artifact-item" key={artifact.id}>
-                            {onOpenCloudRunArtifact && isTextArtifact(artifact) ? (
+                            {onOpenCloudRunArtifact ? (
                               <button
                                 type="button"
                                 className="task-artifact-label-button"

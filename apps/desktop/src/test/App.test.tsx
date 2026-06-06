@@ -254,6 +254,22 @@ function cloudRunArtifactManifestFixture(): CloudRunArtifactManifestCard {
         expires_at: "2026-06-13T00:00:00Z",
         retention_policy: "development_default",
         download_url: "/cloud-runs/cloud_run_test/artifacts/log_artifact_test/content"
+      },
+      {
+        id: "binary_artifact_test",
+        cloud_run_id: "cloud_run_test",
+        kind: "command_result",
+        label: "Binary artifact",
+        provider: "local_inline",
+        uri: "local-inline://cloud-run-objects/binary_artifact_test",
+        redacted_uri: "local-inline://cloud-run-objects/binary_artifact_test",
+        sha256: "c".repeat(64),
+        size_bytes: 10,
+        content_type: "application/octet-stream",
+        created_at: "2026-06-06T00:00:00Z",
+        expires_at: "2026-06-13T00:00:00Z",
+        retention_policy: "development_default",
+        download_url: "/cloud-runs/cloud_run_test/artifacts/binary_artifact_test/content"
       }
     ]
   };
@@ -1410,7 +1426,7 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders cloud run artifacts from manifest and opens text previews", async () => {
+  it("renders cloud run artifacts from manifest and surfaces preview errors", async () => {
     const user = userEvent.setup();
     const task: TaskCard = {
       ...taskCardFixture("Browse cloud artifacts"),
@@ -1421,7 +1437,8 @@ describe("App", () => {
       .mockResolvedValue(cloudRunArtifactManifestFixture());
     const getCloudRunArtifactContent = vi
       .fn<ConsoleApiClient["getCloudRunArtifactContent"]>()
-      .mockResolvedValue(cloudRunArtifactContentFixture());
+      .mockResolvedValueOnce(cloudRunArtifactContentFixture())
+      .mockRejectedValueOnce(new Error("Unsupported preview"));
     const apiClient = createMockApiClient({
       listTasks: vi.fn().mockResolvedValue([task]),
       startCloudRun: vi.fn().mockResolvedValue({
@@ -1450,6 +1467,9 @@ describe("App", () => {
       within(board).getByRole("button", { name: "Unified diff" })
     ).toBeInTheDocument();
     expect(within(board).getByText("Log stream")).toBeInTheDocument();
+    expect(
+      within(board).getByRole("button", { name: "Binary artifact" })
+    ).toBeInTheDocument();
 
     await user.click(within(board).getByRole("button", { name: "Unified diff" }));
 
@@ -1458,6 +1478,16 @@ describe("App", () => {
       "diff_artifact_test"
     );
     expect(await within(board).findByText(/artifact preview/)).toBeInTheDocument();
+
+    await user.click(within(board).getByRole("button", { name: "Binary artifact" }));
+
+    expect(getCloudRunArtifactContent).toHaveBeenCalledWith(
+      "cloud_run_test",
+      "binary_artifact_test"
+    );
+    expect(await within(board).findByRole("alert")).toHaveTextContent(
+      "Failed to load cloud artifact"
+    );
   });
 
   it("cancels queued cloud runs and refreshes cloud logs", async () => {
