@@ -302,7 +302,8 @@ Completed:
 15. Real remote worker execution skeleton with protected payload fetch, private GitHub clone credential boundary, command/test execution, diff capture, artifact uploads, and redacted completion.
 16. Bounded cloud-run log polling with cursor windows, safe remote log-stream reads, and optional provider-native log sync.
 17. Aliyun MNS pull-worker claims for protected MNS deliveries with callback-token hash storage, message-id binding, internal-only queue receipts, and post-terminal MNS acknowledgement or recoverable delete failure handling.
-18. Aliyun operational hardening with retained MNS receipt recovery, best-effort ECI terminal cleanup by persisted runtime id, least-privilege RAM examples, provider failure runbooks, OSS lifecycle guidance, and production KMS boundary documentation.
+18. Cloud-run artifact plane with manifest/list/detail/content APIs, provider-neutral download descriptors, retention metadata, local-inline cleanup, external lifecycle-only cleanup intent, and desktop artifact browser.
+19. Aliyun operational hardening with retained MNS receipt recovery, best-effort ECI terminal cleanup by persisted runtime id, least-privilege RAM examples, provider failure runbooks, OSS lifecycle guidance, and production KMS boundary documentation.
 
 Future:
 

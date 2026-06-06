@@ -14,6 +14,21 @@ instead of signed provider URLs, redacts provider URI query strings and
 fragments for display, deletes expired `local_inline` rows, and reports external
 provider cleanup as lifecycle-only operator intent.
 
+## Phase 13A Carry-Forward Operations
+
+Phase 13A Aliyun MNS/ECI cleanup helpers remain service-level only; they are
+not public destructive HTTP routes. OSS cleanup remains lifecycle- and
+operator-owned, while Phase 12D expired-artifact cleanup is limited to local
+`local_inline` rows and does not delete provider objects.
+
+`DevSecretVault` remains development-only. Production use requires a
+KMS-backed `SecretVault` implementation before commercial beta.
+
+Operator references:
+
+- [Aliyun operational runbook](docs/operations/aliyun-operational-runbook.md)
+- [Aliyun RAM policy examples](docs/operations/aliyun-ram-policies.md)
+
 ## Verification
 
 - `pytest apps/api/tests/test_cloud_run_api.py -q -k "artifact_manifest or artifact_content or download_is_local or cleanup_expired or returns_gone"`: 10 passed, 161 deselected, 1 warning in 4.79s.

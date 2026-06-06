@@ -813,7 +813,7 @@ artifacts without scraping individual cloud-run fields.
 
 ```powershell
 $base = "http://127.0.0.1:8000"
-$cloudRunId = $processedCloudRun.cloud_run.id
+$cloudRunId = $cloudRun.cloud_run.id
 
 $manifest = Invoke-RestMethod -Uri "$base/cloud-runs/$cloudRunId/artifacts/manifest"
 $manifest.artifacts | Select-Object kind,label,provider,size_bytes,content_type,redacted_uri
