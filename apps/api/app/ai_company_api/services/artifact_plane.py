@@ -194,18 +194,32 @@ def cleanup_expired_cloud_run_artifacts(
         redacted_uri = _redact_uri(stored_object.uri)
         artifact_id = _stable_artifact_id(kind, redacted_uri, stored_object.sha256)
         if provider == "local_inline":
+            if _local_inline_object_id(stored_object.uri) == stored_object.id:
+                items.append(
+                    CloudRunArtifactCleanupItemRead(
+                        artifact_id=artifact_id,
+                        cloud_run_id=stored_object.cloud_run_id,
+                        provider=provider,
+                        action="deleted",
+                        redacted_uri=redacted_uri,
+                        reason="local_inline_expired",
+                    )
+                )
+                session.delete(stored_object)
+                deleted_count += 1
+                continue
+
             items.append(
                 CloudRunArtifactCleanupItemRead(
                     artifact_id=artifact_id,
                     cloud_run_id=stored_object.cloud_run_id,
                     provider=provider,
-                    action="deleted",
+                    action="lifecycle_only",
                     redacted_uri=redacted_uri,
-                    reason="local_inline_expired",
+                    reason="local_inline_reference_mismatch",
                 )
             )
-            session.delete(stored_object)
-            deleted_count += 1
+            lifecycle_only_count += 1
             continue
 
         items.append(

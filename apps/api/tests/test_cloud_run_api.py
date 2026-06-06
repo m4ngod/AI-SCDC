@@ -7032,6 +7032,65 @@ def test_cloud_run_artifact_cleanup_expired_deletes_local_and_reports_external(
         assert session.get(CloudRunStoredObject, external_object_id) is not None
 
 
+def test_cloud_run_artifact_cleanup_expired_keeps_malformed_local_inline_rows(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    expired_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        malformed_object = CloudRunStoredObject(
+            workspace_id=cloud_run.workspace_id,
+            cloud_run_id=cloud_run.id,
+            kind="log",
+            uri=(
+                "local-inline://evil-authority/not-this-row"
+                "?signature=secret#frag"
+            ),
+            sha256="c" * 64,
+            size_bytes=13,
+            content_type="text/plain",
+            text_content="malformed log",
+            expires_at=expired_at,
+            retention_policy="development_default",
+        )
+        session.add(malformed_object)
+        session.commit()
+        malformed_object_id = malformed_object.id
+
+    response = client.post(
+        "/cloud-runs/artifacts/cleanup-expired",
+        json={
+            "before": "2026-06-06T00:00:00+00:00",
+            "limit": 10,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted_count"] == 0
+    assert body["lifecycle_only_count"] == 1
+    assert "signature=secret" not in str(body)
+    assert "#frag" not in str(body)
+    item = body["items"][0]
+    assert item["provider"] == "local_inline"
+    assert item["action"] == "lifecycle_only"
+    assert item["reason"] == "local_inline_reference_mismatch"
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        assert session.get(CloudRunStoredObject, malformed_object_id) is not None
+
+
 def test_cloud_run_artifact_content_returns_gone_for_expired_local_object(
     tmp_path: Path,
 ) -> None:
