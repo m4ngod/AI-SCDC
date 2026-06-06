@@ -6952,6 +6952,7 @@ def test_cloud_run_artifact_external_refs_are_redacted_and_download_is_local(
     )
     assert download["sha256"] == "a" * 64
     assert download["size_bytes"] == 41
+    assert download["content_type"] == "application/json"
     assert "signature=secret" not in str(download)
     assert "https://" not in str(download)
 
