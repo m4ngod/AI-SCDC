@@ -726,6 +726,68 @@ $env:AI_SCDC_ALIYUN_ECI_IMAGE = $AcrImage
 $env:AI_SCDC_API_PUBLIC_BASE_URL = "<URL reachable from ECI>"
 ```
 
+Start a cloud run with Aliyun providers:
+
+```powershell
+$cloudRun = Invoke-RestMethod `
+  -Method Post `
+  -Uri "$ApiBase/tasks/$TaskId/cloud-runs" `
+  -ContentType "application/json" `
+  -Body (JsonBody @{
+    repo_id = $RepoId
+    queue_provider = "aliyun_mns"
+    storage_provider = "aliyun_oss"
+    runtime_provider = "aliyun_eci"
+  })
+```
+
+Expected output includes `queue_provider = aliyun_mns`, `storage_provider =
+aliyun_oss`, `runtime_provider = aliyun_eci`, no MNS message ID or receipt, an
+ECI runtime job ID, and `oss://` artifact/log URIs.
+
+### Phase 10D callback-token hardening
+
+Phase 10D generates a run-scoped `AI_SCDC_CALLBACK_TOKEN`, injects it into the
+ECI worker environment, and requires the worker to send it on lease, heartbeat,
+artifact-upload, and completion callbacks. The raw callback token, token hash,
+Aliyun secrets, and queue receipts must not appear in API responses.
+
+When Aliyun ECI uses the protected assigned-run launch contract, the API
+injects:
+
+```text
+AI_SCDC_CLOUD_RUN_ID
+AI_SCDC_WORKER_ID
+AI_SCDC_CALLBACK_TOKEN
+```
+
+### Phase 11 real remote worker execution
+
+Phase 11 remote workers fetch a protected execution payload after claiming a
+lease. The payload includes the selected sandbox profile commands and the
+repository's active clone credential, returned only through the
+callback-token-protected worker payload. Outside that protected payload
+response, the clone credential must not appear in API responses, logs,
+artifacts, or completion payloads.
+
+### Phase 12A bounded log polling
+
+Phase 12A adds `GET /cloud-runs/{cloud_run_id}/logs/window` for bounded log
+polling. The endpoint accepts an opaque `after` cursor, `limit`, and
+`include_stream`; it returns persisted control-plane log entries and, when
+complete object metadata is present, redacted remote log-stream lines. This
+remains a polling API, not live WebSocket or SSE streaming. The legacy `/logs`
+endpoint remains available for full-list compatibility.
+
+### Phase 12B provider-native log sync
+
+Phase 12B adds optional `sync_stream=true`, which refreshes persisted
+log-stream metadata before polling for providers that support it. The
+deterministic `remote_stub` refreshes a bounded object-storage log snapshot,
+and `aliyun_eci` uses the `DescribeContainerLog` seam.
+
+### Phase 12C Aliyun MNS pull-worker notes
+
 Phase 12C adds the MNS pull-worker capability; it does not replace the
 existing assigned-run launch contract for Aliyun ECI workers. A cloud run
 started with `queue_provider=aliyun_mns` and no remote runtime creates a
@@ -745,16 +807,6 @@ AI_SCDC_STORAGE_PROVIDER=aliyun_oss
 AI_SCDC_MNS_WAIT_SECONDS=3
 ```
 
-Aliyun ECI launch still supports and currently uses assigned-run mode when the
-protected worker identity and callback environment variables are provided. In
-that mode the API injects:
-
-```text
-AI_SCDC_CLOUD_RUN_ID
-AI_SCDC_WORKER_ID
-AI_SCDC_CALLBACK_TOKEN
-```
-
 For protected Aliyun pull-mode claims, the worker sends queue metadata on
 claim, including the MNS message ID and receipt plus the callback token. The
 API accepts the receipt only when the claimed MNS message ID matches the
@@ -763,47 +815,6 @@ receipt deletion or acknowledgement after successful lease completion, so the
 default worker launch path does not double-delete receipts. The API stores
 only the callback token hash, the raw token appears only on controlled
 delivery surfaces, and `queue_receipt` remains internal-only.
-
-Start a cloud run with Aliyun providers:
-
-```powershell
-$cloudRun = Invoke-RestMethod `
-  -Method Post `
-  -Uri "$ApiBase/tasks/$TaskId/cloud-runs" `
-  -ContentType "application/json" `
-  -Body (JsonBody @{
-    repo_id = $RepoId
-    queue_provider = "aliyun_mns"
-    storage_provider = "aliyun_oss"
-    runtime_provider = "aliyun_eci"
-  })
-```
-
-Expected output includes `queue_provider = aliyun_mns`, `storage_provider =
-aliyun_oss`, `runtime_provider = aliyun_eci`, no MNS message ID or receipt, an
-ECI runtime job ID, and `oss://` artifact/log URIs. The API generates a run-scoped
-`AI_SCDC_CALLBACK_TOKEN`, injects it into the ECI worker environment, and
-requires the worker to send it on lease, heartbeat, artifact-upload, and
-completion callbacks. The raw callback token, token hash, Aliyun secrets, and
-queue receipts must not appear in API responses.
-
-Phase 11 remote workers fetch a protected execution payload after claiming a
-lease. The payload includes the selected sandbox profile commands and the
-repository's active clone credential, returned only through the
-callback-token-protected worker payload. Outside that protected payload
-response, the clone credential must not appear in API responses, logs,
-artifacts, or completion payloads.
-
-Phase 12A adds `GET /cloud-runs/{cloud_run_id}/logs/window` for bounded log
-polling. The endpoint accepts an opaque `after` cursor, `limit`, and
-`include_stream`; it returns persisted control-plane log entries and, when
-complete object metadata is present, redacted remote log-stream lines. Phase
-12B adds optional `sync_stream=true`, which refreshes persisted log-stream
-metadata before polling for providers that support it. The deterministic
-`remote_stub` refreshes a bounded object-storage log snapshot, and
-`aliyun_eci` uses the `DescribeContainerLog` seam. This remains a polling API,
-not live WebSocket or SSE streaming. The legacy `/logs` endpoint remains
-available for full-list compatibility.
 
 ### Phase 12D artifact plane smoke
 
