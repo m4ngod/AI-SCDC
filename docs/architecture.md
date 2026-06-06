@@ -239,9 +239,29 @@ double-delete receipts. If delete fails, the terminal cloud-run state remains
 committed and the stored receipt is retained for recovery while the public
 cloud-run status exposes only redacted provider metadata.
 
-Phase 12 does not add WebSockets, Server-Sent Events, SLS-managed log stores,
-artifact browser UI, model-backed reviewer or debugger agents, production KMS,
-or a broad provider package split.
+Phase 12D completes the artifact/log plane goal from the original Phase 12
+roadmap. The API now exposes
+`GET /cloud-runs/{cloud_run_id}/artifacts/manifest`, artifact list/detail/content
+endpoints, provider-neutral download descriptors, retention metadata, and
+`POST /cloud-runs/artifacts/cleanup-expired`. The artifact plane builds
+descriptors from cloud-run manifest/log metadata, local-inline stored objects,
+and patch-artifact diff fallback while preserving workspace and run-scope
+checks.
+
+The artifact plane does not return signed provider URLs or delete Aliyun OSS
+objects. It redacts provider refs for display by removing query strings and
+fragments, validates content reads through existing object-storage integrity
+checks, deletes only expired `local_inline` rows, and reports external-provider
+cleanup as lifecycle-only operator intent.
+
+The desktop now renders a compact artifact browser inside the cloud-run task
+detail area. It shows retention policy, artifact count, grouped artifact
+metadata, redacted refs, and inline text previews for readable artifacts.
+
+Phase 12 still does not add WebSockets, Server-Sent Events, SLS-managed log
+stores, model-backed reviewer or debugger agents, production KMS, or billing.
+Phase 12D intentionally keeps the artifact browser minimal and scoped to the
+existing task detail area.
 
 ## Phase 13A Boundary
 

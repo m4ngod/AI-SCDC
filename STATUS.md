@@ -1,37 +1,32 @@
-# Phase 13A Status
+# Phase 12D Artifact Plane Status
 
 ## Scope
 
-Completed Aliyun operational hardening for the current MNS/OSS/ECI execution
-path. The API now has service-level helpers for retrying retained MNS receipt
-deletion and best-effort ECI terminal cleanup by persisted runtime id. Cleanup
-success and failure paths append redacted control-plane logs and do not expose
-callback tokens, queue receipts, access keys, signed URLs, or raw provider
-secrets.
+Phase 12D completes the remaining original Phase 12 artifact plane targets
+after Phase 12A, 12B, 12C, and 13A. The API exposes cloud-run artifact
+manifests, artifact list/detail/content endpoints, provider-neutral download
+descriptors, retention metadata, and expired-artifact cleanup. The desktop task
+board can display manifest artifacts and open text previews.
 
-No public destructive cleanup endpoint was added. OSS object cleanup remains a
-bucket lifecycle responsibility until authenticated organization-scoped
-operator controls exist. `DevSecretVault` remains development-only and must be
-replaced by a KMS-backed `SecretVault` implementation before commercial beta.
-
-## Operator Docs
-
-- [Aliyun operational runbook](docs/operations/aliyun-operational-runbook.md)
-- [Aliyun RAM policy examples](docs/operations/aliyun-ram-policies.md)
+The artifact plane keeps provider-specific storage operations behind the
+existing object-storage boundary. It returns local API download descriptors
+instead of signed provider URLs, redacts provider URI query strings and
+fragments for display, deletes expired `local_inline` rows, and reports external
+provider cleanup as lifecycle-only operator intent.
 
 ## Verification
 
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "retained_receipt_recovery or terminal_cleanup or aliyun_mns_completion_delete_failure or aliyun_eci_submission_cleans_up"` -> 10 passed, 151 deselected, 1 warning in 5.77s
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "aliyun_mns or protected_aliyun or protected_worker or aliyun_eci"` -> 41 passed, 120 deselected, 1 warning in 16.42s
-- `pytest apps/api/tests/test_aliyun_clients.py -q` -> 15 passed in 0.05s
-- `pytest apps/api/tests/test_remote_worker.py -q` -> 48 passed in 0.17s
-- `pytest apps/api/tests -q` -> 465 passed, 1 warning in 196.92s
-- `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> 34 passed in 1.81s
-- `pnpm typecheck` -> `apps/desktop` and `packages/agent-protocol` completed
-- `git diff --check` -> passed
-- `rg -n "retry_retained_mns_queue_receipt_delete|cleanup_aliyun_eci_terminal_runtime_job" apps/api/app/ai_company_api/api/routes.py` -> no direct route-level provider helper references found
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "artifact_manifest or artifact_content or download_is_local or cleanup_expired or returns_gone"`: 10 passed, 161 deselected, 1 warning in 4.79s.
+- `pytest apps/api/tests/test_cloud_object_storage.py -q`: 11 passed in 3.93s.
+- `pytest apps/api/tests -q`: 478 passed, 1 warning in 191.46s (0:03:11).
+- `pnpm --filter @ai-scdc/desktop test -- App.test.tsx client.test.ts`: 2 test files passed, 75 tests passed in 10.89s.
+- `pnpm typecheck`: passed; `apps/desktop` and `packages/agent-protocol` completed.
+- `git diff --check`: passed; emitted Git LF-to-CRLF working-copy warnings for `README.md`, `STATUS.md`, `docs/architecture.md`, and `docs/superpowers/status.md`.
 
 ## Warnings
 
 - Existing `StarletteDeprecationWarning`: `starlette.testclient` warns that
-  using `httpx` is deprecated and recommends `httpx2`.
+  using `httpx` with `starlette.testclient` is deprecated and recommends
+  `httpx2`.
+- Git reported LF-to-CRLF working-copy warnings for the four edited Markdown
+  files during `git diff --check`.

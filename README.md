@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, Phase 10A remote worker control-plane contract, Phase 10B provider-neutral remote execution-plane contract, Phase 10C Aliyun provider MVP, Phase 10D run-scoped remote worker callback token hardening, Phase 11 real remote worker execution skeleton, Phase 12A bounded cloud-run log polling and safe remote log-stream reads, Phase 12B optional provider-native log sync, Phase 12C Aliyun MNS pull-worker receipt handling, and Phase 13A Aliyun operational hardening for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, Phase 10A remote worker control-plane contract, Phase 10B provider-neutral remote execution-plane contract, Phase 10C Aliyun provider MVP, Phase 10D run-scoped remote worker callback token hardening, Phase 11 real remote worker execution skeleton, Phase 12A bounded cloud-run log polling and safe remote log-stream reads, Phase 12B optional provider-native log sync, Phase 12C Aliyun MNS pull-worker receipt handling, Phase 12D cloud-run artifact manifest and retention plane, and Phase 13A Aliyun operational hardening for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -804,6 +804,35 @@ metadata before polling for providers that support it. The deterministic
 `aliyun_eci` uses the `DescribeContainerLog` seam. This remains a polling API,
 not live WebSocket or SSE streaming. The legacy `/logs` endpoint remains
 available for full-list compatibility.
+
+### Phase 12D artifact plane smoke
+
+Phase 12D adds a provider-neutral artifact manifest and cleanup seam for cloud
+runs. Clients can locate diff, log, command-result, test-result, and manifest
+artifacts without scraping individual cloud-run fields.
+
+```powershell
+$base = "http://127.0.0.1:8000"
+$cloudRunId = $processedCloudRun.cloud_run.id
+
+$manifest = Invoke-RestMethod -Uri "$base/cloud-runs/$cloudRunId/artifacts/manifest"
+$manifest.artifacts | Select-Object kind,label,provider,size_bytes,content_type,redacted_uri
+
+$diff = $manifest.artifacts | Where-Object { $_.kind -eq "diff" } | Select-Object -First 1
+if ($diff) {
+  Invoke-RestMethod -Uri "$base/cloud-runs/$cloudRunId/artifacts/$($diff.id)/content"
+  Invoke-RestMethod -Method Post -Uri "$base/cloud-runs/$cloudRunId/artifacts/$($diff.id)/download"
+}
+
+Invoke-RestMethod -Method Post `
+  -Uri "$base/cloud-runs/artifacts/cleanup-expired" `
+  -ContentType "application/json" `
+  -Body (@{ before = (Get-Date).ToUniversalTime().ToString("o"); limit = 100 } | ConvertTo-Json)
+```
+
+The manifest response redacts provider URI query strings and fragments. The
+download response returns a local API URL, not a signed OSS URL. Cleanup deletes
+expired `local_inline` rows and reports `aliyun_oss` rows as lifecycle-only.
 
 Cleanup after smoke:
 

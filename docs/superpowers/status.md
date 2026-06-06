@@ -4,9 +4,11 @@ Status last updated: 2026-06-06
 
 ## Current Phase
 
-The project is through Phase 13A: Aliyun operational hardening for MNS receipt
-recovery, ECI terminal cleanup, RAM policy examples, provider runbooks, OSS
-lifecycle guidance, and production KMS boundaries.
+The project is through Phase 13A, with Phase 12D now completing the original
+Phase 12 artifact plane: cloud-run artifact manifests, safe artifact
+listing/detail/content APIs, provider-neutral download descriptors, retention
+metadata, local-inline cleanup, external lifecycle-only cleanup intent, and a
+minimal desktop artifact browser.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -67,7 +69,11 @@ tests, README smoke instructions, and git history.
     callback-token hash storage, message-id binding, internal-only queue
     receipts, and post-terminal MNS acknowledgement or recoverable delete
     failure handling.
-18. Phase 13A Aliyun operational hardening: service-level MNS receipt recovery,
+18. Phase 12D artifact plane completion: manifest/list/detail/content APIs,
+    provider-neutral download descriptors, retention metadata, local-inline
+    cleanup, external lifecycle-only cleanup intent, and desktop artifact
+    browsing.
+19. Phase 13A Aliyun operational hardening: service-level MNS receipt recovery,
     best-effort ECI terminal cleanup, redacted cleanup logs, least-privilege RAM
     examples, provider failure runbooks, OSS lifecycle guidance, and production
     KMS boundaries.
