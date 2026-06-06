@@ -15,6 +15,7 @@ from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
     CloudRun,
     CloudRunLogEntry,
+    CloudRunStoredObject,
     TaskEvent,
     GitHubCredential,
     LocalTaskRun,
@@ -125,6 +126,93 @@ def create_cloud_task(
     session.refresh(repository)
     session.refresh(task)
     return project, repository, task
+
+
+def store_cloud_run_artifact_ref(
+    session: Session,
+    cloud_run: CloudRun,
+    *,
+    kind: str,
+    content: str,
+    content_type: str = "text/plain",
+    expires_at: datetime | None = None,
+    retention_policy: str | None = "development_default",
+):
+    return get_object_storage_provider("local_inline").put_text(
+        session,
+        ObjectStorageWrite(
+            workspace_id=cloud_run.workspace_id,
+            cloud_run_id=cloud_run.id,
+            kind=kind,
+            content=content,
+            content_type=content_type,
+            expires_at=expires_at,
+            retention_policy=retention_policy,
+        ),
+    )
+
+
+def attach_phase_12d_artifacts(
+    session: Session,
+    cloud_run: CloudRun,
+    *,
+    expires_at: datetime | None = None,
+) -> dict[str, object]:
+    refs = {
+        "diff": store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="diff",
+            content="diff --git a/AI_SCDC.md b/AI_SCDC.md\n+phase 12d\n",
+            content_type="text/x-diff",
+            expires_at=expires_at,
+        ),
+        "log": store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="log",
+            content="worker started\nworker completed\n",
+            content_type="text/plain",
+            expires_at=expires_at,
+        ),
+        "command_result": store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="command_result",
+            content='{"command":"pytest -q","exit_code":0}',
+            content_type="application/json",
+            expires_at=expires_at,
+        ),
+        "test_result": store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="test_result",
+            content='{"status":"passed","total":1}',
+            content_type="application/json",
+            expires_at=expires_at,
+        ),
+        "manifest": store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="manifest",
+            content='{"version":1,"source":"worker"}',
+            content_type="application/json",
+            expires_at=expires_at,
+        ),
+    }
+    manifest_ref = refs["manifest"]
+    log_ref = refs["log"]
+    cloud_run.artifact_manifest_uri = manifest_ref.uri
+    cloud_run.artifact_manifest_sha256 = manifest_ref.sha256
+    cloud_run.artifact_manifest_size_bytes = manifest_ref.size_bytes
+    cloud_run.artifact_manifest_content_type = manifest_ref.content_type
+    cloud_run.log_stream_uri = log_ref.uri
+    cloud_run.log_stream_sha256 = log_ref.sha256
+    cloud_run.log_stream_size_bytes = log_ref.size_bytes
+    cloud_run.log_stream_content_type = log_ref.content_type
+    session.add(cloud_run)
+    session.commit()
+    return refs
 
 
 def create_profile_entity(
@@ -6475,6 +6563,181 @@ def test_cloud_run_logs_are_ordered_and_redacted(tmp_path: Path) -> None:
         if entry["event"] in {"same_time_a", "same_time_b"}
     ]
     assert same_time_events == ["same_time_a", "same_time_b"]
+
+
+def test_cloud_run_artifact_manifest_lists_manifest_diff_log_command_and_test_refs(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    expires_at = datetime(2026, 6, 13, tzinfo=timezone.utc)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        attach_phase_12d_artifacts(session, cloud_run, expires_at=expires_at)
+
+    manifest_response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/manifest"
+    )
+    assert manifest_response.status_code == 200
+    manifest = manifest_response.json()
+    assert manifest["version"] == 1
+    assert manifest["cloud_run_id"] == queued["id"]
+    assert manifest["workspace_id"] == "dev_workspace"
+    assert manifest["retention"]["policy"] == "development_default"
+    assert manifest["retention"]["cleanup_supported"] is True
+
+    artifacts_by_kind = {
+        artifact["kind"]: artifact
+        for artifact in manifest["artifacts"]
+    }
+    assert set(artifacts_by_kind) == {
+        "diff",
+        "log",
+        "command_result",
+        "test_result",
+        "manifest",
+    }
+    diff_artifact = artifacts_by_kind["diff"]
+    assert diff_artifact["id"].startswith("diff_")
+    assert diff_artifact["provider"] == "local_inline"
+    assert diff_artifact["uri"].startswith("local-inline://cloud-run-objects/")
+    assert diff_artifact["redacted_uri"] == diff_artifact["uri"]
+    assert diff_artifact["content_type"] == "text/x-diff"
+    assert diff_artifact["download_url"] == (
+        f"/cloud-runs/{queued['id']}/artifacts/{diff_artifact['id']}/content"
+    )
+    assert "diff --git" not in str(manifest)
+
+    list_response = client.get(f"/cloud-runs/{queued['id']}/artifacts")
+    assert list_response.status_code == 200
+    assert list_response.json() == manifest["artifacts"]
+
+    detail_response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/{diff_artifact['id']}"
+    )
+    assert detail_response.status_code == 200
+    assert detail_response.json() == diff_artifact
+
+
+def test_cloud_run_artifact_content_reads_text_and_rejects_other_run_artifact(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, first_task = create_cloud_task(session)
+        second_task = Task(
+            project_id=first_task.project_id,
+            title="Second cloud task",
+            role_required="backend",
+            status=TaskStatus.CREATED,
+            allowed_paths=["AI_SCDC_SECOND.md"],
+            required_tests=["python -V"],
+        )
+        session.add(second_task)
+        session.commit()
+        first_task_id = first_task.id
+        second_task_id = second_task.id
+        repo_id = repository.id
+
+    first_run = client.post(
+        f"/tasks/{first_task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    second_run = client.post(
+        f"/tasks/{second_task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        first_cloud_run = session.get(CloudRun, first_run["id"])
+        second_cloud_run = session.get(CloudRun, second_run["id"])
+        assert first_cloud_run is not None
+        assert second_cloud_run is not None
+        attach_phase_12d_artifacts(session, first_cloud_run)
+        attach_phase_12d_artifacts(session, second_cloud_run)
+
+    first_manifest = client.get(
+        f"/cloud-runs/{first_run['id']}/artifacts/manifest"
+    ).json()
+    second_manifest = client.get(
+        f"/cloud-runs/{second_run['id']}/artifacts/manifest"
+    ).json()
+    first_diff = next(
+        artifact
+        for artifact in first_manifest["artifacts"]
+        if artifact["kind"] == "diff"
+    )
+    second_diff = next(
+        artifact
+        for artifact in second_manifest["artifacts"]
+        if artifact["kind"] == "diff"
+    )
+
+    content_response = client.get(
+        f"/cloud-runs/{first_run['id']}/artifacts/{first_diff['id']}/content"
+    )
+    assert content_response.status_code == 200
+    assert content_response.json()["content"].startswith("diff --git")
+    assert content_response.json()["artifact"] == first_diff
+
+    wrong_run_response = client.get(
+        f"/cloud-runs/{first_run['id']}/artifacts/{second_diff['id']}/content"
+    )
+    assert wrong_run_response.status_code == 404
+    assert wrong_run_response.json()["detail"] == "Cloud run artifact not found"
+
+
+def test_cloud_run_artifact_content_rejects_integrity_mismatch(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        attach_phase_12d_artifacts(session, cloud_run)
+
+    diff_artifact = next(
+        artifact
+        for artifact in client.get(
+            f"/cloud-runs/{queued['id']}/artifacts/manifest"
+        ).json()["artifacts"]
+        if artifact["kind"] == "diff"
+    )
+    stored_object_id = diff_artifact["uri"].removeprefix(
+        "local-inline://cloud-run-objects/"
+    )
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        stored_object = session.get(CloudRunStoredObject, stored_object_id)
+        assert stored_object is not None
+        stored_object.text_content = "tampered"
+        session.add(stored_object)
+        session.commit()
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/{diff_artifact['id']}/content"
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Object storage content sha256 mismatch"
 
 
 def test_cloud_run_log_window_returns_bounded_pages_without_duplicates(

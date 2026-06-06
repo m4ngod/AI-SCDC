@@ -6,6 +6,9 @@ from sqlmodel import Session
 from ai_company_api.db.session import get_session_dependency
 from ai_company_api.schemas.api import (
     AgentRole,
+    CloudRunArtifactContentRead,
+    CloudRunArtifactDescriptorRead,
+    CloudRunArtifactManifestRead,
     CloudRunArtifactRefCreate,
     CloudRunArtifactUploadCreate,
     CloudRunCreate,
@@ -58,6 +61,12 @@ from ai_company_api.schemas.api import (
     TaskUpdate,
     UsageLedgerCreate,
     UsageLedgerRead,
+)
+from ai_company_api.services.artifact_plane import (
+    build_cloud_run_artifact_manifest,
+    get_cloud_run_artifact_descriptor,
+    list_cloud_run_artifacts,
+    read_cloud_run_artifact_content,
 )
 from ai_company_api.services.cloud_run_logs import list_cloud_run_log_window
 from ai_company_api.services.cloud_runner import (
@@ -636,6 +645,60 @@ def post_cloud_run_cancel(
     session: SessionDep,
 ) -> CloudRunRead:
     return cancel_cloud_run(session, cloud_run_id=cloud_run_id)
+
+
+@router.get(
+    "/cloud-runs/{cloud_run_id}/artifacts/manifest",
+    response_model=CloudRunArtifactManifestRead,
+)
+def get_cloud_run_artifact_manifest(
+    cloud_run_id: str,
+    session: SessionDep,
+) -> CloudRunArtifactManifestRead:
+    return build_cloud_run_artifact_manifest(session, cloud_run_id=cloud_run_id)
+
+
+@router.get(
+    "/cloud-runs/{cloud_run_id}/artifacts",
+    response_model=list[CloudRunArtifactDescriptorRead],
+)
+def get_cloud_run_artifacts(
+    cloud_run_id: str,
+    session: SessionDep,
+) -> list[CloudRunArtifactDescriptorRead]:
+    return list_cloud_run_artifacts(session, cloud_run_id=cloud_run_id)
+
+
+@router.get(
+    "/cloud-runs/{cloud_run_id}/artifacts/{artifact_id}",
+    response_model=CloudRunArtifactDescriptorRead,
+)
+def get_cloud_run_artifact(
+    cloud_run_id: str,
+    artifact_id: str,
+    session: SessionDep,
+) -> CloudRunArtifactDescriptorRead:
+    return get_cloud_run_artifact_descriptor(
+        session,
+        cloud_run_id=cloud_run_id,
+        artifact_id=artifact_id,
+    )
+
+
+@router.get(
+    "/cloud-runs/{cloud_run_id}/artifacts/{artifact_id}/content",
+    response_model=CloudRunArtifactContentRead,
+)
+def get_cloud_run_artifact_content(
+    cloud_run_id: str,
+    artifact_id: str,
+    session: SessionDep,
+) -> CloudRunArtifactContentRead:
+    return read_cloud_run_artifact_content(
+        session,
+        cloud_run_id=cloud_run_id,
+        artifact_id=artifact_id,
+    )
 
 
 @router.get(

@@ -367,6 +367,46 @@ class CloudRunLogWindowRead(BaseModel):
     has_more: bool
 
 
+ArtifactKind = Literal["diff", "log", "command_result", "test_result", "manifest"]
+
+
+class ArtifactRetentionRead(BaseModel):
+    policy: str
+    expires_at: datetime | None
+    cleanup_supported: bool
+
+
+class CloudRunArtifactDescriptorRead(BaseModel):
+    id: str
+    cloud_run_id: str
+    kind: ArtifactKind
+    label: str
+    provider: str
+    uri: str
+    redacted_uri: str
+    sha256: str
+    size_bytes: int
+    content_type: str
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+    retention_policy: str | None = None
+    download_url: str
+
+
+class CloudRunArtifactManifestRead(BaseModel):
+    version: int
+    cloud_run_id: str
+    workspace_id: str
+    generated_at: datetime
+    retention: ArtifactRetentionRead
+    artifacts: list[CloudRunArtifactDescriptorRead]
+
+
+class CloudRunArtifactContentRead(BaseModel):
+    artifact: CloudRunArtifactDescriptorRead
+    content: str
+
+
 class CloudRunResultRead(BaseModel):
     cloud_run: CloudRunRead
     patch_artifact: PatchArtifactRead | None = None
@@ -435,7 +475,7 @@ class CloudRunCommandResultCreate(BaseModel):
 
 
 class CloudRunArtifactRefCreate(BaseModel):
-    kind: Literal["diff", "log", "command_result", "test_result", "manifest"]
+    kind: ArtifactKind
     uri: str = Field(min_length=1)
     sha256: str = Field(min_length=64, max_length=64)
     size_bytes: int = Field(ge=0)
@@ -445,7 +485,7 @@ class CloudRunArtifactRefCreate(BaseModel):
 class CloudRunArtifactUploadCreate(BaseModel):
     worker_id: str = Field(min_length=1)
     callback_token: str | None = Field(default=None, min_length=1)
-    kind: Literal["diff", "log", "command_result", "test_result", "manifest"]
+    kind: ArtifactKind
     content: str = Field(max_length=2 * 1024 * 1024)
     content_type: str = "text/plain"
 
