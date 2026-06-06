@@ -1627,6 +1627,45 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps existing cloud run artifacts when manifest refresh fails", async () => {
+    const user = userEvent.setup();
+    const existingManifest = cloudRunArtifactManifestFixture();
+    const task: TaskCard = {
+      ...taskCardFixture("Cloud artifact fallback task"),
+      id: "task_cloud",
+      cloud_run: queuedCloudRunFixture(),
+      cloud_run_artifact_manifest: existingManifest
+    };
+    const getCloudRunArtifactManifest = vi
+      .fn<ConsoleApiClient["getCloudRunArtifactManifest"]>()
+      .mockRejectedValue(new Error("Manifest refresh failed"));
+    const processCloudRun = vi.fn<ConsoleApiClient["processCloudRun"]>().mockResolvedValue({
+      cloud_run: cloudRunFixture(),
+      patch_artifact: cloudPatchArtifactFixture()
+    });
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([task]),
+      processCloudRun,
+      getCloudRunArtifactManifest
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Process" }));
+
+    expect(processCloudRun).toHaveBeenCalledWith("cloud_run_test");
+    expect(getCloudRunArtifactManifest).toHaveBeenCalledWith("cloud_run_test");
+    expect(await within(board).findByText("PATCH_READY")).toBeInTheDocument();
+    expect(within(board).getByText("3 objects")).toBeInTheDocument();
+    expect(within(board).getByText("development_default")).toBeInTheDocument();
+    expect(within(board).getByRole("button", { name: "Unified diff" })).toBeInTheDocument();
+    expect(
+      within(board).getByText("local-inline://cloud-run-objects/diff_artifact_test")
+    ).toBeInTheDocument();
+  });
+
   it("runs a cloud task with sandbox profile keys after GitHub setup", async () => {
     const user = userEvent.setup();
     const startCloudRun = vi.fn<ConsoleApiClient["startCloudRun"]>().mockResolvedValue({
