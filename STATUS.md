@@ -31,17 +31,17 @@ Operator references:
 
 ## Verification
 
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "artifact_manifest or artifact_content or download_is_local or cleanup_expired or returns_gone"`: 10 passed, 161 deselected, 1 warning in 4.79s.
-- `pytest apps/api/tests/test_cloud_object_storage.py -q`: 11 passed in 3.93s.
-- `pytest apps/api/tests -q`: 478 passed, 1 warning in 191.46s (0:03:11).
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "artifact_manifest or artifact_content or download_is_local or cleanup_expired or returns_gone"`: 11 passed, 161 deselected, 1 warning in 5.63s.
+- `pytest apps/api/tests/test_cloud_object_storage.py -q`: 11 passed in 4.35s.
+- `pytest apps/api/tests -q`: 479 passed, 1 warning in 191.96s (0:03:11).
 - `pnpm --filter @ai-scdc/desktop test -- App.test.tsx client.test.ts`: 2 test files passed, 75 tests passed in 10.89s.
 - `pnpm typecheck`: passed; `apps/desktop` and `packages/agent-protocol` completed.
-- `git diff --check`: passed; emitted Git LF-to-CRLF working-copy warnings for `README.md`, `STATUS.md`, `docs/architecture.md`, and `docs/superpowers/status.md`.
+- `git diff --check`: passed; emitted Git LF-to-CRLF working-copy warnings for edited files.
 
 ## Warnings
 
 - Existing `StarletteDeprecationWarning`: `starlette.testclient` warns that
   using `httpx` with `starlette.testclient` is deprecated and recommends
   `httpx2`.
-- Git reported LF-to-CRLF working-copy warnings for the four edited Markdown
-  files during `git diff --check`.
+- Git reported LF-to-CRLF working-copy warnings for edited files during
+  `git diff --check`.

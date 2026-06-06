@@ -7032,6 +7032,76 @@ def test_cloud_run_artifact_cleanup_expired_deletes_local_and_reports_external(
         assert session.get(CloudRunStoredObject, external_object_id) is not None
 
 
+def test_cloud_run_artifact_cleanup_expired_limit_does_not_starve_local_delete(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    external_expired_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    local_expired_at = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        external_object = CloudRunStoredObject(
+            workspace_id=cloud_run.workspace_id,
+            cloud_run_id=cloud_run.id,
+            kind="manifest",
+            uri=(
+                "oss://ai-scdc-dev-artifacts/workspaces/dev_workspace/"
+                "cloud-runs/cloud_run/manifest.json?signature=secret#frag"
+            ),
+            sha256="b" * 64,
+            size_bytes=17,
+            content_type="application/json",
+            text_content="",
+            expires_at=external_expired_at,
+            retention_policy="oss_lifecycle",
+        )
+        session.add(external_object)
+        local_ref = store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="log",
+            content="expired local log",
+            expires_at=local_expired_at,
+            retention_policy="development_default",
+        )
+        session.commit()
+        local_object_id = local_ref.uri.removeprefix(
+            "local-inline://cloud-run-objects/"
+        )
+        external_object_id = external_object.id
+
+    response = client.post(
+        "/cloud-runs/artifacts/cleanup-expired",
+        json={
+            "before": "2026-06-06T00:00:00+00:00",
+            "limit": 1,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted_count"] == 1
+    assert body["lifecycle_only_count"] == 1
+    assert {item["action"] for item in body["items"]} == {
+        "deleted",
+        "lifecycle_only",
+    }
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        assert session.get(CloudRunStoredObject, local_object_id) is None
+        assert session.get(CloudRunStoredObject, external_object_id) is not None
+
+
 def test_cloud_run_artifact_cleanup_expired_keeps_malformed_local_inline_rows(
     tmp_path: Path,
 ) -> None:

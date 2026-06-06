@@ -174,54 +174,71 @@ def cleanup_expired_cloud_run_artifacts(
     before = request.before or utc_now()
     normalized_before = _as_utc(before)
 
-    stored_objects = session.exec(
+    expired_stored_objects = session.exec(
         select(CloudRunStoredObject)
         .where(CloudRunStoredObject.expires_at.is_not(None))
         .where(CloudRunStoredObject.expires_at <= normalized_before)
         .order_by(CloudRunStoredObject.expires_at, CloudRunStoredObject.id)
-        .limit(request.limit)
     ).all()
 
     items: list[CloudRunArtifactCleanupItemRead] = []
     deleted_count = 0
     lifecycle_only_count = 0
-    for stored_object in stored_objects:
+    deleted_ids: set[str] = set()
+    for stored_object in expired_stored_objects:
+        if deleted_count >= request.limit:
+            break
         kind = _artifact_kind_or_none(stored_object.kind)
         if kind is None:
             continue
 
         provider = _provider_name_from_uri(stored_object.uri)
-        redacted_uri = _redact_uri(stored_object.uri)
-        artifact_id = _stable_artifact_id(kind, redacted_uri, stored_object.sha256)
-        if provider == "local_inline":
-            if _local_inline_object_id(stored_object.uri) == stored_object.id:
-                items.append(
-                    CloudRunArtifactCleanupItemRead(
-                        artifact_id=artifact_id,
-                        cloud_run_id=stored_object.cloud_run_id,
-                        provider=provider,
-                        action="deleted",
-                        redacted_uri=redacted_uri,
-                        reason="local_inline_expired",
-                    )
-                )
-                session.delete(stored_object)
-                deleted_count += 1
-                continue
-
-            items.append(
-                CloudRunArtifactCleanupItemRead(
-                    artifact_id=artifact_id,
-                    cloud_run_id=stored_object.cloud_run_id,
-                    provider=provider,
-                    action="lifecycle_only",
-                    redacted_uri=redacted_uri,
-                    reason="local_inline_reference_mismatch",
-                )
-            )
-            lifecycle_only_count += 1
+        if (
+            provider != "local_inline"
+            or _local_inline_object_id(stored_object.uri) != stored_object.id
+        ):
             continue
 
+        redacted_uri = _redact_uri(stored_object.uri)
+        artifact_id = _stable_artifact_id(kind, redacted_uri, stored_object.sha256)
+        items.append(
+            CloudRunArtifactCleanupItemRead(
+                artifact_id=artifact_id,
+                cloud_run_id=stored_object.cloud_run_id,
+                provider=provider,
+                action="deleted",
+                redacted_uri=redacted_uri,
+                reason="local_inline_expired",
+            )
+        )
+        deleted_ids.add(stored_object.id)
+        session.delete(stored_object)
+        deleted_count += 1
+
+    for stored_object in expired_stored_objects:
+        if lifecycle_only_count >= request.limit:
+            break
+        if stored_object.id in deleted_ids:
+            continue
+
+        kind = _artifact_kind_or_none(stored_object.kind)
+        if kind is None:
+            continue
+
+        provider = _provider_name_from_uri(stored_object.uri)
+        if (
+            provider == "local_inline"
+            and _local_inline_object_id(stored_object.uri) == stored_object.id
+        ):
+            continue
+
+        redacted_uri = _redact_uri(stored_object.uri)
+        artifact_id = _stable_artifact_id(kind, redacted_uri, stored_object.sha256)
+        reason = (
+            "local_inline_reference_mismatch"
+            if provider == "local_inline"
+            else "external_provider_cleanup_not_supported_by_api"
+        )
         items.append(
             CloudRunArtifactCleanupItemRead(
                 artifact_id=artifact_id,
@@ -229,7 +246,7 @@ def cleanup_expired_cloud_run_artifacts(
                 provider=provider,
                 action="lifecycle_only",
                 redacted_uri=redacted_uri,
-                reason="external_provider_cleanup_not_supported_by_api",
+                reason=reason,
             )
         )
         lifecycle_only_count += 1
