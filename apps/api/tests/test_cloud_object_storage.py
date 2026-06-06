@@ -1,10 +1,13 @@
 import copy
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
 import pytest
+from sqlalchemy import inspect, text
 from sqlmodel import Session
 
 from ai_company_api.db.session import build_engine, init_db
+from ai_company_api.models.entities import CloudRunStoredObject
 from ai_company_api.schemas.api import CloudRunArtifactRefCreate
 from ai_company_api.services.aliyun_clients import (
     AliyunClientBundle,
@@ -46,6 +49,78 @@ def test_local_inline_storage_puts_and_reads_text_ref(tmp_path) -> None:
         assert ref.size_bytes == len(text.encode("utf-8"))
         assert ref.content_type == "text/x-diff"
         assert provider.read_text(session, ref) == text
+
+
+def test_local_inline_storage_persists_retention_metadata(tmp_path) -> None:
+    with _build_storage_session(tmp_path) as session:
+        provider = get_object_storage_provider("local_inline")
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+
+        ref = provider.put_text(
+            session,
+            ObjectStorageWrite(
+                workspace_id="dev_workspace",
+                cloud_run_id="cloud_run_1",
+                kind="log",
+                content="retained log",
+                content_type="text/plain",
+                expires_at=expires_at,
+                retention_policy="development_default",
+            ),
+        )
+        session.commit()
+
+        stored_object = session.get(
+            CloudRunStoredObject,
+            ref.uri.removeprefix("local-inline://cloud-run-objects/"),
+        )
+
+        assert stored_object is not None
+        assert stored_object.expires_at is not None
+        assert stored_object.expires_at.replace(tzinfo=timezone.utc) == expires_at
+        assert stored_object.retention_policy == "development_default"
+
+
+def test_init_db_upgrades_existing_stored_object_table_with_retention_columns(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "stored-object-upgrade.db"
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE cloud_run_stored_object (
+                    id VARCHAR NOT NULL,
+                    workspace_id VARCHAR NOT NULL,
+                    cloud_run_id VARCHAR NOT NULL,
+                    kind VARCHAR NOT NULL,
+                    uri VARCHAR NOT NULL,
+                    sha256 VARCHAR NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    content_type VARCHAR NOT NULL,
+                    text_content VARCHAR NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    PRIMARY KEY (id)
+                )
+                """
+            )
+        )
+
+    init_db(engine)
+
+    columns = {
+        column["name"]
+        for column in inspect(engine).get_columns("cloud_run_stored_object")
+    }
+    indexes = {
+        index["name"]
+        for index in inspect(engine).get_indexes("cloud_run_stored_object")
+    }
+    assert "expires_at" in columns
+    assert "retention_policy" in columns
+    assert "ix_cloud_run_stored_object_expires_at" in indexes
+    assert "ix_cloud_run_stored_object_retention_policy" in indexes
 
 
 def test_local_inline_storage_rejects_hash_mismatch(tmp_path) -> None:

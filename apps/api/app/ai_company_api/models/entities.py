@@ -563,6 +563,8 @@ class CloudRunStoredObject(SQLModel, table=True):
     size_bytes: int
     content_type: str = "text/plain"
     text_content: str
+    expires_at: datetime | None = Field(default=None, index=True)
+    retention_policy: str | None = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 

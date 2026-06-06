@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 from typing import Protocol
 from urllib.parse import urlparse
@@ -40,6 +41,8 @@ class ObjectStorageWrite:
     kind: str
     content: str
     content_type: str = "text/plain"
+    expires_at: datetime | None = None
+    retention_policy: str | None = None
 
 
 @dataclass
@@ -94,6 +97,8 @@ class LocalInlineObjectStorageProvider:
             size_bytes=len(content_bytes),
             content_type=write.content_type,
             text_content=write.content,
+            expires_at=write.expires_at,
+            retention_policy=write.retention_policy,
         )
         session.add(stored_object)
         session.flush()

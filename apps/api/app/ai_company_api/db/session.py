@@ -24,6 +24,7 @@ def init_db(engine) -> None:
     _upgrade_sqlite_cloud_run_phase_10b_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10d_columns(engine)
     _upgrade_sqlite_cloud_run_phase_12a_columns(engine)
+    _upgrade_sqlite_cloud_run_stored_object_phase_12d_columns(engine)
     SQLModel.metadata.create_all(engine)
     _upgrade_sqlite_repository_phase_7_columns(engine)
     _upgrade_sqlite_cloud_run_phase_8_columns(engine)
@@ -338,6 +339,49 @@ def _upgrade_sqlite_cloud_run_phase_12a_columns(engine) -> None:
                 connection.execute(
                     text(f"ALTER TABLE cloud_run ADD COLUMN {column_name} {column_type}")
                 )
+
+
+def _upgrade_sqlite_cloud_run_stored_object_phase_12d_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    stored_object_columns = {
+        "expires_at": "DATETIME",
+        "retention_policy": "VARCHAR",
+    }
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "cloud_run_stored_object" not in existing_tables:
+            return
+
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(
+                text("PRAGMA table_info(cloud_run_stored_object)")
+            ).mappings()
+        }
+        for column_name, column_type in stored_object_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE cloud_run_stored_object "
+                        f"ADD COLUMN {column_name} {column_type}"
+                    )
+                )
+
+        for column_name in ("expires_at", "retention_policy"):
+            connection.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_cloud_run_stored_object_{column_name} "
+                    f"ON cloud_run_stored_object ({column_name})"
+                )
+            )
 
 
 def _upgrade_sqlite_local_test_run_nullable_patch_artifact(engine) -> None:
