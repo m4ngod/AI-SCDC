@@ -277,6 +277,36 @@ describe("desktop API clients", () => {
     });
   });
 
+  it("fake client returns deterministic cloud run artifacts and content", async () => {
+    const queued = await fakeApiClient.startCloudRun("task_artifact_demo");
+    await fakeApiClient.processCloudRun(queued.cloud_run.id);
+
+    const manifest = await fakeApiClient.getCloudRunArtifactManifest(queued.cloud_run.id);
+    expect(manifest).toMatchObject({
+      version: 1,
+      cloud_run_id: queued.cloud_run.id,
+      retention: {
+        policy: "development_default",
+        cleanup_supported: true
+      }
+    });
+    expect(manifest.artifacts.map((artifact) => artifact.kind)).toEqual([
+      "diff",
+      "log",
+      "command_result",
+      "test_result",
+      "manifest"
+    ]);
+
+    const diff = manifest.artifacts.find((artifact) => artifact.kind === "diff")!;
+    await expect(
+      fakeApiClient.getCloudRunArtifactContent(queued.cloud_run.id, diff.id)
+    ).resolves.toMatchObject({
+      artifact: diff,
+      content: expect.stringContaining("diff --git")
+    });
+  });
+
   it("fake client pages cloud run log windows with cursors", async () => {
     const queued = await fakeApiClient.startCloudRun("task_log_window_demo");
     await fakeApiClient.processCloudRun(queued.cloud_run.id);
@@ -1258,6 +1288,82 @@ describe("desktop API clients", () => {
         payload: { patch_artifact_id: "patch_cloud_api" }
       })
     ]);
+  });
+
+  it("HTTP client maps cloud run artifact manifest and content endpoints", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          version: 1,
+          cloud_run_id: "cloud_run_api",
+          workspace_id: "workspace_api",
+          generated_at: "2026-06-06T00:00:00Z",
+          retention: {
+            policy: "development_default",
+            expires_at: "2026-06-13T00:00:00Z",
+            cleanup_supported: true
+          },
+          artifacts: [
+            {
+              id: "diff_abc",
+              cloud_run_id: "cloud_run_api",
+              kind: "diff",
+              label: "Unified diff",
+              provider: "local_inline",
+              uri: "local-inline://cloud-run-objects/object",
+              redacted_uri: "local-inline://cloud-run-objects/object",
+              sha256: "a".repeat(64),
+              size_bytes: 12,
+              content_type: "text/x-diff",
+              created_at: "2026-06-06T00:00:00Z",
+              expires_at: "2026-06-13T00:00:00Z",
+              retention_policy: "development_default",
+              download_url: "/cloud-runs/cloud_run_api/artifacts/diff_abc/content"
+            }
+          ]
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          artifact: {
+            id: "diff_abc",
+            cloud_run_id: "cloud_run_api",
+            kind: "diff",
+            label: "Unified diff",
+            provider: "local_inline",
+            uri: "local-inline://cloud-run-objects/object",
+            redacted_uri: "local-inline://cloud-run-objects/object",
+            sha256: "a".repeat(64),
+            size_bytes: 12,
+            content_type: "text/x-diff",
+            created_at: "2026-06-06T00:00:00Z",
+            expires_at: "2026-06-13T00:00:00Z",
+            retention_policy: "development_default",
+            download_url: "/cloud-runs/cloud_run_api/artifacts/diff_abc/content"
+          },
+          content: "diff --git a/file b/file\n+api"
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpApiClient({
+      baseUrl: "http://127.0.0.1:8000/",
+      projectId: "project_demo"
+    });
+    const manifest = await client.getCloudRunArtifactManifest("cloud_run_api");
+    const content = await client.getCloudRunArtifactContent("cloud_run_api", "diff_abc");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/artifacts/manifest"
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/artifacts/diff_abc/content"
+    );
+    expect(manifest.artifacts[0].id).toBe("diff_abc");
+    expect(content.content).toContain("diff --git");
   });
 
   it("HTTP client lists cloud run log windows", async () => {

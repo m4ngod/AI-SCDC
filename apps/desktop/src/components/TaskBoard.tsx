@@ -1,4 +1,4 @@
-import type { TaskCard } from "../api/client";
+import type { CloudRunArtifactCard, TaskCard } from "../api/client";
 
 type TaskBoardProps = {
   tasks: TaskCard[];
@@ -17,6 +17,7 @@ type TaskBoardProps = {
   onStartCloudRun?: (taskId: string) => void;
   onProcessCloudRun?: (task: TaskCard) => void;
   onCancelCloudRun?: (task: TaskCard) => void;
+  onOpenCloudRunArtifact?: (task: TaskCard, artifact: CloudRunArtifactCard) => void;
   onRunPatchTests?: (task: TaskCard) => void;
   onReviewPatch?: (task: TaskCard) => void;
   onApprovePatch?: (task: TaskCard) => void;
@@ -41,6 +42,7 @@ export function TaskBoard({
   onStartCloudRun,
   onProcessCloudRun,
   onCancelCloudRun,
+  onOpenCloudRunArtifact,
   onRunPatchTests,
   onReviewPatch,
   onApprovePatch,
@@ -52,6 +54,31 @@ export function TaskBoard({
     processingCloudRunTaskId !== null ||
     cancellingCloudRunTaskId !== null;
   const isRunPending = runningTaskId !== null || isCloudActionPending;
+
+  function artifactMeta(artifact: CloudRunArtifactCard) {
+    return `${artifact.kind} | ${artifact.content_type} | ${artifact.size_bytes} bytes`;
+  }
+
+  function isTextArtifact(artifact: CloudRunArtifactCard) {
+    return (
+      artifact.content_type.startsWith("text/") ||
+      artifact.content_type === "application/json"
+    );
+  }
+
+  function artifactGroups(artifacts: CloudRunArtifactCard[]) {
+    return artifacts.reduce<Array<{ kind: string; artifacts: CloudRunArtifactCard[] }>>(
+      (groups, artifact) => {
+        const group = groups.find((item) => item.kind === artifact.kind);
+        if (group) {
+          group.artifacts.push(artifact);
+          return groups;
+        }
+        return [...groups, { kind: artifact.kind, artifacts: [artifact] }];
+      },
+      []
+    );
+  }
 
   return (
     <section className="task-board" aria-label="Task board">
@@ -273,6 +300,57 @@ export function TaskBoard({
                   </div>
                 ) : null}
               </dl>
+            ) : null}
+            {task.cloud_run_artifact_manifest ? (
+              <div className="task-artifacts">
+                <div className="task-artifact-summary">
+                  <h4>Artifacts</h4>
+                  <span>{`${task.cloud_run_artifact_manifest.artifacts.length} objects`}</span>
+                  <span>{task.cloud_run_artifact_manifest.retention.policy}</span>
+                </div>
+                <div className="task-artifact-groups">
+                  {artifactGroups(task.cloud_run_artifact_manifest.artifacts).map((group) => (
+                    <div className="task-artifact-kind" key={group.kind}>
+                      <h5>{group.kind}</h5>
+                      <ul className="task-artifact-list">
+                        {group.artifacts.map((artifact) => (
+                          <li className="task-artifact-item" key={artifact.id}>
+                            {onOpenCloudRunArtifact && isTextArtifact(artifact) ? (
+                              <button
+                                type="button"
+                                className="task-artifact-label-button"
+                                onClick={() => onOpenCloudRunArtifact(task, artifact)}
+                              >
+                                {artifact.label}
+                              </button>
+                            ) : (
+                              <span className="task-artifact-label">{artifact.label}</span>
+                            )}
+                            <span className="task-artifact-meta">
+                              {artifactMeta(artifact)}
+                            </span>
+                            <span className="task-artifact-uri">
+                              {artifact.redacted_uri}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {task.cloud_run_artifact_preview ? (
+              <div className="task-artifact-preview">
+                <h4 id={`task-${task.id}-artifact-preview-title`}>
+                  {task.cloud_run_artifact_preview.artifact.label}
+                </h4>
+                <pre
+                  aria-labelledby={`task-${task.id}-artifact-preview-title`}
+                  role="region"
+                  tabIndex={0}
+                >{task.cloud_run_artifact_preview.content}</pre>
+              </div>
             ) : null}
             {task.patch_artifact?.diff_text ? (
               <div className="task-diff-preview">

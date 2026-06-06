@@ -2,7 +2,14 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import type { CloudRunCard, ConsoleApiClient, PlannerRunDraft, TaskCard } from "../api/client";
+import type {
+  CloudRunArtifactContentCard,
+  CloudRunArtifactManifestCard,
+  CloudRunCard,
+  ConsoleApiClient,
+  PlannerRunDraft,
+  TaskCard
+} from "../api/client";
 import { fakeApiClient } from "../api/client";
 
 function plannerRunFixture(goal = "Build model route settings"): PlannerRunDraft {
@@ -201,6 +208,62 @@ function queuedCloudRunFixture() {
     worker_id: null,
     claimed_at: null,
     completed_at: null
+  };
+}
+
+function cloudRunArtifactManifestFixture(): CloudRunArtifactManifestCard {
+  return {
+    version: 1,
+    cloud_run_id: "cloud_run_test",
+    workspace_id: "workspace_test",
+    generated_at: "2026-06-06T00:00:00Z",
+    retention: {
+      policy: "development_default",
+      expires_at: "2026-06-13T00:00:00Z",
+      cleanup_supported: true
+    },
+    artifacts: [
+      {
+        id: "diff_artifact_test",
+        cloud_run_id: "cloud_run_test",
+        kind: "diff",
+        label: "Unified diff",
+        provider: "local_inline",
+        uri: "local-inline://cloud-run-objects/diff_artifact_test",
+        redacted_uri: "local-inline://cloud-run-objects/diff_artifact_test",
+        sha256: "a".repeat(64),
+        size_bytes: 44,
+        content_type: "text/x-diff",
+        created_at: "2026-06-06T00:00:00Z",
+        expires_at: "2026-06-13T00:00:00Z",
+        retention_policy: "development_default",
+        download_url: "/cloud-runs/cloud_run_test/artifacts/diff_artifact_test/content"
+      },
+      {
+        id: "log_artifact_test",
+        cloud_run_id: "cloud_run_test",
+        kind: "log",
+        label: "Log stream",
+        provider: "local_inline",
+        uri: "local-inline://cloud-run-objects/log_artifact_test",
+        redacted_uri: "local-inline://cloud-run-objects/log_artifact_test",
+        sha256: "b".repeat(64),
+        size_bytes: 20,
+        content_type: "text/plain",
+        created_at: "2026-06-06T00:00:00Z",
+        expires_at: "2026-06-13T00:00:00Z",
+        retention_policy: "development_default",
+        download_url: "/cloud-runs/cloud_run_test/artifacts/log_artifact_test/content"
+      }
+    ]
+  };
+}
+
+function cloudRunArtifactContentFixture(): CloudRunArtifactContentCard {
+  const artifact = cloudRunArtifactManifestFixture().artifacts[0];
+  return {
+    artifact,
+    content: "artifact preview\nwith diff context"
   };
 }
 
@@ -410,6 +473,8 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
       nextCursor: null,
       hasMore: false
     }),
+    getCloudRunArtifactManifest: vi.fn().mockResolvedValue(cloudRunArtifactManifestFixture()),
+    getCloudRunArtifactContent: vi.fn().mockResolvedValue(cloudRunArtifactContentFixture()),
     createPullRequest: vi.fn().mockResolvedValue({
       task: {
         ...mergeReadyTaskFixture(),
@@ -1343,6 +1408,56 @@ describe("App", () => {
     expect(
       within(board).getByText("patch_ready via fake on ai-scdc/task-cloud")
     ).toBeInTheDocument();
+  });
+
+  it("renders cloud run artifacts from manifest and opens text previews", async () => {
+    const user = userEvent.setup();
+    const task: TaskCard = {
+      ...taskCardFixture("Browse cloud artifacts"),
+      id: "task_cloud"
+    };
+    const getCloudRunArtifactManifest = vi
+      .fn<ConsoleApiClient["getCloudRunArtifactManifest"]>()
+      .mockResolvedValue(cloudRunArtifactManifestFixture());
+    const getCloudRunArtifactContent = vi
+      .fn<ConsoleApiClient["getCloudRunArtifactContent"]>()
+      .mockResolvedValue(cloudRunArtifactContentFixture());
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([task]),
+      startCloudRun: vi.fn().mockResolvedValue({
+        cloud_run: queuedCloudRunFixture(),
+        patch_artifact: undefined
+      }),
+      processCloudRun: vi.fn().mockResolvedValue({
+        cloud_run: cloudRunFixture(),
+        patch_artifact: cloudPatchArtifactFixture()
+      }),
+      getCloudRunArtifactManifest,
+      getCloudRunArtifactContent
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Run cloud" }));
+    await user.click(await within(board).findByRole("button", { name: "Process" }));
+
+    expect(getCloudRunArtifactManifest).toHaveBeenCalledWith("cloud_run_test");
+    expect(await within(board).findByText("Artifacts")).toBeInTheDocument();
+    expect(within(board).getByText("development_default")).toBeInTheDocument();
+    expect(
+      within(board).getByRole("button", { name: "Unified diff" })
+    ).toBeInTheDocument();
+    expect(within(board).getByText("Log stream")).toBeInTheDocument();
+
+    await user.click(within(board).getByRole("button", { name: "Unified diff" }));
+
+    expect(getCloudRunArtifactContent).toHaveBeenCalledWith(
+      "cloud_run_test",
+      "diff_artifact_test"
+    );
+    expect(await within(board).findByText(/artifact preview/)).toBeInTheDocument();
   });
 
   it("cancels queued cloud runs and refreshes cloud logs", async () => {

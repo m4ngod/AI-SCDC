@@ -17,6 +17,8 @@ export type TaskCard = {
   debug_attempt?: DebugAttemptCard | null;
   cloud_run?: CloudRunCard;
   cloud_run_logs?: CloudRunLogEntryCard[];
+  cloud_run_artifact_manifest?: CloudRunArtifactManifestCard;
+  cloud_run_artifact_preview?: CloudRunArtifactContentCard;
   pull_request?: PullRequestCard;
 };
 
@@ -265,6 +267,43 @@ export type CloudRunLogWindowOptions = {
   syncStream?: boolean;
 };
 
+export type CloudRunArtifactRetentionCard = {
+  policy: string;
+  expires_at: string | null;
+  cleanup_supported: boolean;
+};
+
+export type CloudRunArtifactCard = {
+  id: string;
+  cloud_run_id: string;
+  kind: "diff" | "log" | "command_result" | "test_result" | "manifest";
+  label: string;
+  provider: string;
+  uri: string;
+  redacted_uri: string;
+  sha256: string;
+  size_bytes: number;
+  content_type: string;
+  created_at?: string | null;
+  expires_at?: string | null;
+  retention_policy?: string | null;
+  download_url: string;
+};
+
+export type CloudRunArtifactManifestCard = {
+  version: number;
+  cloud_run_id: string;
+  workspace_id: string;
+  generated_at: string;
+  retention: CloudRunArtifactRetentionCard;
+  artifacts: CloudRunArtifactCard[];
+};
+
+export type CloudRunArtifactContentCard = {
+  artifact: CloudRunArtifactCard;
+  content: string;
+};
+
 export type PullRequestCard = {
   id: string;
   workspace_id?: string;
@@ -378,6 +417,13 @@ export type ConsoleApiClient = {
     cloudRunId: string,
     options?: CloudRunLogWindowOptions
   ) => Promise<CloudRunLogWindowCard>;
+  getCloudRunArtifactManifest: (
+    cloudRunId: string
+  ) => Promise<CloudRunArtifactManifestCard>;
+  getCloudRunArtifactContent: (
+    cloudRunId: string,
+    artifactId: string
+  ) => Promise<CloudRunArtifactContentCard>;
   createPullRequest: (approvalId: string) => Promise<PullRequestResult>;
   startLocalRun: (taskId: string) => Promise<LocalRunResult>;
   runPatchTests: (patchArtifactId: string) => Promise<PatchTestRunResult>;
@@ -424,6 +470,10 @@ type ApiCloudRunLogWindow = {
   next_cursor: string | null;
   has_more: boolean;
 };
+
+type ApiCloudRunArtifactManifest = CloudRunArtifactManifestCard;
+
+type ApiCloudRunArtifactContent = CloudRunArtifactContentCard;
 
 type ApiPatchArtifact = PatchArtifactCard & {
   workspace_id?: string;
@@ -600,6 +650,101 @@ function fakeCloudPatchArtifact(cloudRun: CloudRunCard): PatchArtifactCard {
     files_changed: ["README.md"],
     tests_run: [],
     test_result: "not_run"
+  };
+}
+
+function fakeCloudRunArtifactContentByKind(cloudRunId: string) {
+  return {
+    diff: `diff --git a/README.md b/README.md\n+Cloud artifact diff for ${cloudRunId}\n`,
+    log: `queued: Cloud run queued.\ncompleted: Cloud run completed for ${cloudRunId}.\n`,
+    command_result: JSON.stringify(
+      {
+        command: "python -V",
+        exit_code: 0,
+        stdout: "Python 3.11",
+        stderr: ""
+      },
+      null,
+      2
+    ),
+    test_result: JSON.stringify(
+      {
+        status: "passed",
+        commands: ["python -V"]
+      },
+      null,
+      2
+    ),
+    manifest: JSON.stringify(
+      {
+        version: 1,
+        cloud_run_id: cloudRunId,
+        artifacts: ["diff", "log", "command_result", "test_result", "manifest"]
+      },
+      null,
+      2
+    )
+  } satisfies Record<CloudRunArtifactCard["kind"], string>;
+}
+
+function fakeCloudRunArtifactManifest(cloudRunId: string): CloudRunArtifactManifestCard {
+  const contentByKind = fakeCloudRunArtifactContentByKind(cloudRunId);
+  const artifacts: Array<
+    Pick<CloudRunArtifactCard, "kind" | "label" | "content_type">
+  > = [
+    { kind: "diff", label: "Unified diff", content_type: "text/x-diff" },
+    { kind: "log", label: "Log stream", content_type: "text/plain" },
+    {
+      kind: "command_result",
+      label: "Command result",
+      content_type: "application/json"
+    },
+    { kind: "test_result", label: "Test result", content_type: "application/json" },
+    { kind: "manifest", label: "Artifact manifest", content_type: "application/json" }
+  ];
+
+  return {
+    version: 1,
+    cloud_run_id: cloudRunId,
+    workspace_id: "workspace_demo",
+    generated_at: "2026-06-06T00:00:00Z",
+    retention: {
+      policy: "development_default",
+      expires_at: "2026-06-13T00:00:00Z",
+      cleanup_supported: true
+    },
+    artifacts: artifacts.map((artifact, index) => {
+      const artifactId = `${artifact.kind}_${cloudRunId}`;
+      return {
+        id: artifactId,
+        cloud_run_id: cloudRunId,
+        kind: artifact.kind,
+        label: artifact.label,
+        provider: "local_inline",
+        uri: `local-inline://cloud-run-objects/${artifactId}`,
+        redacted_uri: `local-inline://cloud-run-objects/${artifactId}`,
+        sha256: String(index + 1).repeat(64),
+        size_bytes: contentByKind[artifact.kind].length,
+        content_type: artifact.content_type,
+        created_at: "2026-06-06T00:00:00Z",
+        expires_at: "2026-06-13T00:00:00Z",
+        retention_policy: "development_default",
+        download_url: `/cloud-runs/${cloudRunId}/artifacts/${artifactId}/content`
+      };
+    })
+  };
+}
+
+function fakeCloudRunArtifactContent(
+  cloudRunId: string,
+  artifactId: string
+): CloudRunArtifactContentCard {
+  const manifest = fakeCloudRunArtifactManifest(cloudRunId);
+  const artifact =
+    manifest.artifacts.find((item) => item.id === artifactId) ?? manifest.artifacts[0];
+  return {
+    artifact,
+    content: fakeCloudRunArtifactContentByKind(cloudRunId)[artifact.kind]
   };
 }
 
@@ -896,6 +1041,12 @@ export const fakeApiClient: ConsoleApiClient = {
       nextCursor: hasMore ? String(nextOffset) : null,
       hasMore
     };
+  },
+  async getCloudRunArtifactManifest(cloudRunId: string) {
+    return fakeCloudRunArtifactManifest(cloudRunId);
+  },
+  async getCloudRunArtifactContent(cloudRunId: string, artifactId: string) {
+    return fakeCloudRunArtifactContent(cloudRunId, artifactId);
   },
   async createPullRequest(approvalId: string) {
     const patchArtifactId = approvalId.replace(/^patch_approval_/, "");
@@ -1796,6 +1947,28 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         `GET /cloud-runs/${cloudRunId}/logs/window`
       );
       return mapCloudRunLogWindowCard(window);
+    },
+    async getCloudRunArtifactManifest(cloudRunId: string) {
+      const response = await fetch(
+        apiUrl(options.baseUrl, `/cloud-runs/${cloudRunId}/artifacts/manifest`)
+      );
+      return readJsonResponse<ApiCloudRunArtifactManifest>(
+        response,
+        `GET /cloud-runs/${cloudRunId}/artifacts/manifest`
+      );
+    },
+    async getCloudRunArtifactContent(cloudRunId: string, artifactId: string) {
+      const encodedArtifactId = encodeURIComponent(artifactId);
+      const response = await fetch(
+        apiUrl(
+          options.baseUrl,
+          `/cloud-runs/${cloudRunId}/artifacts/${encodedArtifactId}/content`
+        )
+      );
+      return readJsonResponse<ApiCloudRunArtifactContent>(
+        response,
+        `GET /cloud-runs/${cloudRunId}/artifacts/${encodedArtifactId}/content`
+      );
     },
     async createPullRequest(approvalId: string) {
       const response = await fetch(

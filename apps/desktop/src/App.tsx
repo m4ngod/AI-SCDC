@@ -1,5 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import type {
+  CloudRunArtifactCard,
+  CloudRunArtifactManifestCard,
   ConsoleApiClient,
   PlannerRunDraft,
   SandboxProfileInput,
@@ -136,6 +138,17 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       return await apiClient.listCloudRunLogs(cloudRunId);
     } catch {
       return fallbackLogs;
+    }
+  }
+
+  async function refreshCloudRunArtifacts(
+    cloudRunId: string,
+    fallbackManifest?: CloudRunArtifactManifestCard
+  ) {
+    try {
+      return await apiClient.getCloudRunArtifactManifest(cloudRunId);
+    } catch {
+      return fallbackManifest;
     }
   }
 
@@ -327,7 +340,14 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
             test_command_keys: ["python-version"]
           })
         : await apiClient.startCloudRun(taskId);
-      const cloudRunLogs = await refreshCloudRunLogs(result.cloud_run.id);
+      const fallbackTask = tasks.find((task) => task.id === taskId);
+      const [cloudRunLogs, cloudRunArtifactManifest] = await Promise.all([
+        refreshCloudRunLogs(result.cloud_run.id, fallbackTask?.cloud_run_logs),
+        refreshCloudRunArtifacts(
+          result.cloud_run.id,
+          fallbackTask?.cloud_run_artifact_manifest
+        )
+      ]);
       setTasks((currentTasks) =>
         currentTasks.map((task) =>
           task.id === taskId
@@ -338,7 +358,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
                 branch_name: result.cloud_run.head_branch,
                 patch_artifact: result.patch_artifact ?? task.patch_artifact,
                 cloud_run: result.cloud_run,
-                cloud_run_logs: cloudRunLogs
+                cloud_run_logs: cloudRunLogs,
+                cloud_run_artifact_manifest: cloudRunArtifactManifest
               }
             : task
         )
@@ -366,10 +387,10 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     });
     try {
       const result = await apiClient.processCloudRun(task.cloud_run.id);
-      const cloudRunLogs = await refreshCloudRunLogs(
-        result.cloud_run.id,
-        task.cloud_run_logs
-      );
+      const [cloudRunLogs, cloudRunArtifactManifest] = await Promise.all([
+        refreshCloudRunLogs(result.cloud_run.id, task.cloud_run_logs),
+        refreshCloudRunArtifacts(result.cloud_run.id, task.cloud_run_artifact_manifest)
+      ]);
       setTasks((currentTasks) =>
         currentTasks.map((currentTask) =>
           currentTask.id === task.id
@@ -380,7 +401,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
                 branch_name: result.cloud_run.head_branch,
                 patch_artifact: result.patch_artifact ?? currentTask.patch_artifact,
                 cloud_run: result.cloud_run,
-                cloud_run_logs: cloudRunLogs
+                cloud_run_logs: cloudRunLogs,
+                cloud_run_artifact_manifest: cloudRunArtifactManifest
               }
             : currentTask
         )
@@ -408,7 +430,10 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     });
     try {
       const cloudRun = await apiClient.cancelCloudRun(task.cloud_run.id);
-      const cloudRunLogs = await refreshCloudRunLogs(cloudRun.id, task.cloud_run_logs);
+      const [cloudRunLogs, cloudRunArtifactManifest] = await Promise.all([
+        refreshCloudRunLogs(cloudRun.id, task.cloud_run_logs),
+        refreshCloudRunArtifacts(cloudRun.id, task.cloud_run_artifact_manifest)
+      ]);
       setTasks((currentTasks) =>
         currentTasks.map((currentTask) =>
           currentTask.id === task.id
@@ -417,7 +442,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
                 repo_id: cloudRun.repo_id,
                 branch_name: cloudRun.head_branch,
                 cloud_run: cloudRun,
-                cloud_run_logs: cloudRunLogs
+                cloud_run_logs: cloudRunLogs,
+                cloud_run_artifact_manifest: cloudRunArtifactManifest
               }
             : currentTask
         )
@@ -429,6 +455,42 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       }));
     } finally {
       setCancellingCloudRunTaskId(null);
+    }
+  }
+
+  async function handleOpenCloudRunArtifact(
+    task: TaskCard,
+    artifact: CloudRunArtifactCard
+  ) {
+    if (!task.cloud_run) {
+      return;
+    }
+
+    setWorkflowErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[task.id];
+      return nextErrors;
+    });
+    try {
+      const content = await apiClient.getCloudRunArtifactContent(
+        task.cloud_run.id,
+        artifact.id
+      );
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === task.id
+            ? {
+                ...currentTask,
+                cloud_run_artifact_preview: content
+              }
+            : currentTask
+        )
+      );
+    } catch {
+      setWorkflowErrors((currentErrors) => ({
+        ...currentErrors,
+        [task.id]: "Failed to load cloud artifact"
+      }));
     }
   }
 
@@ -723,6 +785,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         onStartCloudRun={handleStartCloudRun}
         onProcessCloudRun={handleProcessCloudRun}
         onCancelCloudRun={handleCancelCloudRun}
+        onOpenCloudRunArtifact={handleOpenCloudRunArtifact}
         onRunPatchTests={handleRunPatchTests}
         onReviewPatch={handleReviewPatch}
         onApprovePatch={handleApprovePatch}
