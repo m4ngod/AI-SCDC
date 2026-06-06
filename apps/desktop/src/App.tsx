@@ -103,6 +103,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const [localRunErrors, setLocalRunErrors] = useState<Record<string, string>>({});
   const [workflowErrors, setWorkflowErrors] = useState<Record<string, string>>({});
   const plannerRunRef = useRef<PlannerRunDraft | null>(null);
+  const cloudArtifactPreviewRequestsRef = useRef<Record<string, string>>({});
+  const cloudArtifactPreviewRequestSequenceRef = useRef(0);
 
   useEffect(() => {
     plannerRunRef.current = plannerRun;
@@ -466,16 +468,36 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       return;
     }
 
+    cloudArtifactPreviewRequestSequenceRef.current += 1;
+    const requestToken = `${artifact.id}:${cloudArtifactPreviewRequestSequenceRef.current}`;
+    cloudArtifactPreviewRequestsRef.current = {
+      ...cloudArtifactPreviewRequestsRef.current,
+      [task.id]: requestToken
+    };
     setWorkflowErrors((currentErrors) => {
       const nextErrors = { ...currentErrors };
       delete nextErrors[task.id];
       return nextErrors;
     });
+    setTasks((currentTasks) =>
+      currentTasks.map((currentTask) =>
+        currentTask.id === task.id
+          ? {
+              ...currentTask,
+              cloud_run_artifact_preview: undefined
+            }
+          : currentTask
+      )
+    );
     try {
       const content = await apiClient.getCloudRunArtifactContent(
         task.cloud_run.id,
         artifact.id
       );
+      if (cloudArtifactPreviewRequestsRef.current[task.id] !== requestToken) {
+        return;
+      }
+
       setTasks((currentTasks) =>
         currentTasks.map((currentTask) =>
           currentTask.id === task.id
@@ -486,10 +508,24 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
             : currentTask
         )
       );
-    } catch {
+    } catch (error) {
+      if (cloudArtifactPreviewRequestsRef.current[task.id] !== requestToken) {
+        return;
+      }
+
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === task.id
+            ? {
+                ...currentTask,
+                cloud_run_artifact_preview: undefined
+              }
+            : currentTask
+        )
+      );
       setWorkflowErrors((currentErrors) => ({
         ...currentErrors,
-        [task.id]: "Failed to load cloud artifact"
+        [task.id]: errorMessage(error, "Failed to load cloud artifact")
       }));
     }
   }

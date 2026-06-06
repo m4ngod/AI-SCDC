@@ -1486,8 +1486,57 @@ describe("App", () => {
       "binary_artifact_test"
     );
     expect(await within(board).findByRole("alert")).toHaveTextContent(
-      "Failed to load cloud artifact"
+      "Unsupported preview"
     );
+    expect(within(board).queryByText(/artifact preview/)).not.toBeInTheDocument();
+  });
+
+  it("keeps newer cloud artifact previews when older requests finish later", async () => {
+    const user = userEvent.setup();
+    const manifest = cloudRunArtifactManifestFixture();
+    const diffArtifact = manifest.artifacts[0];
+    const logArtifact = manifest.artifacts[1];
+    const task: TaskCard = {
+      ...taskCardFixture("Race cloud artifact previews"),
+      id: "task_cloud",
+      cloud_run: cloudRunFixture(),
+      cloud_run_artifact_manifest: manifest
+    };
+    const firstPreview =
+      createDeferred<Awaited<ReturnType<ConsoleApiClient["getCloudRunArtifactContent"]>>>();
+    const secondPreview =
+      createDeferred<Awaited<ReturnType<ConsoleApiClient["getCloudRunArtifactContent"]>>>();
+    const getCloudRunArtifactContent = vi
+      .fn<ConsoleApiClient["getCloudRunArtifactContent"]>()
+      .mockReturnValueOnce(firstPreview.promise)
+      .mockReturnValueOnce(secondPreview.promise);
+    const apiClient = createMockApiClient({
+      listTasks: vi.fn().mockResolvedValue([task]),
+      getCloudRunArtifactContent
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const contextPanel = screen.getByRole("complementary", { name: "Task context panel" });
+    const board = within(contextPanel).getByLabelText("Task board");
+    await user.click(await within(board).findByRole("button", { name: "Unified diff" }));
+    await user.click(within(board).getByRole("button", { name: "Log stream" }));
+
+    secondPreview.resolve({
+      artifact: logArtifact,
+      content: "newer log preview"
+    });
+    expect(await within(board).findByText("newer log preview")).toBeInTheDocument();
+
+    firstPreview.resolve({
+      artifact: diffArtifact,
+      content: "older diff preview"
+    });
+
+    await waitFor(() =>
+      expect(within(board).queryByText("older diff preview")).not.toBeInTheDocument()
+    );
+    expect(within(board).getByText("newer log preview")).toBeInTheDocument();
   });
 
   it("cancels queued cloud runs and refreshes cloud logs", async () => {

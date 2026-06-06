@@ -740,8 +740,11 @@ function fakeCloudRunArtifactContent(
   artifactId: string
 ): CloudRunArtifactContentCard {
   const manifest = fakeCloudRunArtifactManifest(cloudRunId);
-  const artifact =
-    manifest.artifacts.find((item) => item.id === artifactId) ?? manifest.artifacts[0];
+  const artifact = manifest.artifacts.find((item) => item.id === artifactId);
+  if (!artifact) {
+    throw new Error(`Cloud run artifact not found: ${artifactId}`);
+  }
+
   return {
     artifact,
     content: fakeCloudRunArtifactContentByKind(cloudRunId)[artifact.kind]

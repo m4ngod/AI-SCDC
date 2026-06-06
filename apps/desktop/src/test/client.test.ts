@@ -307,6 +307,23 @@ describe("desktop API clients", () => {
     });
   });
 
+  it("fake client rejects cloud run artifact content IDs outside the manifest", async () => {
+    const queued = await fakeApiClient.startCloudRun("task_artifact_invalid_demo");
+    const otherQueued = await fakeApiClient.startCloudRun("task_artifact_other_demo");
+    const otherManifest = await fakeApiClient.getCloudRunArtifactManifest(otherQueued.cloud_run.id);
+    const otherDiff = otherManifest.artifacts.find((artifact) => artifact.kind === "diff")!;
+
+    await expect(
+      fakeApiClient.getCloudRunArtifactContent(
+        queued.cloud_run.id,
+        "missing_artifact_id"
+      )
+    ).rejects.toThrow("Cloud run artifact not found");
+    await expect(
+      fakeApiClient.getCloudRunArtifactContent(queued.cloud_run.id, otherDiff.id)
+    ).rejects.toThrow("Cloud run artifact not found");
+  });
+
   it("fake client pages cloud run log windows with cursors", async () => {
     const queued = await fakeApiClient.startCloudRun("task_log_window_demo");
     await fakeApiClient.processCloudRun(queued.cloud_run.id);
