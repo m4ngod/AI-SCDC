@@ -6740,6 +6740,166 @@ def test_cloud_run_artifact_content_rejects_integrity_mismatch(
     assert response.json()["detail"] == "Object storage content sha256 mismatch"
 
 
+def test_cloud_run_artifact_manifest_skips_out_of_scope_local_inline_metadata_ref(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, first_task = create_cloud_task(session)
+        second_task = Task(
+            project_id=first_task.project_id,
+            title="Second cloud task",
+            role_required="backend",
+            status=TaskStatus.CREATED,
+            allowed_paths=["AI_SCDC_SECOND.md"],
+            required_tests=["python -V"],
+        )
+        session.add(second_task)
+        session.commit()
+        first_task_id = first_task.id
+        second_task_id = second_task.id
+        repo_id = repository.id
+
+    first_run = client.post(
+        f"/tasks/{first_task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    second_run = client.post(
+        f"/tasks/{second_task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        first_cloud_run = session.get(CloudRun, first_run["id"])
+        second_cloud_run = session.get(CloudRun, second_run["id"])
+        assert first_cloud_run is not None
+        assert second_cloud_run is not None
+        first_log_ref = store_cloud_run_artifact_ref(
+            session,
+            first_cloud_run,
+            kind="log",
+            content="first run log\n",
+        )
+        second_cloud_run.log_stream_uri = first_log_ref.uri
+        second_cloud_run.log_stream_sha256 = first_log_ref.sha256
+        second_cloud_run.log_stream_size_bytes = first_log_ref.size_bytes
+        second_cloud_run.log_stream_content_type = first_log_ref.content_type
+        session.add(second_cloud_run)
+        session.commit()
+
+    manifest_response = client.get(
+        f"/cloud-runs/{second_run['id']}/artifacts/manifest"
+    )
+    assert manifest_response.status_code == 200
+    manifest = manifest_response.json()
+    artifact_kinds = {artifact["kind"] for artifact in manifest["artifacts"]}
+    first_object_id = first_log_ref.uri.removeprefix(
+        "local-inline://cloud-run-objects/"
+    )
+
+    assert "log" not in artifact_kinds
+    assert first_log_ref.uri not in str(manifest)
+    assert first_object_id not in str(manifest)
+
+
+def test_cloud_run_artifact_content_rejects_local_inline_row_uri_mismatch(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        first_ref = store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="diff",
+            content="same diff\n",
+            content_type="text/x-diff",
+        )
+        second_ref = store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="diff",
+            content="same diff\n",
+            content_type="text/x-diff",
+        )
+        first_object_id = first_ref.uri.removeprefix(
+            "local-inline://cloud-run-objects/"
+        )
+        first_object = session.get(CloudRunStoredObject, first_object_id)
+        assert first_object is not None
+        first_object.uri = second_ref.uri
+        session.add(first_object)
+        session.commit()
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/diff_{first_object_id}/content"
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cloud run artifact not found"
+
+
+def test_cloud_run_artifact_manifest_redacts_uri_userinfo(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        cloud_run.artifact_manifest_uri = (
+            "oss://user:pass@ai-scdc-dev-artifacts/"
+            "workspaces/dev_workspace/cloud-runs/run/manifest.json"
+            "?signature=secret#frag"
+        )
+        cloud_run.artifact_manifest_sha256 = "1" * 64
+        cloud_run.artifact_manifest_size_bytes = 2
+        cloud_run.artifact_manifest_content_type = "application/json"
+        session.add(cloud_run)
+        session.commit()
+
+    manifest_response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/manifest"
+    )
+    assert manifest_response.status_code == 200
+    manifest = manifest_response.json()
+    artifact = next(
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["kind"] == "manifest"
+    )
+    expected_uri = (
+        "oss://ai-scdc-dev-artifacts/"
+        "workspaces/dev_workspace/cloud-runs/run/manifest.json"
+    )
+
+    assert artifact["uri"] == expected_uri
+    assert artifact["redacted_uri"] == expected_uri
+    assert "user" not in str(manifest)
+    assert "pass" not in str(manifest)
+    assert "signature" not in str(manifest)
+    assert "frag" not in str(manifest)
+
+
 def test_cloud_run_log_window_returns_bounded_pages_without_duplicates(
     tmp_path: Path,
 ) -> None:

@@ -4,7 +4,7 @@ from hashlib import sha256
 
 import pytest
 from sqlalchemy import inspect, text
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.models.entities import CloudRunStoredObject
@@ -238,6 +238,47 @@ def test_aliyun_oss_storage_puts_and_reads_text_ref(
         assert ref.content_type == "text/x-diff"
         assert fake_oss.put_requests[0].content_type == "text/x-diff"
         assert provider.read_text(session, ref) == text
+
+
+def test_aliyun_oss_storage_put_persists_metadata_row_for_artifact_discovery(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_oss(monkeypatch)
+    with _build_storage_session(tmp_path) as session:
+        provider = get_object_storage_provider("aliyun_oss")
+        expires_at = datetime.now(timezone.utc) + timedelta(days=3)
+
+        ref = provider.put_text(
+            session,
+            ObjectStorageWrite(
+                workspace_id="dev_workspace",
+                cloud_run_id="cloud_run_1",
+                kind="manifest",
+                content='{"status":"stored"}',
+                content_type="application/json",
+                expires_at=expires_at,
+                retention_policy="aliyun_lifecycle",
+            ),
+        )
+
+        stored_objects = session.exec(
+            select(CloudRunStoredObject)
+            .where(CloudRunStoredObject.workspace_id == "dev_workspace")
+            .where(CloudRunStoredObject.cloud_run_id == "cloud_run_1")
+            .where(CloudRunStoredObject.kind == "manifest")
+        ).all()
+
+        assert len(stored_objects) == 1
+        stored_object = stored_objects[0]
+        assert stored_object.uri == ref.uri
+        assert stored_object.sha256 == ref.sha256
+        assert stored_object.size_bytes == ref.size_bytes
+        assert stored_object.content_type == "application/json"
+        assert stored_object.expires_at is not None
+        assert stored_object.expires_at.replace(tzinfo=timezone.utc) == expires_at
+        assert stored_object.retention_policy == "aliyun_lifecycle"
+        assert stored_object.text_content == ""
 
 
 def test_aliyun_oss_storage_rejects_hash_mismatch(

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import cast
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from fastapi import HTTPException
 from sqlmodel import Session, select
@@ -224,6 +224,11 @@ def _source_from_stored_object(
     kind = _artifact_kind_or_none(stored_object.kind)
     if kind is None:
         return None
+    provider = _provider_name_from_uri(stored_object.uri)
+    if provider == "local_inline" and (
+        _local_inline_object_id(stored_object.uri) != stored_object.id
+    ):
+        return None
     ref = ObjectStorageRef(
         kind=kind,
         uri=stored_object.uri,
@@ -236,7 +241,7 @@ def _source_from_stored_object(
             cloud_run=cloud_run,
             kind=kind,
             artifact_id=f"{kind}_{stored_object.id}",
-            provider=_provider_name_from_uri(stored_object.uri),
+            provider=provider,
             uri=stored_object.uri,
             sha256=stored_object.sha256,
             size_bytes=stored_object.size_bytes,
@@ -299,17 +304,16 @@ def _metadata_ref_source(
     ):
         return None
 
-    stored_object = _local_inline_stored_object(session, uri)
-    scoped_stored_object = (
-        stored_object
-        if stored_object is not None
-        and stored_object.workspace_id == cloud_run.workspace_id
-        and stored_object.cloud_run_id == cloud_run.id
-        and stored_object.kind == kind
-        else None
-    )
-    if scoped_stored_object is not None:
-        return _source_from_stored_object(cloud_run, scoped_stored_object)
+    if _is_local_inline_uri(uri):
+        stored_object = _local_inline_stored_object(session, uri)
+        if (
+            stored_object is None
+            or stored_object.workspace_id != cloud_run.workspace_id
+            or stored_object.cloud_run_id != cloud_run.id
+            or stored_object.kind != kind
+        ):
+            return None
+        return _source_from_stored_object(cloud_run, stored_object)
 
     ref = ObjectStorageRef(
         kind=kind,
@@ -328,20 +332,11 @@ def _metadata_ref_source(
             sha256=sha256_value,
             size_bytes=size_bytes,
             content_type=content_type,
-            created_at=scoped_stored_object.created_at
-            if scoped_stored_object is not None
-            else None,
-            expires_at=scoped_stored_object.expires_at
-            if scoped_stored_object is not None
-            else None,
-            retention_policy=scoped_stored_object.retention_policy
-            if scoped_stored_object is not None
-            else None,
+            created_at=None,
+            expires_at=None,
+            retention_policy=None,
         ),
         storage_ref=ref,
-        stored_object_id=scoped_stored_object.id
-        if scoped_stored_object is not None
-        else None,
     )
 
 
@@ -460,15 +455,20 @@ def _validate_local_inline_scope(
 ) -> None:
     if source.storage_ref is None:
         return
-    stored_object_id = source.stored_object_id or _local_inline_object_id(
-        source.storage_ref.uri
-    )
-    if stored_object_id is None:
+    if not _is_local_inline_uri(source.storage_ref.uri):
         return
+    target_object_id = _local_inline_object_id(source.storage_ref.uri)
+    if target_object_id is None:
+        raise HTTPException(status_code=404, detail="Cloud run artifact not found")
+    if (
+        source.stored_object_id is not None
+        and target_object_id != source.stored_object_id
+    ):
+        raise HTTPException(status_code=404, detail="Cloud run artifact not found")
 
-    stored_object = session.get(CloudRunStoredObject, stored_object_id)
+    stored_object = session.get(CloudRunStoredObject, target_object_id)
     if stored_object is None:
-        return
+        raise HTTPException(status_code=404, detail="Cloud run artifact not found")
     if (
         stored_object.cloud_run_id != cloud_run.id
         or stored_object.workspace_id != cloud_run.workspace_id
@@ -491,6 +491,10 @@ def _local_inline_stored_object(
     if stored_object_id is None:
         return None
     return session.get(CloudRunStoredObject, stored_object_id)
+
+
+def _is_local_inline_uri(uri: str) -> bool:
+    return urlsplit(uri).scheme == "local-inline"
 
 
 def _local_inline_object_id(uri: str) -> str | None:
@@ -540,4 +544,20 @@ def _provider_name_from_uri(uri: str) -> str:
 
 def _redact_uri(uri: str) -> str:
     parsed = urlsplit(uri)
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    netloc = _redacted_netloc(parsed)
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+
+
+def _redacted_netloc(parsed: SplitResult) -> str:
+    if parsed.hostname is None:
+        return ""
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is None:
+        return host
+    return f"{host}:{port}"

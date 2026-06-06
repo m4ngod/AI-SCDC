@@ -177,9 +177,24 @@ class AliyunOssObjectStorageProvider:
                 content_type=write.content_type,
             )
         )
+        uri = f"{ALIYUN_OSS_SCHEME}://{settings.oss_bucket}/{object_key}"
+        stored_object = CloudRunStoredObject(
+            workspace_id=write.workspace_id,
+            cloud_run_id=write.cloud_run_id,
+            kind=write.kind,
+            uri=uri,
+            sha256=digest,
+            size_bytes=len(content_bytes),
+            content_type=write.content_type,
+            text_content="",
+            expires_at=write.expires_at,
+            retention_policy=write.retention_policy,
+        )
+        session.add(stored_object)
+        session.flush()
         return ObjectStorageRef(
             kind=write.kind,
-            uri=f"{ALIYUN_OSS_SCHEME}://{settings.oss_bucket}/{object_key}",
+            uri=uri,
             sha256=digest,
             size_bytes=len(content_bytes),
             content_type=write.content_type,
