@@ -49,7 +49,7 @@ Both endpoints return a shared response shape:
 `status` is one of `skipped`, `succeeded`, or `failed`. `reason` is the stable
 helper reason string already used in tests and operations docs. `cloud_run` is
 a narrow operator snapshot with the run id, workspace/project/task ids, status,
-provider names, sanitized external status/error fields, and timestamps. It does
+provider names, sanitized external status, and timestamps. It does
 not expose queue receipts, callback tokens, raw provider errors, Aliyun access
 keys, raw provider URLs, or full runtime job ids.
 

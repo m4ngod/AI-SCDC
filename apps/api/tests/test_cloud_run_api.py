@@ -4378,6 +4378,40 @@ def test_cloud_run_operator_retries_mns_receipt_delete_without_leaking_receipt(
     assert queued_payload["callback_token"] not in response.text
 
 
+def test_cloud_run_operator_skip_response_does_not_echo_external_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, _lease_id, _fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    unsafe_error = "receipt-1 secret=provider-secret token=abc123 arbitrary-detail"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, cloud_run_id)
+        assert cloud_run is not None
+        cloud_run.external_error = unsafe_error
+        session.add(cloud_run)
+        session.commit()
+
+    client = build_client(database_path)
+    response = client.post(
+        f"/cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete",
+        headers=auth_headers(roles="owner"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "skipped"
+    assert body["reason"] == "mns_receipt_recovery_requires_terminal_state"
+    assert "external_error" not in body["cloud_run"]
+    assert "receipt-1" not in response.text
+    assert "provider-secret" not in response.text
+    assert "abc123" not in response.text
+    assert "arbitrary-detail" not in response.text
+
+
 def test_cloud_run_operator_cleans_aliyun_eci_runtime_without_leaking_runtime_id(
     tmp_path: Path,
     monkeypatch,
@@ -4418,18 +4452,24 @@ def test_cloud_run_operator_endpoints_hide_cross_workspace_runs(
     )
     client = build_client(database_path)
 
-    response = client.post(
+    endpoints = [
         f"/cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete",
-        headers=auth_headers(
-            user_id="other_operator",
-            workspace_id="other_workspace",
-            organization_id="other_organization",
-            roles="owner",
-        ),
-    )
+        f"/cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime",
+    ]
 
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Cloud run not found"
+    for endpoint in endpoints:
+        response = client.post(
+            endpoint,
+            headers=auth_headers(
+                user_id="other_operator",
+                workspace_id="other_workspace",
+                organization_id="other_organization",
+                roles="owner",
+            ),
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Cloud run not found"
 
 
 def test_aliyun_eci_terminal_cleanup_deletes_persisted_runtime_job_and_logs_safe_success(

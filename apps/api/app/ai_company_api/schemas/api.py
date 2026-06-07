@@ -368,7 +368,6 @@ class CloudRunOperatorSnapshotRead(BaseModel):
     queue_provider: str
     runtime_provider: str | None
     external_status: str | None
-    external_error: str | None
     created_at: datetime
     updated_at: datetime
 

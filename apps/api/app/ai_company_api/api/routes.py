@@ -212,7 +212,6 @@ def _cloud_run_provider_operation_read(
             queue_provider=cloud_run.queue_provider,
             runtime_provider=cloud_run.runtime_provider,
             external_status=cloud_run.external_status,
-            external_error=cloud_run.external_error,
             created_at=cloud_run.created_at,
             updated_at=cloud_run.updated_at,
         ),
