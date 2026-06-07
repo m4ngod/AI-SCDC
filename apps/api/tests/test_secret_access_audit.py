@@ -75,6 +75,9 @@ class FakeKmsClient:
         ).decode("utf-8")
 
     def delete(self, key_id: str, ciphertext: str) -> None:
+        prefix = f"fake-kms:{key_id}:"
+        if not ciphertext.startswith(prefix):
+            raise ValueError("Fake KMS ciphertext key mismatch")
         self.delete_requests.append((key_id, ciphertext))
 
 
@@ -205,6 +208,8 @@ def test_kms_secret_vault_rotates_deletes_and_fingerprints() -> None:
         ("key-a", "sk-rotated5678"),
     ]
     assert fake_kms.delete_requests[-1][0] == "key-a"
+    assert fake_kms.delete_requests[-1][1].startswith("fake-kms:key-a:")
+    assert not fake_kms.delete_requests[-1][1].startswith("kms-vault:v1:")
 
 
 @pytest.mark.parametrize(
@@ -408,6 +413,7 @@ def test_model_credential_create_uses_configured_kms_secret_vault(
     assert stored.encrypted_secret.startswith("kms-vault:v1:")
     assert secret_value not in stored.encrypted_secret
     assert secret_value not in str(credential)
+    assert stored.encrypted_secret not in str(credential)
     assert fake_kms.encrypt_requests == [("model-key", secret_value)]
 
 
@@ -481,6 +487,9 @@ def test_github_credential_delete_uses_configured_kms_secret_vault(
     assert stored.encrypted_token.startswith("kms-vault:v1:")
     assert token not in stored.encrypted_token
     assert token not in str(response.json())
+    assert stored.encrypted_token not in str(response.json())
     assert fake_kms.encrypt_requests == [("github-key", token)]
     assert len(fake_kms.delete_requests) == 1
     assert fake_kms.delete_requests[0][0] == "github-key"
+    assert fake_kms.delete_requests[0][1].startswith("fake-kms:github-key:")
+    assert not fake_kms.delete_requests[0][1].startswith("kms-vault:v1:")
