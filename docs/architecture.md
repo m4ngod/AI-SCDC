@@ -297,8 +297,11 @@ token boundary and are not converted into user-session endpoints.
 
 The next Phase 13B slice extends the `SecretVault` protocol with rotate,
 delete, and fingerprint operations, adds a fail-closed provider factory, and
-returns a not-configured `KmsSecretVault` placeholder for `kms`/`aliyun_kms`
-configuration instead of falling back to development storage. It also adds
+adds a test-backed `KmsSecretVault` provider boundary for `kms`/`aliyun_kms`
+configuration instead of falling back to development storage. KMS mode wraps
+provider, key id, and ciphertext metadata in a `kms-vault:v1:` envelope,
+requires `AI_SCDC_KMS_KEY_ID` plus an explicitly configured KMS client seam,
+and keeps the real Aliyun KMS SDK adapter for a later slice. It also adds
 `SecretAccessAuditLog` records for model and GitHub credential create/delete,
 plus model planner, GitHub pull-request, Docker cloud-run, and remote-worker
 payload credential opens. Audit records capture scope, actor, secret kind/id,
@@ -316,9 +319,9 @@ runtime job ids, queue receipts, callback tokens, raw provider errors, Aliyun
 access keys, and raw provider URLs.
 
 Phase 13B is not complete yet. This slice does not add full login/session
-issuance, production IdP integration, real KMS-backed `SecretVault` provider
-integration, billing, a full operator console, public destructive OSS cleanup,
-complete audit logging, or a complete role-by-route permission matrix.
+issuance, production IdP integration, the real Aliyun KMS SDK adapter and cloud
+KMS smoke path, billing, a full operator console, public destructive OSS
+cleanup, complete audit logging, or a complete role-by-route permission matrix.
 
 ## Phase 13C Boundary
 
@@ -371,10 +374,10 @@ In progress:
 
 1. Phase 13B commercial trust boundary with request identity, workspace scope,
    API-token lookup, RBAC foundations, a fail-closed secret-vault provider
-   factory, and secret-access audit logs. Remaining work includes real
-   KMS-backed secrets, full sessions, broader/full organization-scoped operator
-   controls or operator console coverage, broader audit coverage, and a
-   complete permission matrix.
+   factory, a test-backed KMS provider boundary, and secret-access audit logs.
+   Remaining work includes the real Aliyun KMS SDK adapter, full sessions,
+   broader/full organization-scoped operator controls or operator console
+   coverage, broader audit coverage, and a complete permission matrix.
 2. Phase 13C cost/quota guardrail foundation with execution usage types,
    workspace credits, spend limits, budget reservations, and usage/cost summary
    APIs. Remaining work includes real provider pricing, payment integration,

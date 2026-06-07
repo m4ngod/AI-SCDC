@@ -17,12 +17,14 @@ token boundary.
 
 A follow-on Phase 13B slice extends the `SecretVault` protocol with
 `rotate`, `delete`, and `fingerprint`, adds a fail-closed provider factory,
-adds a not-configured `KmsSecretVault` placeholder for `kms`/`aliyun_kms`, and
-records `SecretAccessAuditLog` rows for model/GitHub credential create/delete
-plus model planner, GitHub pull-request, Docker cloud-run, and remote-worker
-payload credential opens. Audit rows record actor/scope metadata, secret
-kind/id, reason, operation, and success status, never raw or encrypted secret
-payloads.
+adds a test-backed `KmsSecretVault` provider boundary for `kms`/`aliyun_kms`,
+and records `SecretAccessAuditLog` rows for model/GitHub credential
+create/delete plus model planner, GitHub pull-request, Docker cloud-run, and
+remote-worker payload credential opens. Audit rows record actor/scope
+metadata, secret kind/id, reason, operation, and success status, never raw or
+encrypted secret payloads. KMS mode requires `AI_SCDC_KMS_KEY_ID` and an
+explicitly configured KMS client seam; it never falls back to development
+storage.
 
 Phase 13B now also includes a narrow authenticated cloud-run operator API
 facade. Workspace owners and admins can retry retained Aliyun MNS receipt
@@ -44,14 +46,14 @@ usage summaries aggregate usage by project/task and usage type.
 
 This is not the full commercial beta trust boundary yet. Remaining Phase 13B
 work includes full login/session issuance, production auth/IdP integration,
-real KMS-backed `SecretVault` provider integration, a full operator console,
+the real Aliyun KMS SDK adapter and cloud smoke path, a full operator console,
 public destructive OSS cleanup, broader audit coverage, and a complete role
 permission matrix.
 
 No billing provider, payment flow, invoices, real provider price table, second
 cloud provider, public destructive provider cleanup endpoint, WebSocket/SSE log
 streaming, desktop billing UI, or model-backed review/debug/coder loop was
-added. No real KMS SDK is wired yet.
+added. No real KMS SDK or cloud KMS credential path is wired yet.
 
 ## Verification
 

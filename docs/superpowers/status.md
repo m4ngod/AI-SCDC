@@ -93,7 +93,7 @@ workspace-scope, and secret-open audit slices:
   approval, review/debug, and pull-request HTTP reads/writes are scoped to the
   active workspace.
 - `SecretVault` protocol coverage for seal/open/rotate/delete/fingerprint with
-  a fail-closed provider factory and not-configured KMS placeholder.
+  a fail-closed provider factory and test-backed KMS provider boundary.
 - `SecretAccessAuditLog` plus centralized secret-open auditing for model
   planner, GitHub pull-request, Docker cloud-run, and remote-worker payload
   credential opens.
@@ -108,7 +108,7 @@ workspace-scope, and secret-open audit slices:
   summary APIs.
 
 Remaining commercial trust work includes full session issuance, production
-auth/IdP integration, real KMS-backed `SecretVault` provider integration,
+auth/IdP integration, the real Aliyun KMS SDK adapter and cloud KMS smoke path,
 a full operator console, public destructive OSS cleanup, broader audit
 coverage, a complete role-specific permission matrix, real provider price
 tables, payment integration, invoices, and desktop billing UI.
@@ -132,6 +132,8 @@ Phase 13B/13C current verification snapshot:
 - `pytest apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_usage_ledger_api.py -q` -> 75 passed, 1 warning in 34.66s
 - `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py` -> passed
 - `pytest apps/api/tests/test_secret_access_audit.py -q` -> 9 passed, 1 warning in 2.65s
+- `pytest apps/api/tests/test_secret_access_audit.py -q`: KMS provider boundary
+  tests included; passed in this slice.
 - `pytest apps/api/tests/test_secret_access_audit.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_model_planner.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q` -> 103 passed, 1 warning in 19.01s
 - `pytest apps/api/tests/test_cloud_run_api.py -q -k "docker_cloud_run_enqueue_stores_metadata_without_opening_token or docker_cloud_run_validates_profile_before_opening_github_token"` -> 2 passed, 170 deselected, 1 warning in 4.57s
 - `pytest apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q` -> 73 passed, 1 warning in 49.83s
@@ -202,9 +204,10 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Known Limits
 
-- Phase 13B now has request identity, workspace scope, and secret-open audit
-  foundations, but it does not yet add full login/session issuance, production
-  IdP integration, real KMS, billing, subscriptions, complete audit logging,
+- Phase 13B now has request identity, workspace scope, secret-open audit
+  foundations, and a test-backed KMS SecretVault boundary, but it does not yet
+  add full login/session issuance, production IdP integration, the real Aliyun
+  KMS SDK adapter, billing, subscriptions, complete audit logging,
   WebSockets/SSE, or a second cloud provider.
 - Phase 13B exposes authenticated owner/admin MNS receipt recovery and ECI
   terminal cleanup endpoints for cloud runs, but public destructive OSS cleanup
@@ -221,14 +224,14 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
   from `registry-1.docker.io`, so the smoke used an already cached image.
 - Real GitHub PR publishing still requires starting the API with
   `AI_SCDC_GITHUB_PR_ADAPTER=real` and providing a real PAT.
-- Authentication, organization RBAC, subscriptions, billing collection, and
-  production KMS are still development placeholders.
+- Authentication, organization RBAC, subscriptions, billing collection, and the
+  production Aliyun KMS SDK adapter are still development boundaries.
 - Reviewer and debugger behavior is deterministic, not model-backed.
 - The API still initializes schema through SQLModel metadata and SQLite upgrade
   helpers; Alembic migrations remain reserved for later.
 
 ## Recommended Next Phase
 
-The next production step should continue Phase 13B with real KMS-backed
-`SecretVault` provider integration plus broader/full organization-scoped
+The next production step should continue Phase 13B with the real Aliyun KMS SDK
+adapter and cloud KMS smoke path, plus broader/full organization-scoped
 operator controls and operator console coverage before commercial beta.
