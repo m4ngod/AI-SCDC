@@ -2,10 +2,11 @@
 
 ## Purpose
 
-Phase 13B still needs authenticated organization-scoped operator controls before
-commercial beta. This slice exposes two existing Aliyun maintenance helpers
-through narrow HTTP APIs while preserving the current provider behavior,
-redaction boundaries, and workspace isolation rules.
+Phase 13B still needs broader/full organization-scoped operator controls and
+operator console coverage before commercial beta. This slice exposes two
+existing Aliyun maintenance helpers through narrow HTTP APIs while preserving
+the current provider behavior, redaction boundaries, and workspace isolation
+rules.
 
 ## Scope
 

@@ -372,8 +372,9 @@ In progress:
 1. Phase 13B commercial trust boundary with request identity, workspace scope,
    API-token lookup, RBAC foundations, a fail-closed secret-vault provider
    factory, and secret-access audit logs. Remaining work includes real
-   KMS-backed secrets, full sessions, broader audit coverage, authenticated
-   operator APIs, and a complete permission matrix.
+   KMS-backed secrets, full sessions, broader/full organization-scoped operator
+   controls or operator console coverage, broader audit coverage, and a
+   complete permission matrix.
 2. Phase 13C cost/quota guardrail foundation with execution usage types,
    workspace credits, spend limits, budget reservations, and usage/cost summary
    APIs. Remaining work includes real provider pricing, payment integration,

@@ -126,7 +126,7 @@ Phase 13A final verification has completed:
 - `pnpm typecheck` -> `apps/desktop` and `packages/agent-protocol` completed
 - `git diff --check` -> passed
 
-Phase 13B foundation verification:
+Phase 13B/13C current verification snapshot:
 
 - `pytest apps/api/tests/test_auth_rbac_api.py -q` -> 10 passed, 1 warning in 4.80s
 - `pytest apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_usage_ledger_api.py -q` -> 75 passed, 1 warning in 34.66s
@@ -141,10 +141,10 @@ Phase 13B foundation verification:
 - `pytest apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_cloud_run_api.py -q -k "operator or money_moving_workspace_endpoints_require_billing_role"` -> 5 passed, 183 deselected, 1 warning in 4.41s
 - `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_cloud_run_api.py` -> passed
 - `pytest apps/api/tests/test_cloud_run_api.py apps/api/tests/test_auth_rbac_api.py -q -k "cloud_run_operator or retained_receipt_recovery or terminal_cleanup or money_moving_workspace_endpoints_require_billing_role"` -> 13 passed, 175 deselected, 1 warning in 11.03s
-- `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py -q` -> 19 passed, 1 warning in 5.40s
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "enqueue or cancel or process or completion"` -> 30 passed, 142 deselected, 1 warning in 23.50s
+- `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py -q` -> 46 passed, 1 warning in 21.67s
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "enqueue or cancel or process or completion or lease"` -> 50 passed, 123 deselected, 1 warning in 76.56s
 - `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_pull_request_api.py apps/api/tests/test_planner_endpoints.py -q` -> 60 passed, 1 warning in 16.99s
-- `pytest apps/api/tests -q` -> 507 passed, 1 warning in 246.22s
+- `pytest apps/api/tests -q` -> 536 passed, 1 warning in 264.56s
 - `pnpm typecheck` -> `apps/desktop` and `packages/agent-protocol` completed
 - `git diff --check` -> passed with Git LF-to-CRLF working-copy warnings only
 
@@ -206,9 +206,10 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
   foundations, but it does not yet add full login/session issuance, production
   IdP integration, real KMS, billing, subscriptions, complete audit logging,
   WebSockets/SSE, or a second cloud provider.
-- Phase 13A service-level Aliyun cleanup and recovery seams plus operations
-  docs remain non-public; no public destructive cleanup endpoint deletes
-  provider resources.
+- Phase 13B exposes authenticated owner/admin MNS receipt recovery and ECI
+  terminal cleanup endpoints for cloud runs, but public destructive OSS cleanup
+  and provider deletion APIs remain unavailable; the full operator console is
+  still future work.
 - The real remote worker can fetch a protected payload, clone, execute commands,
   capture diffs, upload artifacts, and complete a lease, but it does not push
   branches, create pull requests, merge changes, or provide live
@@ -229,5 +230,5 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 ## Recommended Next Phase
 
 The next production step should continue Phase 13B with real KMS-backed
-`SecretVault` provider integration and authenticated organization-scoped
-operator controls before commercial beta.
+`SecretVault` provider integration plus broader/full organization-scoped
+operator controls and operator console coverage before commercial beta.
