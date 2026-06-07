@@ -11,6 +11,7 @@ from ai_company_api.models.entities import (
     CloudRun,
     CloudRunStoredObject,
     PatchArtifact,
+    WorkspaceRole,
     utc_now,
 )
 from ai_company_api.schemas.api import (
@@ -30,6 +31,11 @@ from ai_company_api.services.object_storage import (
     ObjectStorageReadError,
     ObjectStorageRef,
     get_object_storage_provider,
+)
+from ai_company_api.services.auth_context import (
+    enforce_workspace_access,
+    get_current_auth_context,
+    require_workspace_role,
 )
 
 
@@ -171,14 +177,24 @@ def cleanup_expired_cloud_run_artifacts(
     *,
     request: CloudRunArtifactCleanupRequest,
 ) -> CloudRunArtifactCleanupResultRead:
+    context = get_current_auth_context()
+    if context is not None:
+        require_workspace_role({WorkspaceRole.OWNER, WorkspaceRole.ADMIN})
+
     before = request.before or utc_now()
     normalized_before = _as_utc(before)
 
-    expired_stored_objects = session.exec(
+    statement = (
         select(CloudRunStoredObject)
         .where(CloudRunStoredObject.expires_at.is_not(None))
         .where(CloudRunStoredObject.expires_at <= normalized_before)
-        .order_by(CloudRunStoredObject.expires_at, CloudRunStoredObject.id)
+    )
+    if context is not None:
+        statement = statement.where(
+            CloudRunStoredObject.workspace_id == context.workspace_id,
+        )
+    expired_stored_objects = session.exec(
+        statement.order_by(CloudRunStoredObject.expires_at, CloudRunStoredObject.id)
     ).all()
 
     items: list[CloudRunArtifactCleanupItemRead] = []
@@ -264,6 +280,7 @@ def _get_cloud_run_or_404(session: Session, cloud_run_id: str) -> CloudRun:
     cloud_run = session.get(CloudRun, cloud_run_id)
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
+    enforce_workspace_access(cloud_run.workspace_id, detail="Cloud run not found")
     return cloud_run
 
 

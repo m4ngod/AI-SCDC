@@ -19,7 +19,7 @@ from ai_company_api.services.github_repository import (
 )
 from ai_company_api.services.repository import get_repository
 from ai_company_api.services.sandbox_profiles import validate_sandbox_profile_for_repo
-from ai_company_api.services.secret_vault import DevSecretVault
+from ai_company_api.services.secret_access_audit import open_secret
 
 
 def get_remote_worker_payload(
@@ -71,7 +71,17 @@ def get_remote_worker_payload(
         test_command_keys=cloud_run.test_command_keys or [],
     )
     credential = get_active_github_credential(session, repository.github_credential_id)
-    clone_token = DevSecretVault().open(credential.encrypted_token)
+    clone_token = open_secret(
+        session,
+        credential.encrypted_token,
+        secret_kind="github_credential",
+        secret_id=credential.id,
+        access_reason="remote_worker_payload_clone",
+        workspace_id=credential.workspace_id,
+        user_id=f"worker:{data.worker_id}",
+        auth_mode="worker_callback",
+        commit_audit=True,
+    )
     return RemoteWorkerPayloadRead(
         cloud_run_id=cloud_run.id,
         task_id=task.id,

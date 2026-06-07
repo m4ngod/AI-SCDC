@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlmodel import Session
 
 from ai_company_api.db.session import get_session_dependency
+from ai_company_api.models.entities import WorkspaceRole
 from ai_company_api.schemas.api import (
     AgentRole,
     CloudRunArtifactCleanupRequest,
@@ -14,6 +15,7 @@ from ai_company_api.schemas.api import (
     CloudRunArtifactManifestRead,
     CloudRunArtifactRefCreate,
     CloudRunArtifactUploadCreate,
+    CloudRunCostSummaryRead,
     CloudRunCreate,
     CloudRunLeaseComplete,
     CloudRunLeaseCreate,
@@ -25,6 +27,7 @@ from ai_company_api.schemas.api import (
     CloudRunRead,
     CloudRunResultRead,
     ConversationCreate,
+    CreditWalletRead,
     DebugAttemptRead,
     GitHubCredentialCreate,
     GitHubCredentialRead,
@@ -32,6 +35,7 @@ from ai_company_api.schemas.api import (
     LocalRunCreate,
     LocalTaskRunRead,
     LocalTestRunRead,
+    ManualCreditGrantCreate,
     MessageCreate,
     ModelCredentialCreate,
     ModelCredentialRead,
@@ -60,10 +64,13 @@ from ai_company_api.schemas.api import (
     ResolvedModelRouteRead,
     SandboxProfileCreate,
     SandboxProfileRead,
+    SpendLimitRead,
+    SpendLimitUpdate,
     TaskCreate,
     TaskUpdate,
     UsageLedgerCreate,
     UsageLedgerRead,
+    UsageSummaryRead,
 )
 from ai_company_api.services.artifact_plane import (
     build_cloud_run_artifact_manifest,
@@ -72,6 +79,12 @@ from ai_company_api.services.artifact_plane import (
     get_cloud_run_artifact_descriptor,
     list_cloud_run_artifacts,
     read_cloud_run_artifact_content,
+)
+from ai_company_api.services.budgeting import (
+    cloud_run_cost_summary,
+    grant_manual_credit,
+    set_workspace_spend_limit,
+    workspace_usage_summary,
 )
 from ai_company_api.services.cloud_run_logs import list_cloud_run_log_window
 from ai_company_api.services.cloud_runner import (
@@ -163,9 +176,15 @@ from ai_company_api.services.usage_ledger import (
     append_usage_ledger_entry,
     list_usage_ledger_entries,
 )
+from ai_company_api.services.auth_context import current_user_id, require_workspace_role
 
 router = APIRouter()
 SessionDep = Annotated[Session, Depends(get_session_dependency)]
+BILLING_WORKSPACE_ROLES = {
+    WorkspaceRole.OWNER,
+    WorkspaceRole.ADMIN,
+    WorkspaceRole.BILLING_MANAGER,
+}
 
 
 @router.get("/projects")
@@ -472,6 +491,41 @@ def post_usage_ledger_entry(
     return append_usage_ledger_entry(session, data)
 
 
+@router.post(
+    "/workspace/credits/manual-grants",
+    status_code=status.HTTP_201_CREATED,
+    response_model=CreditWalletRead,
+)
+def post_manual_credit_grant(
+    data: ManualCreditGrantCreate,
+    session: SessionDep,
+) -> CreditWalletRead:
+    require_workspace_role(BILLING_WORKSPACE_ROLES)
+    return grant_manual_credit(session, data)
+
+
+@router.put("/workspace/spend-limit", response_model=SpendLimitRead)
+def put_workspace_spend_limit(
+    data: SpendLimitUpdate,
+    session: SessionDep,
+) -> SpendLimitRead:
+    require_workspace_role(BILLING_WORKSPACE_ROLES)
+    return set_workspace_spend_limit(session, data)
+
+
+@router.get("/workspace/usage-summary", response_model=UsageSummaryRead)
+def get_workspace_usage_summary(
+    session: SessionDep,
+    project_id: str | None = None,
+    task_id: str | None = None,
+) -> UsageSummaryRead:
+    return workspace_usage_summary(
+        session,
+        project_id=project_id,
+        task_id=task_id,
+    )
+
+
 @router.get("/projects/{project_id}/tasks")
 def get_project_tasks(project_id: str, session: SessionDep):
     return list_tasks(session, project_id)
@@ -517,6 +571,17 @@ def get_cloud_run_by_id(
     session: SessionDep,
 ) -> CloudRunRead:
     return get_cloud_run_read(session, cloud_run_id)
+
+
+@router.get(
+    "/cloud-runs/{cloud_run_id}/cost-summary",
+    response_model=CloudRunCostSummaryRead,
+)
+def get_cloud_run_cost_summary(
+    cloud_run_id: str,
+    session: SessionDep,
+) -> CloudRunCostSummaryRead:
+    return cloud_run_cost_summary(session, cloud_run_id)
 
 
 @router.post(
@@ -957,7 +1022,7 @@ def patch_task(task_id: str, data: TaskUpdate, session: SessionDep):
         task_id,
         data.status,
         actor_type="user",
-        actor_id="dev_user",
+        actor_id=current_user_id(),
     )
 
 
@@ -979,7 +1044,7 @@ def cancel_task(task_id: str, session: SessionDep):
         task_id,
         TaskStatus.CANCELLED,
         actor_type="user",
-        actor_id="dev_user",
+        actor_id=current_user_id(),
     )
 
 

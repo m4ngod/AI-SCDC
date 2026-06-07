@@ -12,6 +12,7 @@ from ai_company_api.services.docker_sandbox import (
     validate_docker_image,
 )
 from ai_company_api.services.repository import get_project, get_repository
+from ai_company_api.services.auth_context import enforce_workspace_access
 
 
 def create_sandbox_profile(
@@ -75,6 +76,7 @@ def get_sandbox_profile(session: Session, profile_id: str) -> SandboxProfile:
     profile = session.get(SandboxProfile, profile_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="Sandbox profile not found")
+    enforce_workspace_access(profile.workspace_id, detail="Sandbox profile not found")
     return profile
 
 

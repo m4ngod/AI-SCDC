@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +16,11 @@ from ai_company_api.db.session import (
     session_generator,
 )
 from ai_company_api.schemas.api import DevIdentity
+from ai_company_api.services.auth_context import (
+    DEV_AUTH_MODE,
+    AuthContext,
+    get_auth_context_dependency,
+)
 
 
 DEV_CORS_ORIGINS = (
@@ -64,6 +69,7 @@ def redact_validation_errors(
 def create_app(
     database_url: str = "sqlite:///./dev.db",
     cors_origins: tuple[str, ...] = DEV_CORS_ORIGINS,
+    auth_mode: str = DEV_AUTH_MODE,
 ) -> FastAPI:
     engine = build_engine(database_url)
 
@@ -73,6 +79,7 @@ def create_app(
         yield
 
     app = FastAPI(title="AI Company API", lifespan=lifespan)
+    app.state.auth_mode = auth_mode
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),
@@ -100,14 +107,16 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/me")
-    def me() -> DevIdentity:
+    def me(auth: AuthContext = Depends(get_auth_context_dependency)) -> DevIdentity:
         return DevIdentity(
-            user_id="dev_user",
-            workspace_id="dev_workspace",
-            organization_id="dev_organization",
+            user_id=auth.user_id,
+            workspace_id=auth.workspace_id,
+            organization_id=auth.organization_id,
+            roles=sorted(role.value for role in auth.roles),
+            auth_mode=auth.auth_mode,
         )
 
-    app.include_router(router)
+    app.include_router(router, dependencies=[Depends(get_auth_context_dependency)])
     return app
 
 

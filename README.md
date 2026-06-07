@@ -1,6 +1,6 @@
 # AI Software Company Desktop Console
 
-This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, Phase 10A remote worker control-plane contract, Phase 10B provider-neutral remote execution-plane contract, Phase 10C Aliyun provider MVP, Phase 10D run-scoped remote worker callback token hardening, Phase 11 real remote worker execution skeleton, Phase 12A bounded cloud-run log polling and safe remote log-stream reads, Phase 12B optional provider-native log sync, Phase 12C Aliyun MNS pull-worker receipt handling, Phase 12D cloud-run artifact manifest and retention plane, and Phase 13A Aliyun operational hardening for a desktop multi-agent software engineering console.
+This repo includes the Phase 0 monorepo foundation, Phase 1 planner approval loop, Phase 2 backend-first model routing and BYOK foundation, Phase 3 real planner vertical slice, Phase 4 local runner vertical slice, Phase 5 deterministic test/review/debug workflow, Phase 6 human patch approval and diff viewer workflow, Phase 7 GitHub-only cloud-run and pull-request boundary, Phase 8 Docker local sandbox executor, Phase 9 local cloud-run queue worker boundary, Phase 10A remote worker control-plane contract, Phase 10B provider-neutral remote execution-plane contract, Phase 10C Aliyun provider MVP, Phase 10D run-scoped remote worker callback token hardening, Phase 11 real remote worker execution skeleton, Phase 12A bounded cloud-run log polling and safe remote log-stream reads, Phase 12B optional provider-native log sync, Phase 12C Aliyun MNS pull-worker receipt handling, Phase 12D cloud-run artifact manifest and retention plane, Phase 13A Aliyun operational hardening, Phase 13B identity/workspace-scope plus secret-access audit foundations, and Phase 13C execution usage/cost guardrail foundations for a desktop multi-agent software engineering console.
 
 ## Local Commands
 
@@ -26,8 +26,17 @@ Operator references:
 
 Use OSS lifecycle rules for development object retention. Do not add broad
 API-side OSS deletion until authenticated organization-scoped operator controls
-exist. `DevSecretVault` remains development-only; commercial production must
-provide a KMS-backed `SecretVault` implementation before beta traffic.
+exist. `DevSecretVault` remains development-only; the API now has a fail-closed
+secret-vault provider factory, a not-configured KMS adapter placeholder, and
+secret create/open/delete audit records, but commercial production still must
+provide a real KMS-backed `SecretVault` implementation before beta traffic.
+
+Phase 13C starts cost protection without payment integration. The API now has
+execution-plane usage types, workspace manual credit grants, spend limits,
+cloud-run budget reservations, per-run cost summaries, and workspace usage
+summary APIs. Cost summaries distinguish measured execution cost from
+reservation-capped billable cost for this phase. Stripe, real provider price
+tables, invoices, and desktop billing UI remain out of scope.
 
 The desktop runs in deterministic mock mode by default. Set
 `VITE_API_BASE_URL=http://127.0.0.1:8000` before `pnpm dev:desktop` to enable
