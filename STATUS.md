@@ -46,9 +46,9 @@ usage summaries aggregate usage by project/task and usage type.
 
 This is not the full commercial beta trust boundary yet. Remaining Phase 13B
 work includes full login/session issuance, production auth/IdP integration,
-the real Aliyun KMS SDK adapter and cloud smoke path, a full operator console,
-public destructive OSS cleanup, broader audit coverage, and a complete role
-permission matrix.
+the real Aliyun KMS SDK adapter, cloud KMS credential path, and cloud KMS smoke
+path, a full operator console, public destructive OSS cleanup, broader audit
+coverage, and a complete role permission matrix.
 
 No billing provider, payment flow, invoices, real provider price table, second
 cloud provider, public destructive provider cleanup endpoint, WebSocket/SSE log

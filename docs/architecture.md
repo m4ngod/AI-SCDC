@@ -320,8 +320,9 @@ access keys, and raw provider URLs.
 
 Phase 13B is not complete yet. This slice does not add full login/session
 issuance, production IdP integration, the real Aliyun KMS SDK adapter and cloud
-KMS smoke path, billing, a full operator console, public destructive OSS
-cleanup, complete audit logging, or a complete role-by-route permission matrix.
+KMS credential path or cloud KMS smoke path, billing, a full operator console,
+public destructive OSS cleanup, complete audit logging, or a complete
+role-by-route permission matrix.
 
 ## Phase 13C Boundary
 
@@ -374,10 +375,12 @@ In progress:
 
 1. Phase 13B commercial trust boundary with request identity, workspace scope,
    API-token lookup, RBAC foundations, a fail-closed secret-vault provider
-   factory, a test-backed KMS provider boundary, and secret-access audit logs.
-   Remaining work includes the real Aliyun KMS SDK adapter, full sessions,
-   broader/full organization-scoped operator controls or operator console
-   coverage, broader audit coverage, and a complete permission matrix.
+   factory, a test-backed `KmsSecretVault` provider boundary for
+   `kms`/`aliyun_kms`, and secret-access audit logs. Remaining work includes
+   the real Aliyun KMS SDK adapter, cloud KMS credential path, cloud KMS smoke
+   path, full sessions, broader/full organization-scoped operator controls or
+   operator console coverage, broader audit coverage, and a complete permission
+   matrix.
 2. Phase 13C cost/quota guardrail foundation with execution usage types,
    workspace credits, spend limits, budget reservations, and usage/cost summary
    APIs. Remaining work includes real provider pricing, payment integration,

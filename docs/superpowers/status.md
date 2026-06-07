@@ -93,7 +93,10 @@ workspace-scope, and secret-open audit slices:
   approval, review/debug, and pull-request HTTP reads/writes are scoped to the
   active workspace.
 - `SecretVault` protocol coverage for seal/open/rotate/delete/fingerprint with
-  a fail-closed provider factory and test-backed KMS provider boundary.
+  a fail-closed provider factory and test-backed `KmsSecretVault` provider
+  boundary for `kms`/`aliyun_kms`. KMS mode requires `AI_SCDC_KMS_KEY_ID` plus
+  an explicitly configured KMS client seam and never falls back to development
+  storage.
 - `SecretAccessAuditLog` plus centralized secret-open auditing for model
   planner, GitHub pull-request, Docker cloud-run, and remote-worker payload
   credential opens.
@@ -108,10 +111,11 @@ workspace-scope, and secret-open audit slices:
   summary APIs.
 
 Remaining commercial trust work includes full session issuance, production
-auth/IdP integration, the real Aliyun KMS SDK adapter and cloud KMS smoke path,
-a full operator console, public destructive OSS cleanup, broader audit
-coverage, a complete role-specific permission matrix, real provider price
-tables, payment integration, invoices, and desktop billing UI.
+auth/IdP integration, the real Aliyun KMS SDK adapter, cloud KMS credential
+path, and cloud KMS smoke path, a full operator console, public destructive OSS
+cleanup, broader audit coverage, a complete role-specific permission matrix,
+real provider price tables, payment integration, invoices, and desktop billing
+UI.
 
 ## Verification
 
@@ -207,8 +211,9 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 - Phase 13B now has request identity, workspace scope, secret-open audit
   foundations, and a test-backed KMS SecretVault boundary, but it does not yet
   add full login/session issuance, production IdP integration, the real Aliyun
-  KMS SDK adapter, billing, subscriptions, complete audit logging,
-  WebSockets/SSE, or a second cloud provider.
+  KMS SDK adapter, cloud KMS credential path, cloud KMS smoke path, billing,
+  subscriptions, complete audit logging, WebSockets/SSE, or a second cloud
+  provider.
 - Phase 13B exposes authenticated owner/admin MNS receipt recovery and ECI
   terminal cleanup endpoints for cloud runs, but public destructive OSS cleanup
   and provider deletion APIs remain unavailable; the full operator console is
@@ -224,8 +229,9 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
   from `registry-1.docker.io`, so the smoke used an already cached image.
 - Real GitHub PR publishing still requires starting the API with
   `AI_SCDC_GITHUB_PR_ADAPTER=real` and providing a real PAT.
-- Authentication, organization RBAC, subscriptions, billing collection, and the
-  production Aliyun KMS SDK adapter are still development boundaries.
+- Authentication, organization RBAC, subscriptions, billing collection, the
+  production Aliyun KMS SDK adapter, and cloud KMS credential path are still
+  development boundaries.
 - Reviewer and debugger behavior is deterministic, not model-backed.
 - The API still initializes schema through SQLModel metadata and SQLite upgrade
   helpers; Alembic migrations remain reserved for later.
@@ -233,5 +239,6 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 ## Recommended Next Phase
 
 The next production step should continue Phase 13B with the real Aliyun KMS SDK
-adapter and cloud KMS smoke path, plus broader/full organization-scoped
-operator controls and operator console coverage before commercial beta.
+adapter, cloud KMS credential path, and cloud KMS smoke path, plus broader/full
+organization-scoped operator controls and operator console coverage before
+commercial beta.
