@@ -78,6 +78,21 @@ def build_client(database_path: Path) -> TestClient:
     return TestClient(create_app(database_url=database_url))
 
 
+def auth_headers(
+    *,
+    user_id: str = "operator_user",
+    workspace_id: str = "dev_workspace",
+    organization_id: str = "dev_organization",
+    roles: str = "owner",
+) -> dict[str, str]:
+    return {
+        "x-ai-scdc-user-id": user_id,
+        "x-ai-scdc-workspace-id": workspace_id,
+        "x-ai-scdc-organization-id": organization_id,
+        "x-ai-scdc-roles": roles,
+    }
+
+
 def enqueue_and_process_cloud_run(
     client: TestClient,
     task_id: str,
@@ -4299,6 +4314,122 @@ def test_aliyun_mns_retained_receipt_recovery_redacts_raw_provider_error_at_help
     assert "receipt-1" not in serialized_logs
     assert "provider-secret" not in serialized_logs
     assert "abc123" not in serialized_logs
+
+
+def test_cloud_run_operator_endpoints_reject_non_operator_roles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, _lease_id, _fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    client = build_client(database_path)
+    endpoints = [
+        f"/cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete",
+        f"/cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime",
+    ]
+
+    for role in ("developer", "reviewer", "billing_manager", "viewer"):
+        for endpoint in endpoints:
+            response = client.post(endpoint, headers=auth_headers(roles=role))
+
+            assert response.status_code == 403
+            assert response.json()["detail"] == "Insufficient workspace role"
+
+
+def test_cloud_run_operator_retries_mns_receipt_delete_without_leaking_receipt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, lease_id, fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    fake_mns.delete_error = RuntimeError("delete failed for receipt-1")
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    client = build_client(database_path)
+    payload = remote_stub_completion_payload(cloud_run_id)
+    payload["worker_id"] = queued_payload["worker_id"]
+    payload["callback_token"] = queued_payload["callback_token"]
+    completion = client.post(
+        f"/cloud-run-worker/leases/{lease_id}/complete",
+        json=payload,
+    )
+    assert completion.status_code == 200
+
+    fake_mns.delete_error = None
+    response = client.post(
+        f"/cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete",
+        headers=auth_headers(roles="owner"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["reason"] == "mns_message_deleted"
+    assert body["cloud_run"]["id"] == cloud_run_id
+    assert body["cloud_run"]["external_status"] == "mns_message_deleted"
+    assert fake_mns.delete_requests[-1].receipt_handle == "receipt-1"
+    assert "queue_receipt" not in response.text
+    assert "receipt-1" not in response.text
+    assert queued_payload["callback_token"] not in response.text
+
+
+def test_cloud_run_operator_cleans_aliyun_eci_runtime_without_leaking_runtime_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_eci = CleanupRecordingAliyunEciClient()
+    database_path = tmp_path / "app.db"
+    cloud_run_id, runtime_job_id = _start_completed_aliyun_eci_run(
+        tmp_path,
+        monkeypatch,
+        fake_eci,
+    )
+    client = build_client(database_path)
+
+    response = client.post(
+        f"/cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime",
+        headers=auth_headers(roles="admin"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["reason"] == "runtime_cleanup_deleted"
+    assert body["cloud_run"]["id"] == cloud_run_id
+    assert body["cloud_run"]["external_status"] == "runtime_cleanup_deleted"
+    assert fake_eci.deleted_container_group_ids == [runtime_job_id]
+    assert "runtime_job_id" not in response.text
+    assert runtime_job_id not in response.text
+
+
+def test_cloud_run_operator_endpoints_hide_cross_workspace_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, _lease_id, _fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    client = build_client(database_path)
+
+    response = client.post(
+        f"/cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete",
+        headers=auth_headers(
+            user_id="other_operator",
+            workspace_id="other_workspace",
+            organization_id="other_organization",
+            roles="owner",
+        ),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cloud run not found"
 
 
 def test_aliyun_eci_terminal_cleanup_deletes_persisted_runtime_job_and_logs_safe_success(
