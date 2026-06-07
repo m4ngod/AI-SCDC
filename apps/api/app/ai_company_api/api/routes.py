@@ -24,6 +24,8 @@ from ai_company_api.schemas.api import (
     CloudRunLeaseRequeueExpired,
     CloudRunLogEntryRead,
     CloudRunLogWindowRead,
+    CloudRunOperatorSnapshotRead,
+    CloudRunProviderOperationRead,
     CloudRunRead,
     CloudRunResultRead,
     ConversationCreate,
@@ -90,6 +92,8 @@ from ai_company_api.services.cloud_run_logs import list_cloud_run_log_window
 from ai_company_api.services.cloud_runner import (
     cancel_cloud_run,
     claim_next_cloud_run_lease,
+    cleanup_aliyun_eci_terminal_runtime_job,
+    CloudRunProviderOperationResult,
     complete_cloud_run_lease,
     get_cloud_run_read,
     heartbeat_cloud_run_lease,
@@ -98,6 +102,7 @@ from ai_company_api.services.cloud_runner import (
     process_cloud_run,
     process_next_cloud_run,
     requeue_expired_cloud_run_leases,
+    retry_retained_mns_queue_receipt_delete,
     start_cloud_run,
     upload_cloud_run_lease_artifact,
 )
@@ -185,6 +190,33 @@ BILLING_WORKSPACE_ROLES = {
     WorkspaceRole.ADMIN,
     WorkspaceRole.BILLING_MANAGER,
 }
+OPERATOR_WORKSPACE_ROLES = {
+    WorkspaceRole.OWNER,
+    WorkspaceRole.ADMIN,
+}
+
+
+def _cloud_run_provider_operation_read(
+    result: CloudRunProviderOperationResult,
+) -> CloudRunProviderOperationRead:
+    cloud_run = result.cloud_run
+    return CloudRunProviderOperationRead(
+        status=result.status,
+        reason=result.reason,
+        cloud_run=CloudRunOperatorSnapshotRead(
+            id=cloud_run.id,
+            workspace_id=cloud_run.workspace_id,
+            project_id=cloud_run.project_id,
+            task_id=cloud_run.task_id,
+            status=cloud_run.status,
+            queue_provider=cloud_run.queue_provider,
+            runtime_provider=cloud_run.runtime_provider,
+            external_status=cloud_run.external_status,
+            external_error=cloud_run.external_error,
+            created_at=cloud_run.created_at,
+            updated_at=cloud_run.updated_at,
+        ),
+    )
 
 
 @router.get("/projects")
@@ -563,6 +595,38 @@ def get_task_cloud_runs(
     session: SessionDep,
 ) -> list[CloudRunRead]:
     return list_cloud_runs(session, task_id)
+
+
+@router.post(
+    "/cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete",
+    response_model=CloudRunProviderOperationRead,
+)
+def post_cloud_run_operator_retry_mns_receipt_delete(
+    cloud_run_id: str,
+    session: SessionDep,
+) -> CloudRunProviderOperationRead:
+    require_workspace_role(OPERATOR_WORKSPACE_ROLES)
+    result = retry_retained_mns_queue_receipt_delete(
+        session,
+        cloud_run_id=cloud_run_id,
+    )
+    return _cloud_run_provider_operation_read(result)
+
+
+@router.post(
+    "/cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime",
+    response_model=CloudRunProviderOperationRead,
+)
+def post_cloud_run_operator_cleanup_aliyun_eci_runtime(
+    cloud_run_id: str,
+    session: SessionDep,
+) -> CloudRunProviderOperationRead:
+    require_workspace_role(OPERATOR_WORKSPACE_ROLES)
+    result = cleanup_aliyun_eci_terminal_runtime_job(
+        session,
+        cloud_run_id=cloud_run_id,
+    )
+    return _cloud_run_provider_operation_read(result)
 
 
 @router.get("/cloud-runs/{cloud_run_id}", response_model=CloudRunRead)
