@@ -60,7 +60,7 @@ added. No real KMS SDK or cloud KMS credential path is wired yet.
 - `pytest apps/api/tests/test_auth_rbac_api.py -q`: 10 passed, 1 warning in 4.80s.
 - `pytest apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_usage_ledger_api.py -q`: 75 passed, 1 warning in 34.66s.
 - `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py`: passed.
-- `pytest apps/api/tests/test_secret_access_audit.py -q`: 9 passed, 1 warning in 2.65s.
+- `pytest apps/api/tests/test_secret_access_audit.py -q`: 23 passed, 1 warning; includes KMS provider boundary tests.
 - `pytest apps/api/tests/test_secret_access_audit.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_model_planner.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q`: 103 passed, 1 warning in 19.01s.
 - `pytest apps/api/tests/test_cloud_run_api.py -q -k "docker_cloud_run_enqueue_stores_metadata_without_opening_token or docker_cloud_run_validates_profile_before_opening_github_token"`: 2 passed, 170 deselected, 1 warning in 4.57s.
 - `pytest apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q`: 73 passed, 1 warning in 49.83s.
