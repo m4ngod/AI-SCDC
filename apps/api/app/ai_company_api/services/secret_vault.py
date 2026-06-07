@@ -6,7 +6,7 @@ from json import JSONDecodeError
 import os
 from typing import Protocol
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class SealedSecret(BaseModel):
@@ -47,6 +47,8 @@ class SecretVaultConfigurationError(RuntimeError):
 
 
 class _KmsVaultEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     provider: str = Field(min_length=1)
     key_id: str = Field(min_length=1)
     ciphertext: str = Field(min_length=1)

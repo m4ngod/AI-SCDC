@@ -212,6 +212,25 @@ def test_kms_secret_vault_rotates_deletes_and_fingerprints() -> None:
     assert not fake_kms.delete_requests[-1][1].startswith("kms-vault:v1:")
 
 
+def test_kms_secret_vault_rejects_extra_envelope_fields() -> None:
+    vault = KmsSecretVault(
+        client=FakeKmsClient(),
+        key_id="key-a",
+        provider="aliyun_kms",
+    )
+    payload = kms_test_payload(
+        {
+            "provider": "aliyun_kms",
+            "key_id": "key-a",
+            "ciphertext": "fake-kms:key-a:c2stbGVha2Vk",
+            "plaintext": "sk-leaked",
+        }
+    )
+
+    with pytest.raises(ValueError, match="Invalid KMS vault payload"):
+        vault.open(payload)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
