@@ -85,6 +85,22 @@ def test_project_conversation_message_task_flow_records_created_event() -> None:
         assert parent_response.status_code == 201
         parent_task = parent_response.json()
 
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "Dev GitHub", "token": "ghp_example1234567890"},
+        ).json()
+        repository = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Demo remote",
+                "repo_url": "https://github.com/example/demo",
+                "github_owner": "example",
+                "github_repo": "demo",
+                "default_branch": "main",
+                "github_credential_id": credential["id"],
+            },
+        ).json()
+
         task_response = client.post(
             f"/projects/{project['id']}/tasks",
             json={
@@ -99,7 +115,7 @@ def test_project_conversation_message_task_flow_records_created_event() -> None:
                 "allowed_paths": ["apps/api/**"],
                 "required_tests": ["pytest apps/api/tests/test_api_endpoints.py -v"],
                 "assigned_agent_profile_id": "agent_profile_backend",
-                "repo_id": "repo_api",
+                "repo_id": repository["id"],
                 "branch_name": "codex/task-4",
                 "worktree_ref": "worktree_task_4",
                 "budget_limit": 120,
@@ -117,7 +133,7 @@ def test_project_conversation_message_task_flow_records_created_event() -> None:
         assert task["allowed_paths"] == ["apps/api/**"]
         assert task["required_tests"] == ["pytest apps/api/tests/test_api_endpoints.py -v"]
         assert task["assigned_agent_profile_id"] == "agent_profile_backend"
-        assert task["repo_id"] == "repo_api"
+        assert task["repo_id"] == repository["id"]
         assert task["branch_name"] == "codex/task-4"
         assert task["worktree_ref"] == "worktree_task_4"
         assert task["budget_limit"] == 120

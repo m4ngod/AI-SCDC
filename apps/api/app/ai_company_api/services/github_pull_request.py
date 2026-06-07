@@ -31,7 +31,9 @@ from ai_company_api.services.github_repository import (
     validate_github_repository_url,
 )
 from ai_company_api.services.repository import create_task_event, get_task
-from ai_company_api.services.secret_vault import DevSecretVault, SecretVault
+from ai_company_api.services.auth_context import current_user_id, enforce_workspace_access
+from ai_company_api.services.secret_access_audit import open_secret
+from ai_company_api.services.secret_vault import SecretVault
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
@@ -168,6 +170,7 @@ def create_pull_request_for_approval(
     approval = session.get(PatchApproval, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="Patch approval not found")
+    enforce_workspace_access(approval.workspace_id, detail="Patch approval not found")
 
     existing = _existing_pull_request(session, approval.id)
     if existing is not None:
@@ -203,7 +206,15 @@ def create_pull_request_for_approval(
         raise HTTPException(status_code=400, detail="GitHub credential is required")
 
     credential = get_active_github_credential(session, credential_id)
-    token = (vault or DevSecretVault()).open(credential.encrypted_token)
+    token = open_secret(
+        session,
+        credential.encrypted_token,
+        secret_kind="github_credential",
+        secret_id=credential.id,
+        access_reason="github_pull_request_create",
+        workspace_id=credential.workspace_id,
+        vault=vault,
+    )
     base_branch = cloud_run.base_branch or repository.default_branch
     record = PullRequestRecord(
         workspace_id=approval.workspace_id,
@@ -218,7 +229,7 @@ def create_pull_request_for_approval(
         github_pr_number=0,
         github_pr_url="",
         status="creating",
-        created_by="dev_user",
+        created_by=current_user_id(),
     )
     session.add(record)
 
@@ -278,6 +289,7 @@ def get_pull_request(session: Session, pull_request_id: str) -> PullRequestRead:
     record = session.get(PullRequestRecord, pull_request_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pull request not found")
+    enforce_workspace_access(record.workspace_id, detail="Pull request not found")
     return _pull_request_read(record)
 
 
@@ -331,6 +343,7 @@ def _persist_pull_request_finalizing(
     record = session.get(PullRequestRecord, record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pull request not found")
+    enforce_workspace_access(record.workspace_id, detail="Pull request not found")
     record.github_pr_number = created_pr.number
     record.github_pr_url = created_pr.url
     record.status = "finalizing"
@@ -346,6 +359,7 @@ def _finalize_pull_request(
     record = session.get(PullRequestRecord, record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pull request not found")
+    enforce_workspace_access(record.workspace_id, detail="Pull request not found")
 
     task = get_task(session, record.task_id)
     if TaskStatus(task.status) != TaskStatus.PR_CREATED:
@@ -379,6 +393,7 @@ def _latest_cloud_run_for_artifact(
     statement = (
         select(CloudRun)
         .where(CloudRun.patch_artifact_id == artifact.id)
+        .where(CloudRun.workspace_id == artifact.workspace_id)
         .order_by(CloudRun.created_at.desc(), CloudRun.id.desc())
         .limit(1)
     )
@@ -391,6 +406,7 @@ def _latest_cloud_run_for_artifact(
         .where(
             CloudRun.task_id == artifact.task_id,
             CloudRun.local_run_id == artifact.local_run_id,
+            CloudRun.workspace_id == artifact.workspace_id,
         )
         .order_by(CloudRun.created_at.desc(), CloudRun.id.desc())
         .limit(1)
@@ -402,6 +418,7 @@ def _get_github_repository(session: Session, repo_id: str) -> Repository:
     repository = session.get(Repository, repo_id)
     if repository is None:
         raise HTTPException(status_code=404, detail="Repository not found")
+    enforce_workspace_access(repository.workspace_id, detail="Repository not found")
     if repository.provider != "github":
         raise HTTPException(status_code=400, detail="Pull requests require a GitHub repository")
     if repository.connection_status != "active":
@@ -423,6 +440,7 @@ def _get_patch_artifact_entity(
     artifact = session.get(PatchArtifact, patch_artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Patch artifact not found")
+    enforce_workspace_access(artifact.workspace_id, detail="Patch artifact not found")
     return artifact
 
 
@@ -467,6 +485,7 @@ def _pull_request_result_read(
     approval = session.get(PatchApproval, record.patch_approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="Patch approval not found")
+    enforce_workspace_access(approval.workspace_id, detail="Patch approval not found")
     return PullRequestResultRead(
         task=_task_read(task),
         patch_artifact=_patch_artifact_read(artifact),

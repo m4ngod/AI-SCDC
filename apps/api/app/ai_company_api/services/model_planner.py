@@ -18,7 +18,8 @@ from ai_company_api.models.entities import (
 from ai_company_api.schemas.api import AgentRole, RiskLevel, UsageLedgerCreate
 from ai_company_api.services.model_settings import resolve_model_route
 from ai_company_api.services.planner import TaskSpecDraft
-from ai_company_api.services.secret_vault import DevSecretVault, SecretVault
+from ai_company_api.services.secret_access_audit import open_secret
+from ai_company_api.services.secret_vault import SecretVault
 from ai_company_api.services.usage_ledger import append_usage_ledger_entry
 from ai_company_llm_gateway.models import (
     ChatMessage,
@@ -74,7 +75,15 @@ def create_model_planner_result(
             return _fake_result("credential_unavailable")
 
         try:
-            secret = (vault or DevSecretVault()).open(credential.encrypted_secret)
+            secret = open_secret(
+                session,
+                credential.encrypted_secret,
+                secret_kind="model_credential",
+                secret_id=credential.id,
+                access_reason="model_planner_route",
+                workspace_id=credential.workspace_id,
+                vault=vault,
+            )
         except ValueError:
             return _fake_result("credential_unavailable")
 

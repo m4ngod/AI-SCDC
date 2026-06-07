@@ -1,5 +1,5 @@
 import pytest
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.models.entities import (
@@ -11,6 +11,7 @@ from ai_company_api.models.entities import (
     ModelRoute,
     PlannerRun,
     Project,
+    SecretAccessAuditLog,
 )
 from ai_company_api.schemas.api import AgentRole, RiskLevel
 from ai_company_api.services.model_planner import (
@@ -160,6 +161,7 @@ def test_create_model_planner_result_uses_configured_route_and_logs_usage() -> N
             session,
             planner_run_id="planner_run_manual",
         )
+        audit_entries = session.exec(select(SecretAccessAuditLog)).all()
 
     assert adapter_kwargs == {
         "provider_name": "deepseek-dev",
@@ -178,6 +180,11 @@ def test_create_model_planner_result_uses_configured_route_and_logs_usage() -> N
     assert usage_entries[0].prompt_tokens == 31
     assert usage_entries[0].completion_tokens == 17
     assert usage_entries[0].total_tokens == 48
+    assert len(audit_entries) == 1
+    assert audit_entries[0].secret_kind == "model_credential"
+    assert audit_entries[0].secret_id == route.credential_id
+    assert audit_entries[0].access_reason == "model_planner_route"
+    assert audit_entries[0].success is True
 
 
 def test_create_model_planner_result_contains_usage_ledger_failures(

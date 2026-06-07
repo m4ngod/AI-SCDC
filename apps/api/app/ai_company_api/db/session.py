@@ -25,6 +25,9 @@ def init_db(engine) -> None:
     _upgrade_sqlite_cloud_run_phase_10d_columns(engine)
     _upgrade_sqlite_cloud_run_phase_12a_columns(engine)
     _upgrade_sqlite_cloud_run_stored_object_phase_12d_columns(engine)
+    _upgrade_sqlite_cloud_run_phase_13c_cost_columns(engine)
+    _upgrade_sqlite_usage_ledger_phase_13c_columns(engine)
+    _upgrade_sqlite_usage_ledger_phase_13c_unique_cloud_run_usage(engine)
     SQLModel.metadata.create_all(engine)
     _upgrade_sqlite_repository_phase_7_columns(engine)
     _upgrade_sqlite_cloud_run_phase_8_columns(engine)
@@ -384,6 +387,50 @@ def _upgrade_sqlite_cloud_run_stored_object_phase_12d_columns(engine) -> None:
             )
 
 
+def _upgrade_sqlite_cloud_run_phase_13c_cost_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    cloud_run_columns = {
+        "budget_reservation_id": "VARCHAR",
+        "estimated_cost_cents": "INTEGER NOT NULL DEFAULT 0",
+        "actual_cost_cents": "INTEGER NOT NULL DEFAULT 0",
+        "cost_summary_json": "JSON NOT NULL DEFAULT '{}'",
+    }
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "cloud_run" not in existing_tables:
+            return
+
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(text("PRAGMA table_info(cloud_run)")).mappings()
+        }
+        for column_name, column_type in cloud_run_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    text(f"ALTER TABLE cloud_run ADD COLUMN {column_name} {column_type}")
+                )
+
+        for column_name in (
+            "budget_reservation_id",
+            "estimated_cost_cents",
+            "actual_cost_cents",
+        ):
+            connection.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_cloud_run_{column_name} "
+                    f"ON cloud_run ({column_name})"
+                )
+            )
+
+
 def _upgrade_sqlite_local_test_run_nullable_patch_artifact(engine) -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -667,6 +714,216 @@ def _sqlite_has_unique_index(connection, table_name: str, columns: tuple[str, ..
             return True
 
     return False
+
+
+def _upgrade_sqlite_usage_ledger_phase_13c_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    usage_columns = {
+        "cloud_run_id": "VARCHAR",
+        "quantity": "INTEGER NOT NULL DEFAULT 0",
+        "unit_name": "VARCHAR DEFAULT ''",
+    }
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "usage_ledger_entry" not in existing_tables:
+            return
+
+        if _sqlite_usage_ledger_needs_phase_13c_rebuild(connection):
+            _rebuild_sqlite_usage_ledger_entry(connection)
+
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(
+                text("PRAGMA table_info(usage_ledger_entry)")
+            ).mappings()
+        }
+        for column_name, column_type in usage_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE usage_ledger_entry "
+                        f"ADD COLUMN {column_name} {column_type}"
+                    )
+                )
+
+        for column_name in ("cloud_run_id", "quantity"):
+            connection.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_usage_ledger_entry_{column_name} "
+                    f"ON usage_ledger_entry ({column_name})"
+                )
+            )
+
+
+def _upgrade_sqlite_usage_ledger_phase_13c_unique_cloud_run_usage(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "usage_ledger_entry" not in existing_tables:
+            return
+
+        connection.execute(
+            text(
+                """
+                DELETE FROM usage_ledger_entry
+                WHERE cloud_run_id IS NOT NULL
+                  AND rowid NOT IN (
+                    SELECT MIN(rowid)
+                    FROM usage_ledger_entry
+                    WHERE cloud_run_id IS NOT NULL
+                    GROUP BY cloud_run_id, usage_type
+                  )
+                """
+            )
+        )
+
+        if _sqlite_has_unique_index(
+            connection,
+            "usage_ledger_entry",
+            ("cloud_run_id", "usage_type"),
+        ):
+            return
+
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_usage_ledger_cloud_run_usage_type "
+                "ON usage_ledger_entry (cloud_run_id, usage_type) "
+                "WHERE cloud_run_id IS NOT NULL"
+            )
+        )
+
+
+def _sqlite_usage_ledger_needs_phase_13c_rebuild(connection) -> bool:
+    from ai_company_api.models.entities import UsageType
+
+    create_sql = connection.execute(
+        text(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'usage_ledger_entry'
+            """
+        )
+    ).scalar_one_or_none()
+    if create_sql is None:
+        return False
+    normalized_sql = str(create_sql).lower()
+    if "check" not in normalized_sql or "usage_type" not in normalized_sql:
+        return False
+    return any(usage_type.value not in normalized_sql for usage_type in UsageType)
+
+
+def _rebuild_sqlite_usage_ledger_entry(connection) -> None:
+    legacy_table_name = _sqlite_legacy_table_name(
+        connection,
+        "usage_ledger_entry_phase13c_legacy",
+    )
+    connection.execute(
+        text(
+            "ALTER TABLE usage_ledger_entry "
+            f"RENAME TO {_sqlite_quote_identifier(legacy_table_name)}"
+        )
+    )
+    _drop_sqlite_indexes_for_table(connection, legacy_table_name)
+
+    usage_table = SQLModel.metadata.tables["usage_ledger_entry"]
+    usage_table.create(connection, checkfirst=False)
+
+    legacy_columns = [
+        row["name"]
+        for row in connection.execute(
+            text(f"PRAGMA table_info({_sqlite_quote_identifier(legacy_table_name)})")
+        ).mappings()
+    ]
+    current_columns = [
+        row["name"]
+        for row in connection.execute(
+            text("PRAGMA table_info(usage_ledger_entry)")
+        ).mappings()
+    ]
+    rebuild_defaults = {
+        "cloud_run_id": "NULL",
+        "quantity": "0",
+        "unit_name": "''",
+        "unit_price_cents": "0",
+        "amount_cents": "0",
+        "prompt_tokens": "0",
+        "completion_tokens": "0",
+        "total_tokens": "0",
+        "raw_usage_json": "'{}'",
+        "created_at": "CURRENT_TIMESTAMP",
+    }
+    insert_columns: list[str] = []
+    select_expressions: list[str] = []
+    for column_name in current_columns:
+        if column_name in legacy_columns:
+            insert_columns.append(column_name)
+            select_expressions.append(_sqlite_quote_identifier(column_name))
+        elif column_name in rebuild_defaults:
+            insert_columns.append(column_name)
+            select_expressions.append(rebuild_defaults[column_name])
+
+    quoted_insert_columns = ", ".join(
+        _sqlite_quote_identifier(column_name) for column_name in insert_columns
+    )
+    select_sql = ", ".join(select_expressions)
+    connection.execute(
+        text(
+            f"INSERT INTO usage_ledger_entry ({quoted_insert_columns}) "
+            f"SELECT {select_sql} "
+            f"FROM {_sqlite_quote_identifier(legacy_table_name)}"
+        )
+    )
+    connection.execute(
+        text(f"DROP TABLE {_sqlite_quote_identifier(legacy_table_name)}")
+    )
+
+
+def _drop_sqlite_indexes_for_table(connection, table_name: str) -> None:
+    index_rows = list(connection.execute(
+        text(f"PRAGMA index_list({_sqlite_quote_identifier(table_name)})")
+    ).mappings())
+    for row in index_rows:
+        if row.get("origin") == "pk":
+            continue
+        connection.execute(
+            text(f"DROP INDEX IF EXISTS {_sqlite_quote_identifier(str(row['name']))}")
+        )
+
+
+def _sqlite_legacy_table_name(connection, base_name: str) -> str:
+    existing_tables = {
+        row["name"]
+        for row in connection.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table'")
+        ).mappings()
+    }
+    if base_name not in existing_tables:
+        return base_name
+    suffix = 2
+    while f"{base_name}_{suffix}" in existing_tables:
+        suffix += 1
+    return f"{base_name}_{suffix}"
+
+
+def _sqlite_quote_identifier(identifier: str) -> str:
+    return f'"{identifier.replace(chr(34), chr(34) + chr(34))}"'
 
 
 def session_generator(engine) -> Generator[Session, None, None]:

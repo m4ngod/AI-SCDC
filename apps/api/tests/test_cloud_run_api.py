@@ -13,9 +13,11 @@ from sqlmodel import SQLModel, Session, select
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
+    BudgetReservation,
     CloudRun,
     CloudRunLogEntry,
     CloudRunStoredObject,
+    CreditWallet,
     TaskEvent,
     GitHubCredential,
     LocalTaskRun,
@@ -25,6 +27,7 @@ from ai_company_api.models.entities import (
     Repository,
     SandboxProfile,
     Task,
+    UsageLedgerEntry,
     utc_now,
 )
 from ai_company_api.services.cloud_sandbox_executor import (
@@ -58,7 +61,20 @@ from ai_company_api.services.task_state import TaskStatus
 
 def build_client(database_path: Path) -> TestClient:
     database_url = f"sqlite:///{database_path.as_posix()}"
-    init_db(build_engine(database_url))
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        wallet = session.exec(
+            select(CreditWallet).where(CreditWallet.workspace_id == "dev_workspace")
+        ).first()
+        if wallet is None:
+            wallet = CreditWallet(
+                workspace_id="dev_workspace",
+                organization_id="dev_organization",
+                balance_cents=1_000_000,
+            )
+            session.add(wallet)
+            session.commit()
     return TestClient(create_app(database_url=database_url))
 
 
@@ -87,6 +103,17 @@ def create_cloud_task(
     connection_status: str = "active",
     required_tests: list[str] | None = None,
 ) -> tuple[Project, Repository, Task]:
+    wallet = session.exec(
+        select(CreditWallet).where(CreditWallet.workspace_id == "dev_workspace")
+    ).first()
+    if wallet is None:
+        session.add(
+            CreditWallet(
+                workspace_id="dev_workspace",
+                organization_id="dev_organization",
+                balance_cents=1_000_000,
+            )
+        )
     project = Project(name="Cloud project")
     session.add(project)
     session.flush()
@@ -2659,6 +2686,9 @@ def test_remote_worker_payload_rejects_hashless_current_lease(
         def run(self, _request):
             raise AssertionError("executor should not run during enqueue")
 
+    def fail_open_secret(*_args, **_kwargs):
+        raise AssertionError("vault should not open token during enqueue")
+
     monkeypatch.setattr(
         cloud_runner,
         "select_cloud_sandbox_executor",
@@ -3507,22 +3537,25 @@ def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(
 ) -> None:
     from ai_company_api.services import cloud_runner
 
-    class VaultShouldNotOpen:
-        def open(self, _encrypted_secret: str) -> str:
-            raise AssertionError("vault should not open token during enqueue")
-
     class DockerExecutorShouldNotRun:
         sandbox_kind = "docker_local"
 
         def run(self, _request):
             raise AssertionError("executor should not run during enqueue")
 
+    def fail_open_secret(*_args, **_kwargs):
+        raise AssertionError("vault should not open token during enqueue")
+
     monkeypatch.setattr(
         cloud_runner,
         "select_cloud_sandbox_executor",
         lambda: DockerExecutorShouldNotRun(),
     )
-    monkeypatch.setattr(cloud_runner, "DevSecretVault", VaultShouldNotOpen)
+    monkeypatch.setattr(
+        cloud_runner,
+        "open_secret",
+        fail_open_secret,
+    )
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
@@ -5223,6 +5256,67 @@ def test_requeue_expired_cloud_run_lease_fails_at_max_attempts(
     assert body[0]["status"] == "failed"
     assert body[0]["failure_reason"] == "lease_attempts_exhausted"
     assert body[0]["last_queue_error"] == "lease_attempts_exhausted"
+
+
+def test_requeue_expired_cloud_run_lease_settles_failed_run_at_max_attempts(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    )
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        cloud_run.attempt_count = cloud_run.max_attempts
+        cloud_run.lease_expires_at = datetime(2026, 6, 2, tzinfo=timezone.utc)
+        session.add(cloud_run)
+        session.commit()
+
+    response = client.post(
+        "/cloud-run-worker/leases/requeue-expired",
+        json={"limit": 25},
+    )
+    cost_response = client.get(f"/cloud-runs/{queued['id']}/cost-summary")
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "failed"
+    assert cost_response.status_code == 200
+    cost = cost_response.json()
+    assert cost["reservation"]["status"] == "settled"
+    assert cost["actual_cost_cents"] > 0
+    assert {entry["usage_type"] for entry in cost["usage_entries"]} >= {
+        "worker_submissions",
+        "cloud_run_runtime_seconds",
+    }
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        reservation = session.get(BudgetReservation, queued["budget_reservation_id"])
+        usage_entries = session.exec(
+            select(UsageLedgerEntry).where(
+                UsageLedgerEntry.cloud_run_id == queued["id"],
+            )
+        ).all()
+
+    assert reservation is not None
+    assert reservation.settled_cents == cost["actual_cost_cents"]
+    assert len(usage_entries) == len(cost["usage_entries"])
 
 
 def remote_stub_completion_payload(cloud_run_id: str) -> dict:
@@ -7860,22 +7954,25 @@ def test_docker_cloud_run_validates_profile_before_opening_github_token(
 ) -> None:
     from ai_company_api.services import cloud_runner
 
-    class VaultShouldNotOpen:
-        def open(self, _encrypted_secret: str) -> str:
-            raise AssertionError("vault should not open token before profile validation")
-
     class DockerExecutor:
         sandbox_kind = "docker_local"
 
         def run(self, _request):
             raise AssertionError("executor should not run")
 
+    def fail_open_secret(*_args, **_kwargs):
+        raise AssertionError("vault should not open token before profile validation")
+
     monkeypatch.setattr(
         cloud_runner,
         "select_cloud_sandbox_executor",
         lambda: DockerExecutor(),
     )
-    monkeypatch.setattr(cloud_runner, "DevSecretVault", VaultShouldNotOpen)
+    monkeypatch.setattr(
+        cloud_runner,
+        "open_secret",
+        fail_open_secret,
+    )
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:

@@ -19,6 +19,7 @@ from ai_company_api.schemas.api import (
     TaskRead,
 )
 from ai_company_api.services.repository import create_task_event, get_task
+from ai_company_api.services.auth_context import current_user_id, enforce_workspace_access
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
@@ -62,13 +63,14 @@ def approve_patch_artifact(
     event_clock = _EventClock()
     try:
         approval = PatchApproval(
+            workspace_id=artifact.workspace_id,
             project_id=task.project_id,
             task_id=task.id,
             local_run_id=artifact.local_run_id,
             patch_artifact_id=artifact.id,
             review_id=review.id,
             status="approved",
-            approved_by="dev_user",
+            approved_by=current_user_id(),
             merge_instructions=_merge_instructions(task, artifact),
         )
         session.add(approval)
@@ -125,6 +127,7 @@ def get_patch_approval(session: Session, approval_id: str) -> PatchApprovalRead:
     approval = session.get(PatchApproval, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="Patch approval not found")
+    enforce_workspace_access(approval.workspace_id, detail="Patch approval not found")
     return _approval_read(approval)
 
 
@@ -135,6 +138,7 @@ def request_human_approval(
     approval = session.get(PatchApproval, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="Patch approval not found")
+    enforce_workspace_access(approval.workspace_id, detail="Patch approval not found")
 
     task = get_task(session, approval.task_id)
     if TaskStatus(task.status) != TaskStatus.MERGE_READY:
@@ -218,6 +222,7 @@ def _get_patch_artifact_entity(
     artifact = session.get(PatchArtifact, patch_artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Patch artifact not found")
+    enforce_workspace_access(artifact.workspace_id, detail="Patch artifact not found")
     return artifact
 
 
@@ -225,6 +230,7 @@ def _get_patch_review_entity(session: Session, review_id: str) -> PatchReview:
     review = session.get(PatchReview, review_id)
     if review is None:
         raise HTTPException(status_code=404, detail="Patch review not found")
+    enforce_workspace_access(review.workspace_id, detail="Patch review not found")
     return review
 
 

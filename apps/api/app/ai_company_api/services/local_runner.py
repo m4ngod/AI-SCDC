@@ -19,6 +19,7 @@ from ai_company_api.services.repository import (
     get_repository,
     get_task,
 )
+from ai_company_api.services.auth_context import enforce_workspace_access
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
@@ -50,6 +51,7 @@ def start_local_task_run(
 
     event_clock = _EventClock()
     local_run = LocalTaskRun(
+        workspace_id=repository.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         repo_id=repository.id,
@@ -119,6 +121,7 @@ def start_local_task_run(
         return _local_task_run_read(local_run)
 
     artifact = PatchArtifact(
+        workspace_id=local_run.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         local_run_id=local_run.id,
@@ -181,6 +184,7 @@ def get_local_task_run(session: Session, local_run_id: str) -> LocalTaskRunRead:
     local_run = session.get(LocalTaskRun, local_run_id)
     if local_run is None:
         raise HTTPException(status_code=404, detail="Local task run not found")
+    enforce_workspace_access(local_run.workspace_id, detail="Local task run not found")
     return _local_task_run_read(local_run)
 
 
@@ -188,6 +192,7 @@ def get_patch_artifact(session: Session, patch_artifact_id: str) -> PatchArtifac
     artifact = session.get(PatchArtifact, patch_artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Patch artifact not found")
+    enforce_workspace_access(artifact.workspace_id, detail="Patch artifact not found")
     return _patch_artifact_read(artifact)
 
 

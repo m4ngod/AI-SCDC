@@ -24,6 +24,7 @@ from ai_company_api.schemas.api import (
     TaskRead,
 )
 from ai_company_api.services.repository import create_task_event, get_task
+from ai_company_api.services.auth_context import enforce_workspace_access
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
@@ -81,6 +82,7 @@ def start_patch_test_run(
     commands = list(task.required_tests or [])
     worktree_path = local_run.worktree_path
     test_run = LocalTestRun(
+        workspace_id=artifact.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         local_run_id=local_run.id,
@@ -238,6 +240,7 @@ def get_test_run(session: Session, test_run_id: str) -> LocalTestRunRead:
     test_run = session.get(LocalTestRun, test_run_id)
     if test_run is None:
         raise HTTPException(status_code=404, detail="Local test run not found")
+    enforce_workspace_access(test_run.workspace_id, detail="Local test run not found")
     return _test_run_read(test_run)
 
 
@@ -250,6 +253,7 @@ def _start_cloud_fake_test_run(
     event_clock = _EventClock()
     commands = list(task.required_tests or ["cloud fake test"])
     test_run = LocalTestRun(
+        workspace_id=artifact.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         local_run_id=local_run.id,
@@ -329,6 +333,7 @@ def _start_persisted_docker_test_run(
     test_run = _latest_test_run_for_local_run(session, artifact.id, local_run.id)
     if test_run is None:
         test_run = LocalTestRun(
+            workspace_id=artifact.workspace_id,
             project_id=task.project_id,
             task_id=task.id,
             local_run_id=local_run.id,
@@ -458,6 +463,7 @@ def start_patch_review(
     verdict = "changes_requested" if issues else "approved"
     try:
         review = PatchReview(
+            workspace_id=artifact.workspace_id,
             project_id=task.project_id,
             task_id=task.id,
             local_run_id=artifact.local_run_id,
@@ -544,6 +550,7 @@ def get_patch_review(session: Session, review_id: str) -> PatchReviewRead:
     review = session.get(PatchReview, review_id)
     if review is None:
         raise HTTPException(status_code=404, detail="Patch review not found")
+    enforce_workspace_access(review.workspace_id, detail="Patch review not found")
     return _review_read(review)
 
 
@@ -596,6 +603,7 @@ def _get_patch_artifact_entity(
     artifact = session.get(PatchArtifact, patch_artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Patch artifact not found")
+    enforce_workspace_access(artifact.workspace_id, detail="Patch artifact not found")
     return artifact
 
 
@@ -603,6 +611,7 @@ def _get_local_run_entity(session: Session, local_run_id: str) -> LocalTaskRun:
     local_run = session.get(LocalTaskRun, local_run_id)
     if local_run is None:
         raise HTTPException(status_code=404, detail="Local task run not found")
+    enforce_workspace_access(local_run.workspace_id, detail="Local task run not found")
     return local_run
 
 
@@ -610,6 +619,7 @@ def _get_test_run_entity(session: Session, test_run_id: str) -> LocalTestRun:
     test_run = session.get(LocalTestRun, test_run_id)
     if test_run is None:
         raise HTTPException(status_code=404, detail="Local test run not found")
+    enforce_workspace_access(test_run.workspace_id, detail="Local test run not found")
     return test_run
 
 
@@ -737,6 +747,7 @@ def _create_debug_attempt(
     fix_summary: str = "Fix the failing test command output, then rerun local tests.",
 ) -> DebugAttempt:
     debug_attempt = DebugAttempt(
+        workspace_id=artifact.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         patch_artifact_id=artifact.id,

@@ -37,6 +37,12 @@ from ai_company_api.services.model_planner import (
     PlannerExecutionResult,
     create_model_planner_result,
 )
+from ai_company_api.services.auth_context import (
+    current_user_id,
+    current_workspace_id,
+    enforce_workspace_access,
+    get_current_auth_context,
+)
 from ai_company_api.services.planner import FakePlanner, PlannerService
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
@@ -51,7 +57,12 @@ MODEL_PLANNER_ADAPTER_FACTORY = OpenAICompatibleChatAdapter
 
 
 def create_project(session: Session, data: ProjectCreate) -> Project:
-    project = Project(name=data.name, description=data.description)
+    project = Project(
+        workspace_id=current_workspace_id(),
+        name=data.name,
+        description=data.description,
+        created_by=current_user_id(),
+    )
     session.add(project)
     session.commit()
     session.refresh(project)
@@ -59,13 +70,19 @@ def create_project(session: Session, data: ProjectCreate) -> Project:
 
 
 def list_projects(session: Session) -> list[Project]:
-    return list(session.exec(select(Project).order_by(Project.created_at)).all())
+    statement = select(Project)
+    context = get_current_auth_context()
+    if context is not None:
+        statement = statement.where(Project.workspace_id == context.workspace_id)
+    statement = statement.order_by(Project.created_at)
+    return list(session.exec(statement).all())
 
 
 def get_project(session: Session, project_id: str) -> Project:
     project = session.get(Project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    enforce_workspace_access(project.workspace_id, detail="Project not found")
     return project
 
 
@@ -123,9 +140,10 @@ def create_repository(
     project_id: str,
     data: RepositoryCreate,
 ) -> RepositoryRead:
-    get_project(session, project_id)
+    project = get_project(session, project_id)
     repo_path = _validate_local_git_repository(data.local_path)
     repository = ProjectRepository(
+        workspace_id=project.workspace_id,
         project_id=project_id,
         name=data.name,
         local_path=str(repo_path),
@@ -151,6 +169,7 @@ def get_repository(session: Session, repo_id: str) -> ProjectRepository:
     repository = session.get(ProjectRepository, repo_id)
     if repository is None:
         raise HTTPException(status_code=404, detail="Repository not found")
+    enforce_workspace_access(repository.workspace_id, detail="Repository not found")
     return repository
 
 
@@ -177,6 +196,7 @@ def create_conversation(
     get_project(session, project_id)
     conversation = Conversation(
         project_id=project_id,
+        user_id=current_user_id(),
         title=data.title,
         conversation_type=data.conversation_type,
     )
@@ -200,6 +220,7 @@ def get_conversation(session: Session, conversation_id: str) -> Conversation:
     conversation = session.get(Conversation, conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    get_project(session, conversation.project_id)
     return conversation
 
 
@@ -212,6 +233,7 @@ def create_message(
     message = Message(
         conversation_id=conversation_id,
         sender_type=data.sender_type,
+        sender_id=current_user_id(),
         content=data.content,
         structured_payload=data.structured_payload,
     )
@@ -235,6 +257,7 @@ def get_task(session: Session, task_id: str) -> Task:
     task = session.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    get_project(session, task.project_id)
     return task
 
 
@@ -311,6 +334,7 @@ def get_planner_run(session: Session, planner_run_id: str) -> PlannerRun:
     planner_run = session.get(PlannerRun, planner_run_id)
     if planner_run is None:
         raise HTTPException(status_code=404, detail="Planner run not found")
+    get_project(session, planner_run.project_id)
     return planner_run
 
 
@@ -366,6 +390,7 @@ def create_planner_run(
         goal=data.goal,
         status=PlannerRunStatus.DRAFTED,
         draft_count=0,
+        created_by=current_user_id(),
     )
     session.add(planner_run)
 
@@ -463,7 +488,7 @@ def approve_planner_run(
             project_id=project.id,
             planner_run_id=planner_run.id,
             status=ApprovalStatus.APPROVED,
-            decided_by="dev_user",
+            decided_by=current_user_id(),
             decided_at=utc_now(),
         )
         session.add(approval)
@@ -487,7 +512,7 @@ def approve_planner_run(
                 task.id,
                 "task_created",
                 "user",
-                "dev_user",
+                current_user_id(),
                 {
                     "status": task.status.value,
                     "planner_run_id": planner_run.id,
@@ -536,7 +561,7 @@ def reject_planner_run(
             planner_run_id=planner_run.id,
             reason=reason,
             status=ApprovalStatus.REJECTED,
-            decided_by="dev_user",
+            decided_by=current_user_id(),
             decided_at=utc_now(),
         )
         session.add(approval)
@@ -582,6 +607,14 @@ def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
                 detail="Parent task does not belong to project",
             )
 
+    if data.repo_id is not None:
+        repository = get_repository(session, data.repo_id)
+        if repository.project_id != project_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Repository does not belong to project",
+            )
+
     task = Task(
         project_id=project_id,
         conversation_id=data.conversation_id,
@@ -607,7 +640,7 @@ def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
         task.id,
         "task_created",
         "user",
-        "dev_user",
+        current_user_id(),
         {"status": task.status.value},
     )
     session.commit()

@@ -24,6 +24,7 @@ from ai_company_api.services.object_storage import (
     ObjectStorageRef,
     get_object_storage_provider,
 )
+from ai_company_api.services.auth_context import enforce_workspace_access
 
 
 BASE64URL_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -58,6 +59,7 @@ def list_cloud_run_log_window(
     cloud_run = session.get(CloudRun, cloud_run_id)
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
+    enforce_workspace_access(cloud_run.workspace_id, detail="Cloud run not found")
 
     cursor = _decode_cursor(after)
     if include_stream and sync_stream:

@@ -36,6 +36,11 @@ from ai_company_api.services.aliyun_config import (
     AliyunConfigurationError,
     require_aliyun_settings,
 )
+from ai_company_api.services.budgeting import (
+    release_cloud_run_reservation,
+    reserve_cloud_run_budget,
+    settle_cloud_run_budget,
+)
 from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
     SandboxCommandSelection,
@@ -68,8 +73,9 @@ from ai_company_api.services.remote_runtime import (
     get_remote_runtime_provider,
 )
 from ai_company_api.services.repository import create_task_event, get_repository, get_task
+from ai_company_api.services.auth_context import enforce_workspace_access
 from ai_company_api.services.sandbox_profiles import validate_sandbox_profile_for_repo
-from ai_company_api.services.secret_vault import DevSecretVault
+from ai_company_api.services.secret_access_audit import open_secret
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
@@ -306,7 +312,13 @@ def enqueue_cloud_run(
             patch_command_key = patch_command.key
             test_command_keys = [command.key for command in test_commands]
 
+    budget_reservation = reserve_cloud_run_budget(
+        session,
+        project_id=task.project_id,
+        task_id=task.id,
+    )
     cloud_run = CloudRun(
+        workspace_id=repository.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         repo_id=repository.id,
@@ -320,14 +332,23 @@ def enqueue_cloud_run(
         queue_provider=data.queue_provider,
         runtime_provider=data.runtime_provider,
         storage_provider=data.storage_provider,
+        budget_reservation_id=budget_reservation.id,
+        estimated_cost_cents=budget_reservation.reserved_cents,
+        cost_summary_json={
+            "reservation_id": budget_reservation.id,
+            "reserved_cents": budget_reservation.reserved_cents,
+        },
     )
     session.add(cloud_run)
     session.flush()
+    budget_reservation.cloud_run_id = cloud_run.id
+    budget_reservation.updated_at = utc_now()
 
     head_branch = f"ai-scdc/task-{task.id}-{cloud_run.id}"
     cloud_run.head_branch = head_branch
 
     local_run = LocalTaskRun(
+        workspace_id=repository.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         repo_id=repository.id,
@@ -428,6 +449,7 @@ def enqueue_cloud_run(
                     "failure_reason": "queue_enqueue_failed",
                 },
             )
+            release_cloud_run_reservation(session, cloud_run)
             session.add(local_run)
             session.add(cloud_run)
             session.commit()
@@ -504,6 +526,7 @@ def enqueue_cloud_run(
                     "failure_reason": "runtime_submission_failed",
                 },
             )
+            settle_cloud_run_budget(session, cloud_run)
             session.add(local_run)
             session.add(cloud_run)
             session.commit()
@@ -833,6 +856,7 @@ def requeue_expired_cloud_run_leases(
                 level="error",
                 payload={"failure_reason": "lease_attempts_exhausted"},
             )
+            settle_cloud_run_budget(session, cloud_run)
         else:
             cloud_run.status = "queued"
             cloud_run.worker_id = None
@@ -1476,6 +1500,7 @@ def _mark_claimed_cloud_run_failed(
         message="Cloud run processing completed.",
         payload={"status": "failed"},
     )
+    settle_cloud_run_budget(session, cloud_run)
     session.add(local_run)
     session.add(cloud_run)
     session.commit()
@@ -1531,6 +1556,7 @@ def _mark_claimed_cloud_run_cancelled(
         payload={"status": "cancelled"},
         created_at=log_clock.next(),
     )
+    settle_cloud_run_budget(session, cloud_run)
     session.add(local_run)
     session.add(cloud_run)
     session.commit()
@@ -1574,6 +1600,7 @@ def cancel_cloud_run(session: Session, *, cloud_run_id: str) -> CloudRunRead:
             event="cancelled",
             message="Queued cloud run cancelled.",
         )
+        release_cloud_run_reservation(session, cloud_run)
     else:
         return _request_running_cloud_run_cancel_and_log(
             session,
@@ -1715,7 +1742,14 @@ def _execute_claimed_cloud_run(
         sandbox_env = _sandbox_profile_env(profile.allowed_env_vars or [])
         network_enabled = profile.network_enabled
         credential = get_active_github_credential(session, repository.github_credential_id)
-        github_token = DevSecretVault().open(credential.encrypted_token)
+        github_token = open_secret(
+            session,
+            credential.encrypted_token,
+            secret_kind="github_credential",
+            secret_id=credential.id,
+            access_reason="docker_cloud_run_clone",
+            workspace_id=credential.workspace_id,
+        )
 
     try:
         execution_result = executor.run(
@@ -1884,6 +1918,7 @@ def _finalize_claimed_cloud_run_result(
             payload={"status": execution_result.status},
             created_at=log_clock.next(),
         )
+        settle_cloud_run_budget(session, cloud_run)
         session.add(local_run)
         session.add(cloud_run)
         session.add(task)
@@ -1896,6 +1931,7 @@ def _finalize_claimed_cloud_run_result(
         )
 
     artifact = PatchArtifact(
+        workspace_id=cloud_run.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         local_run_id=local_run.id,
@@ -1911,6 +1947,7 @@ def _finalize_claimed_cloud_run_result(
 
     if execution_result.test_command_results:
         test_run = LocalTestRun(
+            workspace_id=cloud_run.workspace_id,
             project_id=task.project_id,
             task_id=task.id,
             local_run_id=local_run.id,
@@ -1993,6 +2030,7 @@ def _finalize_claimed_cloud_run_result(
     task.worktree_ref = execution_result.worktree_ref
     _transition_task_to_patch_ready(session, event_clock, task)
 
+    settle_cloud_run_budget(session, cloud_run)
     session.add(local_run)
     session.add(cloud_run)
     session.add(task)
@@ -2074,6 +2112,7 @@ def _get_cloud_run_or_404(session: Session, cloud_run_id: str) -> CloudRun:
     cloud_run = session.get(CloudRun, cloud_run_id)
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
+    enforce_workspace_access(cloud_run.workspace_id, detail="Cloud run not found")
     return cloud_run
 
 
@@ -2436,6 +2475,10 @@ def _cloud_run_read(cloud_run: CloudRun) -> CloudRunRead:
         log_stream_uri=_redact_external_uri(cloud_run.log_stream_uri),
         external_status=cloud_run.external_status,
         external_error=_redact_external_error(cloud_run.external_error),
+        budget_reservation_id=cloud_run.budget_reservation_id,
+        estimated_cost_cents=cloud_run.estimated_cost_cents,
+        actual_cost_cents=cloud_run.actual_cost_cents,
+        cost_summary_json=cloud_run.cost_summary_json or {},
         created_at=cloud_run.created_at,
         updated_at=cloud_run.updated_at,
     )
