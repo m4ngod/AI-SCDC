@@ -359,6 +359,26 @@ class CloudRunRead(BaseModel):
     updated_at: datetime
 
 
+class CloudRunOperatorSnapshotRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    status: str
+    queue_provider: str
+    runtime_provider: str | None
+    external_status: str | None
+    external_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CloudRunProviderOperationRead(BaseModel):
+    status: Literal["skipped", "succeeded", "failed"]
+    reason: str
+    cloud_run: CloudRunOperatorSnapshotRead
+
+
 class CloudRunLogEntryRead(BaseModel):
     id: str
     cloud_run_id: str
