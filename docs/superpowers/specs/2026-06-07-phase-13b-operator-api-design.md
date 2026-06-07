@@ -38,7 +38,7 @@ Both endpoints return a shared response shape:
   "status": "succeeded",
   "reason": "mns_message_deleted",
   "cloud_run": {
-    "id": "cloud_run_...",
+    "id": "cloud_run_example",
     "status": "patch_ready",
     "external_status": "mns_message_deleted"
   }
@@ -47,9 +47,10 @@ Both endpoints return a shared response shape:
 
 `status` is one of `skipped`, `succeeded`, or `failed`. `reason` is the stable
 helper reason string already used in tests and operations docs. `cloud_run` is
-the existing sanitized `CloudRunRead` shape, which does not expose queue
-receipts, callback tokens, raw provider errors, Aliyun access keys, or raw
-provider URLs.
+a narrow operator snapshot with the run id, workspace/project/task ids, status,
+provider names, sanitized external status/error fields, and timestamps. It does
+not expose queue receipts, callback tokens, raw provider errors, Aliyun access
+keys, raw provider URLs, or full runtime job ids.
 
 ## Error Handling
 
