@@ -86,3 +86,10 @@ record that Phase 13B now includes a narrow authenticated operator API facade.
 The docs must still state that full operator consoles, public destructive OSS
 cleanup, real KMS integration, full session issuance, and complete role
 permission matrices remain future work.
+
+Documentation update completed for the Phase 13B operator API slice. Phase 13B
+now records a narrow authenticated owner/admin cloud-run operator facade for
+MNS receipt recovery and ECI runtime cleanup, while still treating full
+sessions, production IdP integration, real KMS-backed `SecretVault`
+integration, the full operator console, public destructive OSS cleanup, and the
+complete role permission matrix as remaining work.

@@ -305,10 +305,20 @@ payload credential opens. Audit records capture scope, actor, secret kind/id,
 reason, operation, and success status without storing raw or encrypted secret
 payloads.
 
+Phase 13B now also includes a narrow authenticated operator API facade for
+Aliyun maintenance actions that were already implemented as service helpers.
+Workspace owners and admins can call
+`POST /cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete` for MNS
+receipt recovery and
+`POST /cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime` for ECI
+runtime cleanup. The response uses a redacted operator snapshot and omits
+runtime job ids, queue receipts, callback tokens, raw provider errors, Aliyun
+access keys, and raw provider URLs.
+
 Phase 13B is not complete yet. This slice does not add full login/session
 issuance, production IdP integration, real KMS-backed `SecretVault` provider
-integration, billing, public destructive provider cleanup APIs, complete audit
-logging, or a complete role-by-route permission matrix.
+integration, billing, a full operator console, public destructive OSS cleanup,
+complete audit logging, or a complete role-by-route permission matrix.
 
 ## Phase 13C Boundary
 

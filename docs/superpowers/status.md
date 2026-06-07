@@ -99,15 +99,19 @@ workspace-scope, and secret-open audit slices:
   credential opens.
 - Secret create/delete audit rows for model and GitHub credentials without
   storing raw or encrypted secret payloads.
+- Narrow authenticated cloud-run operator API facade for owner/admin MNS
+  receipt recovery and ECI runtime cleanup:
+  `POST /cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete` and
+  `POST /cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime`.
 - Phase 13C execution usage types, workspace credit wallets, spend limits,
   cloud-run budget reservations, per-run cost summaries, and workspace usage
   summary APIs.
 
 Remaining commercial trust work includes full session issuance, production
 auth/IdP integration, real KMS-backed `SecretVault` provider integration,
-authenticated organization-scoped operator APIs, broader audit coverage,
-broader role-specific permission matrices, real provider price tables, payment
-integration, invoices, and desktop billing UI.
+a full operator console, public destructive OSS cleanup, broader audit
+coverage, a complete role-specific permission matrix, real provider price
+tables, payment integration, invoices, and desktop billing UI.
 
 ## Verification
 
@@ -133,6 +137,10 @@ Phase 13B foundation verification:
 - `pytest apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q` -> 73 passed, 1 warning in 49.83s
 - `pytest apps/api/tests/test_cloud_run_api.py -q -k "remote_worker_payload or docker_cloud_run or github_token or protected_worker"` -> 30 passed, 142 deselected, 1 warning in 16.47s
 - `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_secret_access_audit.py apps/api/tests/test_model_planner.py apps/api/tests/test_cloud_run_api.py` -> passed
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "cloud_run_operator or retained_receipt_recovery or terminal_cleanup"` -> 12 passed, 165 deselected, 1 warning in 10.97s
+- `pytest apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_cloud_run_api.py -q -k "operator or money_moving_workspace_endpoints_require_billing_role"` -> 5 passed, 183 deselected, 1 warning in 4.41s
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_cloud_run_api.py` -> passed
+- `pytest apps/api/tests/test_cloud_run_api.py apps/api/tests/test_auth_rbac_api.py -q -k "cloud_run_operator or retained_receipt_recovery or terminal_cleanup or money_moving_workspace_endpoints_require_billing_role"` -> 13 passed, 175 deselected, 1 warning in 11.03s
 - `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py -q` -> 19 passed, 1 warning in 5.40s
 - `pytest apps/api/tests/test_cloud_run_api.py -q -k "enqueue or cancel or process or completion"` -> 30 passed, 142 deselected, 1 warning in 23.50s
 - `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_pull_request_api.py apps/api/tests/test_planner_endpoints.py -q` -> 60 passed, 1 warning in 16.99s
