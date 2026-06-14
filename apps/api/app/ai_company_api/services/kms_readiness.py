@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from base64 import b64decode
+from binascii import Error as BinasciiError
 from collections.abc import Callable
 from hashlib import sha256
+import json
+from json import JSONDecodeError
 import os
 import secrets
 from typing import Literal
@@ -34,6 +38,7 @@ _ALIYUN_KMS_REQUIRED_NAMES = (
 _SECRET_ENV_NAMES = (
     "AI_SCDC_ALIYUN_ACCESS_KEY_SECRET",
 )
+_KMS_VAULT_PREFIX = "kms-vault:v1:"
 
 
 class KmsReadinessCheck(BaseModel):
@@ -155,25 +160,112 @@ def run_kms_live_smoke(
     vault_factory: Callable[[], SecretVault] = get_secret_vault,
     secret_factory: Callable[[], str] | None = None,
 ) -> KmsReadinessResult:
-    _ = secret_factory
     preflight = run_kms_preflight(vault_factory=vault_factory)
     if preflight.status == KMS_FAILED_STATUS:
         return preflight
+
+    key_id = _configured_key_id()
+    checks = [*preflight.checks]
+    temporary_secret = (secret_factory or _generated_secret)()
+    sensitive_values = [temporary_secret]
+
+    try:
+        vault = vault_factory()
+        sealed = vault.seal(temporary_secret)
+    except Exception as exc:
+        checks.append(
+            KmsReadinessCheck(name="seal", status="failed", message=str(exc))
+        )
+        return _failure(
+            stage="live_smoke",
+            provider=preflight.provider,
+            key_id=key_id,
+            checks=checks,
+            error_code="kms_error",
+            message=str(exc),
+            extra_sensitive_values=sensitive_values,
+        )
+
+    checks.append(KmsReadinessCheck(name="seal", status="passed"))
+    sensitive_values.extend(
+        _sensitive_values_from_encrypted_secret(sealed.encrypted_secret)
+    )
+
+    try:
+        opened_secret = vault.open(sealed.encrypted_secret)
+    except Exception as exc:
+        checks.append(
+            KmsReadinessCheck(name="open", status="failed", message=str(exc))
+        )
+        return _failure(
+            stage="live_smoke",
+            provider=preflight.provider,
+            key_id=key_id,
+            checks=checks,
+            error_code="kms_error",
+            message=str(exc),
+            extra_sensitive_values=sensitive_values,
+        )
+
+    sensitive_values.append(opened_secret)
+    if opened_secret != temporary_secret:
+        message = "KMS live smoke opened a different secret than it sealed."
+        checks.append(KmsReadinessCheck(name="open", status="failed", message=message))
+        return _failure(
+            stage="live_smoke",
+            provider=preflight.provider,
+            key_id=key_id,
+            checks=checks,
+            error_code="roundtrip_mismatch",
+            message=message,
+            extra_sensitive_values=sensitive_values,
+        )
+
+    checks.append(KmsReadinessCheck(name="open", status="passed"))
+
+    try:
+        fingerprint = vault.fingerprint(sealed.encrypted_secret)
+    except Exception as exc:
+        checks.append(
+            KmsReadinessCheck(name="fingerprint", status="failed", message=str(exc))
+        )
+        return _failure(
+            stage="live_smoke",
+            provider=preflight.provider,
+            key_id=key_id,
+            checks=checks,
+            error_code="kms_error",
+            message=str(exc),
+            extra_sensitive_values=sensitive_values,
+        )
+
+    sensitive_values.append(fingerprint)
+    checks.append(KmsReadinessCheck(name="fingerprint", status="passed"))
+
+    try:
+        vault.delete(sealed.encrypted_secret)
+    except Exception as exc:
+        checks.append(
+            KmsReadinessCheck(name="delete", status="failed", message=str(exc))
+        )
+        return _failure(
+            stage="live_smoke",
+            provider=preflight.provider,
+            key_id=key_id,
+            checks=checks,
+            error_code="kms_error",
+            message=str(exc),
+            extra_sensitive_values=sensitive_values,
+        )
+
+    checks.append(KmsReadinessCheck(name="delete", status="passed"))
     return KmsReadinessResult(
-        status=KMS_FAILED_STATUS,
+        status=KMS_PASSED_STATUS,
         stage="live_smoke",
         provider=preflight.provider,
         key_id_hint=preflight.key_id_hint,
-        checks=[
-            *preflight.checks,
-            KmsReadinessCheck(
-                name="live_smoke",
-                status="failed",
-                message="Live KMS smoke is guarded until Task 2.",
-            ),
-        ],
-        error_code="kms_error",
-        message="Live KMS smoke is guarded until Task 2.",
+        fingerprint_hint=_fingerprint_hint(fingerprint),
+        checks=checks,
     )
 
 
@@ -233,15 +325,27 @@ def _failure(
     checks: list[KmsReadinessCheck],
     error_code: str,
     message: str | None,
+    extra_sensitive_values: list[str] | None = None,
 ) -> KmsReadinessResult:
     return KmsReadinessResult(
         status=KMS_FAILED_STATUS,
         stage=stage,
         provider=provider,
         key_id_hint=_key_id_hint(key_id),
-        checks=checks,
+        checks=[
+            _redact_check(
+                check,
+                key_id=key_id,
+                extra_sensitive_values=extra_sensitive_values,
+            )
+            for check in checks
+        ],
         error_code=error_code,
-        message=_redact_message(message or error_code, key_id=key_id),
+        message=_redact_message(
+            message or error_code,
+            key_id=key_id,
+            extra_sensitive_values=extra_sensitive_values,
+        ),
     )
 
 
@@ -252,13 +356,77 @@ def _redact_message(
     extra_sensitive_values: list[str] | None = None,
 ) -> str:
     redacted = message
+    sensitive_replacements: list[tuple[str, str]] = []
+    if key_id:
+        sensitive_replacements.append(
+            (key_id, _key_id_hint(key_id) or "[redacted-key]")
+        )
     for env_name in _SECRET_ENV_NAMES:
         value = os.getenv(env_name, "").strip()
         if value:
-            redacted = redacted.replace(value, "[redacted]")
-    if key_id:
-        redacted = redacted.replace(key_id, _key_id_hint(key_id) or "[redacted-key]")
+            sensitive_replacements.append((value, "[redacted]"))
     for value in extra_sensitive_values or []:
         if value:
-            redacted = redacted.replace(value, "[redacted]")
+            sensitive_replacements.append((value, "[redacted]"))
+
+    unique_replacements: dict[str, str] = {}
+    for value, replacement in sensitive_replacements:
+        unique_replacements.setdefault(value, replacement)
+    for value, replacement in sorted(
+        unique_replacements.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        redacted = redacted.replace(value, replacement)
     return redacted
+
+
+def _redact_check(
+    check: KmsReadinessCheck,
+    *,
+    key_id: str,
+    extra_sensitive_values: list[str] | None,
+) -> KmsReadinessCheck:
+    if check.message is None:
+        return check
+    return check.model_copy(
+        update={
+            "message": _redact_message(
+                check.message,
+                key_id=key_id,
+                extra_sensitive_values=extra_sensitive_values,
+            )
+        }
+    )
+
+
+def _sensitive_values_from_encrypted_secret(encrypted_secret: str) -> list[str]:
+    sensitive_values = [encrypted_secret]
+    if not encrypted_secret.startswith(_KMS_VAULT_PREFIX):
+        return sensitive_values
+
+    encoded = encrypted_secret.removeprefix(_KMS_VAULT_PREFIX)
+    try:
+        decoded = b64decode(
+            encoded.encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        ).decode("utf-8")
+        payload = json.loads(decoded)
+    except (
+        BinasciiError,
+        JSONDecodeError,
+        TypeError,
+        UnicodeEncodeError,
+        UnicodeDecodeError,
+    ):
+        return sensitive_values
+
+    if not isinstance(payload, dict):
+        return sensitive_values
+
+    for field_name in ("key_id", "ciphertext"):
+        value = payload.get(field_name)
+        if isinstance(value, str) and value:
+            sensitive_values.append(value)
+    return sensitive_values
