@@ -373,9 +373,10 @@ Completed:
 In progress:
 
 1. Phase 13B commercial trust boundary with request identity, workspace scope,
-   API-token lookup, RBAC foundations, a fail-closed secret-vault provider
-   factory, a test-backed `KmsSecretVault` provider boundary for
-   `kms`/`aliyun_kms`, and secret-access audit logs. Remaining work includes
+   secret-open audit foundations, API-token lookup, RBAC foundations, a
+   fail-closed secret-vault provider factory, a test-backed `KmsSecretVault`
+   provider boundary for generic `kms`, a real Aliyun Classic KMS SDK adapter
+   for `aliyun_kms`, and secret-access audit logs. Remaining work includes
    cloud KMS credential provisioning, cloud KMS smoke validation,
    full sessions, broader/full organization-scoped operator controls or
    operator console coverage, broader audit coverage, and a complete permission
