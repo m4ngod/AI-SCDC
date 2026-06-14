@@ -2,7 +2,11 @@ import json
 
 import pytest
 
-from ai_company_api.services.kms_readiness import run_kms_preflight
+from ai_company_api.services.kms_readiness import (
+    KmsReadinessCheck,
+    run_kms_readiness,
+    run_kms_preflight,
+)
 from ai_company_api.services.secret_vault import (
     SECRET_VAULT_KMS_KEY_ID_ENV,
     SECRET_VAULT_PROVIDER_ENV,
@@ -52,6 +56,20 @@ def clear_kms_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def result_json(result) -> str:
     return json.dumps(result.model_dump(), sort_keys=True)
+
+
+def test_kms_readiness_exposes_preflight_api_surface() -> None:
+    result = run_kms_readiness(
+        live=False,
+        vault_factory=lambda: pytest.fail("dev provider should fail first"),
+    )
+
+    check = KmsReadinessCheck(name="provider", status="skipped")
+
+    assert result.status == "failed"
+    assert result.stage == "preflight"
+    assert result.exit_code() == 1
+    assert check.name == "provider"
 
 
 def test_kms_preflight_succeeds_for_complete_aliyun_config_without_kms_call(
@@ -170,3 +188,5 @@ def test_kms_preflight_allows_generic_kms_only_with_configured_client(
     assert result.status == "ready_for_live_smoke"
     assert result.provider == "kms"
     assert fake_kms.encrypt_requests == []
+    assert fake_kms.decrypt_requests == []
+    assert fake_kms.delete_requests == []
