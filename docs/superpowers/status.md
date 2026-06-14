@@ -135,8 +135,10 @@ Phase 13B/13C current verification snapshot:
 - `pytest apps/api/tests/test_auth_rbac_api.py -q` -> 10 passed, 1 warning in 4.80s
 - `pytest apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_usage_ledger_api.py -q` -> 75 passed, 1 warning in 34.66s
 - `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py` -> passed
-- `pytest apps/api/tests/test_secret_access_audit.py -q` -> 23 passed, 1
-  warning; includes KMS provider boundary tests.
+- `pytest apps/api/tests/test_aliyun_kms.py -q` -> 19 passed; covers the
+  fake-SDK Aliyun KMS adapter seam.
+- `pytest apps/api/tests/test_secret_access_audit.py -q` -> 27 passed, 1
+  warning; includes KMS provider boundary and Aliyun KMS factory tests.
 - `pytest apps/api/tests/test_secret_access_audit.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_model_planner.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q` -> 103 passed, 1 warning in 19.01s
 - `pytest apps/api/tests/test_cloud_run_api.py -q -k "docker_cloud_run_enqueue_stores_metadata_without_opening_token or docker_cloud_run_validates_profile_before_opening_github_token"` -> 2 passed, 170 deselected, 1 warning in 4.57s
 - `pytest apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q` -> 73 passed, 1 warning in 49.83s
@@ -149,8 +151,10 @@ Phase 13B/13C current verification snapshot:
 - `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py -q` -> 46 passed, 1 warning in 21.67s
 - `pytest apps/api/tests/test_cloud_run_api.py -q -k "enqueue or cancel or process or completion or lease"` -> 50 passed, 123 deselected, 1 warning in 76.56s
 - `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_pull_request_api.py apps/api/tests/test_planner_endpoints.py -q` -> 60 passed, 1 warning in 16.99s
-- `pytest apps/api/tests -q` -> 536 passed, 1 warning in 264.56s
+- `pytest apps/api/tests -q` -> 577 passed, 1 warning as part of `pnpm test`
+- `pnpm test` -> JavaScript 91 passed; Python 611 passed, 1 warning
 - `pnpm typecheck` -> `apps/desktop` and `packages/agent-protocol` completed
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_secret_access_audit.py apps/api/tests/test_aliyun_kms.py` -> passed
 - `git diff --check` -> passed with Git LF-to-CRLF working-copy warnings only
 
 Previous Phase 10D verification:
