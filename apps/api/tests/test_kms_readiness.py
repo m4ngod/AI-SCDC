@@ -21,32 +21,34 @@ class FakeKmsClient:
         self,
         *,
         fail_on: str | None = None,
+        failure_message: str = "KMS encrypt failed for ak-secret-value",
         mismatch_open: bool = False,
     ) -> None:
         self.fail_on = fail_on
+        self.failure_message = failure_message
         self.mismatch_open = mismatch_open
         self.encrypt_requests: list[tuple[str, str]] = []
         self.decrypt_requests: list[tuple[str, str]] = []
         self.delete_requests: list[tuple[str, str]] = []
 
     def encrypt(self, key_id: str, plaintext: str) -> str:
-        self.encrypt_requests.append((key_id, plaintext))
         if self.fail_on == "encrypt":
-            raise RuntimeError("KMS encrypt failed for ak-secret-value")
+            raise RuntimeError(self.failure_message)
+        self.encrypt_requests.append((key_id, plaintext))
         return f"fake-kms:{key_id}:{plaintext}"
 
     def decrypt(self, key_id: str, ciphertext: str) -> str:
-        self.decrypt_requests.append((key_id, ciphertext))
         if self.fail_on == "decrypt":
             raise RuntimeError("KMS decrypt failed for ak-secret-value")
+        self.decrypt_requests.append((key_id, ciphertext))
         if self.mismatch_open:
             return "different-opened-secret"
         return ciphertext.removeprefix(f"fake-kms:{key_id}:")
 
     def delete(self, key_id: str, ciphertext: str) -> None:
-        self.delete_requests.append((key_id, ciphertext))
         if self.fail_on == "delete":
             raise RuntimeError("KMS delete failed for ak-secret-value")
+        self.delete_requests.append((key_id, ciphertext))
 
 
 def set_complete_aliyun_kms_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -318,11 +320,36 @@ def test_kms_live_smoke_reports_kms_encrypt_failure_without_secret_leak(
     assert result.error_code == "kms_error"
     assert "ak-secret-value" not in serialized
     assert "temporary-smoke-secret" not in serialized
-    assert fake_kms.encrypt_requests == [
-        ("kms-key-production", "temporary-smoke-secret")
-    ]
+    assert fake_kms.encrypt_requests == []
     assert fake_kms.decrypt_requests == []
     assert fake_kms.delete_requests == []
+
+
+def test_kms_live_smoke_redacts_access_key_id_from_kms_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_kms_env(monkeypatch)
+    set_complete_aliyun_kms_env(monkeypatch)
+    fake_kms = FakeKmsClient(
+        fail_on="encrypt",
+        failure_message="KMS encrypt failed for ak-id and ak-secret-value",
+    )
+    set_kms_client_for_tests(fake_kms)
+    try:
+        result = run_kms_live_smoke(
+            secret_factory=lambda: "temporary-smoke-secret"
+        )
+    finally:
+        set_kms_client_for_tests(None)
+
+    serialized = result_json(result)
+
+    assert result.status == "failed"
+    assert result.stage == "live_smoke"
+    assert result.error_code == "kms_error"
+    assert "ak-id" not in serialized
+    assert "ak-secret-value" not in serialized
+    assert "temporary-smoke-secret" not in serialized
 
 
 def test_kms_live_smoke_reports_roundtrip_mismatch_without_opened_secret_leak(
