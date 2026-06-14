@@ -13,6 +13,8 @@ from ai_company_api.models.entities import (
     ModelCredential,
     SecretAccessAuditLog,
 )
+from ai_company_api.services.aliyun_config import AliyunConfigurationError
+from ai_company_api.services.aliyun_kms import SdkAliyunKmsClient
 from ai_company_api.services.secret_access_audit import open_secret
 from ai_company_api.services.secret_vault import (
     SECRET_VAULT_KMS_KEY_ID_ENV,
@@ -86,6 +88,12 @@ def kms_test_payload(payload: dict[str, str]) -> str:
         json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     ).decode("ascii")
     return f"kms-vault:v1:{encoded}"
+
+
+def set_complete_aliyun_kms_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_SCDC_ALIYUN_REGION_ID", "cn-hangzhou")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_ID", "ak-id")
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", "ak-secret")
 
 
 def build_client(database_path) -> TestClient:
@@ -182,6 +190,76 @@ def test_secret_vault_factory_uses_configured_kms_client(
     assert opened == "sk-production-secret"
     assert fake_kms.encrypt_requests == [("key-production", "sk-production-secret")]
     assert fake_kms.decrypt_requests[0][0] == "key-production"
+
+
+def test_secret_vault_factory_uses_aliyun_kms_sdk_client_without_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_secret_vault_for_tests(None)
+    set_kms_client_for_tests(None)
+    monkeypatch.setenv(SECRET_VAULT_PROVIDER_ENV, "aliyun_kms")
+    monkeypatch.setenv(SECRET_VAULT_KMS_KEY_ID_ENV, "key-production")
+    set_complete_aliyun_kms_env(monkeypatch)
+
+    vault = get_secret_vault()
+
+    assert isinstance(vault, KmsSecretVault)
+    assert vault.provider == "aliyun_kms"
+    assert vault.key_id == "key-production"
+    assert isinstance(getattr(vault, "_client"), SdkAliyunKmsClient)
+
+
+def test_secret_vault_factory_fails_closed_for_aliyun_kms_missing_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_secret_vault_for_tests(None)
+    set_kms_client_for_tests(None)
+    monkeypatch.setenv(SECRET_VAULT_PROVIDER_ENV, "aliyun_kms")
+    monkeypatch.setenv(SECRET_VAULT_KMS_KEY_ID_ENV, "key-production")
+    set_complete_aliyun_kms_env(monkeypatch)
+    monkeypatch.delenv("AI_SCDC_ALIYUN_REGION_ID", raising=False)
+
+    with pytest.raises(
+        AliyunConfigurationError,
+        match="AI_SCDC_ALIYUN_REGION_ID",
+    ):
+        get_secret_vault()
+
+
+def test_secret_vault_factory_fails_closed_for_aliyun_kms_missing_access_key_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_secret_vault_for_tests(None)
+    set_kms_client_for_tests(None)
+    monkeypatch.setenv(SECRET_VAULT_PROVIDER_ENV, "aliyun_kms")
+    monkeypatch.setenv(SECRET_VAULT_KMS_KEY_ID_ENV, "key-production")
+    set_complete_aliyun_kms_env(monkeypatch)
+    monkeypatch.delenv("AI_SCDC_ALIYUN_ACCESS_KEY_ID", raising=False)
+
+    with pytest.raises(
+        AliyunConfigurationError,
+        match="AI_SCDC_ALIYUN_ACCESS_KEY_ID",
+    ):
+        get_secret_vault()
+
+
+def test_secret_vault_factory_fails_closed_for_aliyun_kms_missing_secret_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_secret_vault_for_tests(None)
+    set_kms_client_for_tests(None)
+    monkeypatch.setenv(SECRET_VAULT_PROVIDER_ENV, "aliyun_kms")
+    monkeypatch.setenv(SECRET_VAULT_KMS_KEY_ID_ENV, "key-production")
+    set_complete_aliyun_kms_env(monkeypatch)
+    monkeypatch.delenv("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET", raising=False)
+
+    with pytest.raises(AliyunConfigurationError) as exc_info:
+        get_secret_vault()
+
+    message = str(exc_info.value)
+    assert "required secret environment variable" in message
+    assert "AI_SCDC_ALIYUN_ACCESS_KEY_SECRET" not in message
+    assert "ak-secret" not in message
 
 
 def test_kms_secret_vault_rotates_deletes_and_fingerprints() -> None:

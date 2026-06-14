@@ -205,8 +205,22 @@ def get_secret_vault() -> SecretVault:
             raise SecretVaultConfigurationError(
                 f"{SECRET_VAULT_KMS_KEY_ID_ENV} is required for KMS SecretVault provider"
             )
+        if _KMS_CLIENT_OVERRIDE is not None:
+            return KmsSecretVault(
+                client=_KMS_CLIENT_OVERRIDE,
+                key_id=key_id,
+                provider=provider,
+            )
+        if provider == "aliyun_kms":
+            from ai_company_api.services.aliyun_kms import get_aliyun_kms_client
+
+            return KmsSecretVault(
+                client=get_aliyun_kms_client(),
+                key_id=key_id,
+                provider=provider,
+            )
         return KmsSecretVault(
-            client=_KMS_CLIENT_OVERRIDE,
+            client=None,
             key_id=key_id,
             provider=provider,
         )

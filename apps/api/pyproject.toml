@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 dependencies = [
     "alibabacloud-oss-v2>=1.0.0",
     "alibabacloud_eci20180808>=1.2.0",
+    "alibabacloud_kms20160120>=2.4.0",
     "aliyun-mns-sdk>=1.1.0",
     "fastapi>=0.115.0",
     "pydantic>=2.10.0",
