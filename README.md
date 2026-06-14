@@ -31,7 +31,33 @@ exist. `DevSecretVault` remains development-only. When
 KMS SDK adapter with `AI_SCDC_KMS_KEY_ID` plus the existing Aliyun
 region/access-key settings. Automated tests use fake SDK modules and do not
 contact Aliyun; commercial production still needs RAM policy review, credential
-provisioning, and live KMS smoke validation before beta traffic.
+provisioning, and retained target-account KMS smoke evidence before beta
+traffic.
+
+KMS readiness can be checked locally without exposing raw credentials. Run
+preflight first; it validates configuration and does not call Aliyun KMS:
+
+```powershell
+$env:AI_SCDC_SECRET_VAULT_PROVIDER = "aliyun_kms"
+$env:AI_SCDC_KMS_KEY_ID = "<kms-key-id>"
+$env:AI_SCDC_ALIYUN_REGION_ID = "cn-hangzhou"
+$env:AI_SCDC_ALIYUN_ACCESS_KEY_ID = "<set locally>"
+$env:AI_SCDC_ALIYUN_ACCESS_KEY_SECRET = "<set locally>"
+python -m ai_company_api.tools.kms_readiness
+```
+
+Only after reviewing RAM scope and running in the target account, execute the
+live smoke explicitly:
+
+```powershell
+python -m ai_company_api.tools.kms_readiness --live
+```
+
+The output is JSON with redacted provider/key metadata and step status. It must
+not contain plaintext secrets, ciphertext blobs, access-key identifiers,
+access-key secrets, callback tokens, queue receipts, signed URLs, or the full
+KMS key id. Automated tests use fake KMS clients; a passing test run does not
+prove the target Aliyun account has been live-smoked.
 
 Phase 13C starts cost protection without payment integration. The API now has
 execution-plane usage types, workspace manual credit grants, spend limits,

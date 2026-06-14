@@ -307,6 +307,12 @@ plaintext through the SDK-required base64 request field. It also adds
 plus model planner, GitHub pull-request, Docker cloud-run, and remote-worker
 payload credential opens.
 
+Phase 13B also has a local KMS readiness command. The command runs redacted
+configuration preflight by default and performs a live SecretVault
+seal/open/fingerprint/delete smoke only when `--live` is passed. This provides a
+safe operator-run validation path without exposing KMS smoke through public
+HTTP routes.
+
 Phase 13B now also includes a narrow authenticated operator API facade for
 Aliyun maintenance actions that were already implemented as service helpers.
 Workspace owners and admins can call
@@ -318,8 +324,9 @@ runtime job ids, queue receipts, callback tokens, raw provider errors, Aliyun
 access keys, and raw provider URLs.
 
 Phase 13B is not complete yet. This slice does not add full login/session
-issuance, production IdP integration, cloud KMS credential provisioning and
-cloud KMS smoke validation, billing, a full operator console,
+issuance, production IdP integration, automated cloud KMS credential
+provisioning, retained target-account KMS smoke evidence, billing, a full
+operator console,
 public destructive OSS cleanup, complete audit logging, or a complete
 role-by-route permission matrix.
 
@@ -376,8 +383,9 @@ In progress:
    secret-open audit foundations, API-token lookup, RBAC foundations, a
    fail-closed secret-vault provider factory, a test-backed `KmsSecretVault`
    provider boundary for generic `kms`, a real Aliyun Classic KMS SDK adapter
-   for `aliyun_kms`, and secret-access audit logs. Remaining work includes
-   cloud KMS credential provisioning, cloud KMS smoke validation,
+   for `aliyun_kms`, a local KMS readiness command, and secret-access audit
+   logs. Remaining work includes cloud KMS credential provisioning,
+   retained target-account KMS smoke evidence,
    full sessions, broader/full organization-scoped operator controls or
    operator console coverage, broader audit coverage, and a complete permission
    matrix.

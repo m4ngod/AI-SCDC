@@ -25,6 +25,9 @@ credential opens. Audit rows record actor/scope metadata, secret kind/id,
 reason, operation, and success status, never raw or encrypted secret payloads.
 KMS mode requires `AI_SCDC_KMS_KEY_ID`; `aliyun_kms` also requires the existing
 Aliyun region/access-key settings and never falls back to development storage.
+A local `python -m ai_company_api.tools.kms_readiness` command now provides
+redacted KMS configuration preflight and explicit operator-run live smoke for
+the configured SecretVault provider.
 
 Phase 13B now also includes a narrow authenticated cloud-run operator API
 facade. Workspace owners and admins can retry retained Aliyun MNS receipt
@@ -45,16 +48,17 @@ usage summaries aggregate usage by project/task and usage type.
 ## Non-Goals
 
 This is not the full commercial beta trust boundary yet. Remaining Phase 13B
-work includes full login/session issuance, cloud KMS credential provisioning,
-cloud KMS smoke validation, production auth/IdP integration, a full operator
-console, public destructive OSS cleanup, broader audit coverage, and a complete
-role permission matrix.
+work includes full login/session issuance, automated cloud KMS credential
+provisioning, recorded target-account KMS smoke evidence, production auth/IdP
+integration, a full operator console, public destructive OSS cleanup, broader
+audit coverage, and a complete role permission matrix.
 
 No billing provider, payment flow, invoices, real provider price table, second
 cloud provider, public destructive provider cleanup endpoint, WebSocket/SSE log
 streaming, desktop billing UI, or model-backed review/debug/coder loop was
-added. The real Aliyun KMS SDK adapter is wired, but no live cloud KMS smoke or
-production cloud credential path was added.
+added. The real Aliyun KMS SDK adapter and local readiness command are wired,
+but no retained target-account KMS smoke evidence or production cloud
+credential path was added.
 
 ## Verification
 
@@ -63,6 +67,8 @@ production cloud credential path was added.
 - `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py`: passed.
 - `pytest apps/api/tests/test_aliyun_kms.py -q`: 19 passed; covers the fake-SDK Aliyun KMS adapter seam.
 - `pytest apps/api/tests/test_secret_access_audit.py -q`: 27 passed, 1 warning; includes KMS provider boundary and Aliyun KMS factory tests.
+- `pytest apps/api/tests/test_kms_readiness.py -q`: KMS readiness preflight,
+  live-smoke, and CLI tests passed without contacting Aliyun.
 - `pytest apps/api/tests/test_secret_access_audit.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_model_planner.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q`: 103 passed, 1 warning in 19.01s.
 - `pytest apps/api/tests/test_cloud_run_api.py -q -k "docker_cloud_run_enqueue_stores_metadata_without_opening_token or docker_cloud_run_validates_profile_before_opening_github_token"`: 2 passed, 170 deselected, 1 warning in 4.57s.
 - `pytest apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q`: 73 passed, 1 warning in 49.83s.

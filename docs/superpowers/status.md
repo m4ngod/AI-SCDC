@@ -98,6 +98,8 @@ workspace-scope, and secret-open audit slices:
   `aliyun_kms`. KMS mode requires `AI_SCDC_KMS_KEY_ID`; `aliyun_kms` also
   requires existing Aliyun region/access-key settings and never falls back to
   development storage.
+- Local KMS readiness command for redacted preflight and explicit live-smoke
+  validation through the configured SecretVault provider.
 - `SecretAccessAuditLog` plus centralized secret-open auditing for model
   planner, GitHub pull-request, Docker cloud-run, and remote-worker payload
   credential opens.
@@ -112,10 +114,11 @@ workspace-scope, and secret-open audit slices:
   summary APIs.
 
 Remaining commercial trust work includes full session issuance, production
-auth/IdP integration, cloud KMS credential provisioning and cloud KMS smoke
-validation, a full operator console, public destructive OSS cleanup, broader
-audit coverage, a complete role-specific permission matrix, real provider price
-tables, payment integration, invoices, and desktop billing UI.
+auth/IdP integration, cloud KMS credential provisioning and retained
+target-account KMS smoke evidence, a full operator console, public destructive
+OSS cleanup, broader audit coverage, a complete role-specific permission
+matrix, real provider price tables, payment integration, invoices, and desktop
+billing UI.
 
 ## Verification
 
@@ -139,6 +142,8 @@ Phase 13B/13C current verification snapshot:
   fake-SDK Aliyun KMS adapter seam.
 - `pytest apps/api/tests/test_secret_access_audit.py -q` -> 27 passed, 1
   warning; includes KMS provider boundary and Aliyun KMS factory tests.
+- `pytest apps/api/tests/test_kms_readiness.py -q` -> KMS readiness preflight,
+  live-smoke, and CLI tests passed without contacting Aliyun.
 - `pytest apps/api/tests/test_secret_access_audit.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_model_planner.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q` -> 103 passed, 1 warning in 19.01s
 - `pytest apps/api/tests/test_cloud_run_api.py -q -k "docker_cloud_run_enqueue_stores_metadata_without_opening_token or docker_cloud_run_validates_profile_before_opening_github_token"` -> 2 passed, 170 deselected, 1 warning in 4.57s
 - `pytest apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q` -> 73 passed, 1 warning in 49.83s
@@ -214,9 +219,9 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 - Phase 13B now has request identity, workspace scope, secret-open audit
   foundations, and a test-backed KMS SecretVault boundary, but it does not yet
   add full login/session issuance, production IdP integration,
-  cloud KMS credential provisioning, cloud KMS smoke validation, billing,
-  subscriptions, complete audit logging, WebSockets/SSE, or a second cloud
-  provider.
+  cloud KMS credential provisioning, retained target-account KMS smoke evidence,
+  billing, subscriptions, complete audit logging, WebSockets/SSE, or a second
+  cloud provider.
 - Phase 13B exposes authenticated owner/admin MNS receipt recovery and ECI
   terminal cleanup endpoints for cloud runs, but public destructive OSS cleanup
   and provider deletion APIs remain unavailable; the full operator console is
@@ -232,9 +237,10 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
   from `registry-1.docker.io`, so the smoke used an already cached image.
 - Real GitHub PR publishing still requires starting the API with
   `AI_SCDC_GITHUB_PR_ADAPTER=real` and providing a real PAT.
-- Authentication, organization RBAC, subscriptions, billing collection, cloud
-  KMS credential provisioning, and live KMS smoke validation are still
-  development boundaries.
+- Authentication, organization RBAC, subscriptions, billing collection, and
+  cloud KMS credential provisioning are still development boundaries. The local
+  readiness command exists, but operators still must run and retain
+  target-account live-smoke evidence before beta traffic.
 - Reviewer and debugger behavior is deterministic, not model-backed.
 - The API still initializes schema through SQLModel metadata and SQLite upgrade
   helpers; Alembic migrations remain reserved for later.
@@ -242,6 +248,6 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 ## Recommended Next Phase
 
 The next production step should continue Phase 13B with cloud KMS credential
-provisioning, live cloud KMS smoke validation, and broader/full
+provisioning, retained target-account KMS smoke evidence, and broader/full
 organization-scoped operator controls and operator console coverage before
 commercial beta.

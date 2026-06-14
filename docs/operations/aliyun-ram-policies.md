@@ -149,6 +149,13 @@ stored model/GitHub credentials:
 }
 ```
 
+After attaching the policy, run `python -m ai_company_api.tools.kms_readiness`
+for preflight in the target environment, then run
+`python -m ai_company_api.tools.kms_readiness --live` only when the operator is
+ready to create live KMS request audit events. The readiness output is redacted
+and should be kept with deployment evidence; it is not a substitute for RAM
+policy review.
+
 Validate the resource form in the Aliyun RAM policy simulator for the selected
 KMS key. The pull worker role and assigned ECI worker must not receive KMS
 decrypt permission or the API process's Aliyun access key secret.
