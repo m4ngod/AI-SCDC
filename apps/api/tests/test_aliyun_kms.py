@@ -14,6 +14,19 @@ from ai_company_api.services.aliyun_kms import (
 )
 
 
+_DEFAULT_BODY = object()
+_DEFAULT_DECRYPT_PLAINTEXT = object()
+_MISSING = object()
+
+
+class _StringLike:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def __str__(self) -> str:
+        return self._value
+
+
 def test_get_aliyun_kms_client_requires_region() -> None:
     settings = _aliyun_settings(region_id=None)
 
@@ -93,31 +106,78 @@ def test_sdk_aliyun_kms_decrypt_decodes_plaintext(
     assert request.ciphertext_blob == "kms-ciphertext-1"
 
 
-def test_sdk_aliyun_kms_encrypt_rejects_empty_ciphertext(
+def test_sdk_aliyun_kms_decrypt_accepts_matching_response_key_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _install_fake_kms_sdk(monkeypatch, encrypt_ciphertext_blob="")
+    _install_fake_kms_sdk(
+        monkeypatch,
+        decrypt_plaintext_blob=b64encode("opened-secret".encode("utf-8")).decode(
+            "ascii"
+        ),
+        decrypt_response_key_id="kms-key-1",
+    )
+
+    plaintext = SdkAliyunKmsClient(_aliyun_settings()).decrypt(
+        "kms-key-1",
+        "kms-ciphertext-1",
+    )
+
+    assert plaintext == "opened-secret"
+
+
+@pytest.mark.parametrize(
+    "encrypt_kwargs",
+    [
+        {"encrypt_body": None},
+        {"encrypt_ciphertext_blob": _MISSING},
+        {"encrypt_ciphertext_blob": ""},
+        {"encrypt_ciphertext_blob": 123},
+    ],
+    ids=[
+        "missing-body",
+        "missing-ciphertext-field",
+        "empty-ciphertext",
+        "non-string-ciphertext",
+    ],
+)
+def test_sdk_aliyun_kms_encrypt_rejects_invalid_ciphertext_response(
+    monkeypatch: pytest.MonkeyPatch,
+    encrypt_kwargs: dict[str, object],
+) -> None:
+    _install_fake_kms_sdk(monkeypatch, **encrypt_kwargs)
 
     with pytest.raises(ValueError, match="Invalid KMS encrypt response"):
         SdkAliyunKmsClient(_aliyun_settings()).encrypt("kms-key-1", "secret-value")
 
 
-def test_sdk_aliyun_kms_decrypt_rejects_empty_plaintext(
+@pytest.mark.parametrize(
+    "decrypt_kwargs",
+    [
+        {"decrypt_body": None},
+        {"decrypt_plaintext_blob": _MISSING},
+        {"decrypt_plaintext_blob": ""},
+        {
+            "decrypt_plaintext_blob": _StringLike(
+                b64encode("opened-secret".encode("utf-8")).decode("ascii")
+            )
+        },
+        {"decrypt_plaintext_blob": "not base64"},
+        {"decrypt_response_key_id": "other-kms-key"},
+    ],
+    ids=[
+        "missing-body",
+        "missing-plaintext-field",
+        "empty-plaintext",
+        "non-string-plaintext",
+        "malformed-plaintext",
+        "mismatched-response-key-id",
+    ],
+)
+def test_sdk_aliyun_kms_decrypt_rejects_invalid_plaintext_response(
     monkeypatch: pytest.MonkeyPatch,
+    decrypt_kwargs: dict[str, object],
 ) -> None:
-    _install_fake_kms_sdk(monkeypatch, decrypt_plaintext_blob="")
-
-    with pytest.raises(ValueError, match="Invalid KMS decrypt response"):
-        SdkAliyunKmsClient(_aliyun_settings()).decrypt(
-            "kms-key-1",
-            "kms-ciphertext-1",
-        )
-
-
-def test_sdk_aliyun_kms_decrypt_rejects_malformed_plaintext(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _install_fake_kms_sdk(monkeypatch, decrypt_plaintext_blob="not base64")
+    _install_fake_kms_sdk(monkeypatch, **decrypt_kwargs)
 
     with pytest.raises(ValueError, match="Invalid KMS decrypt response"):
         SdkAliyunKmsClient(_aliyun_settings()).decrypt(
@@ -141,14 +201,35 @@ def test_sdk_aliyun_kms_delete_is_noop_without_sdk_call(
 def _install_fake_kms_sdk(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    encrypt_ciphertext_blob: str = "kms-ciphertext-1",
-    decrypt_plaintext_blob: str | None = None,
+    encrypt_body: object = _DEFAULT_BODY,
+    encrypt_ciphertext_blob: object = "kms-ciphertext-1",
+    decrypt_body: object = _DEFAULT_BODY,
+    decrypt_plaintext_blob: object = _DEFAULT_DECRYPT_PLAINTEXT,
+    decrypt_response_key_id: object = _MISSING,
 ) -> dict[str, object]:
-    if decrypt_plaintext_blob is None:
+    if decrypt_plaintext_blob is _DEFAULT_DECRYPT_PLAINTEXT:
         decrypt_plaintext_blob = b64encode("secret-value".encode("utf-8")).decode(
             "ascii"
         )
     captured: dict[str, object] = {}
+
+    def response_body(
+        body: object,
+        field_name: str,
+        field_value: object,
+        *,
+        response_key_id: object = _MISSING,
+    ) -> object:
+        if body is None:
+            return None
+        if body is not _DEFAULT_BODY:
+            return body
+        sdk_body = SimpleNamespace()
+        if field_value is not _MISSING:
+            setattr(sdk_body, field_name, field_value)
+        if response_key_id is not _MISSING:
+            sdk_body.key_id = response_key_id
+        return sdk_body
 
     class FakeConfig:
         def __init__(
@@ -177,12 +258,21 @@ def _install_fake_kms_sdk(
 
         def encrypt(self, request: FakeEncryptRequest):
             captured["encrypt_request"] = request
-            body = SimpleNamespace(ciphertext_blob=encrypt_ciphertext_blob)
+            body = response_body(
+                encrypt_body,
+                "ciphertext_blob",
+                encrypt_ciphertext_blob,
+            )
             return SimpleNamespace(body=body)
 
         def decrypt(self, request: FakeDecryptRequest):
             captured["decrypt_request"] = request
-            body = SimpleNamespace(plaintext=decrypt_plaintext_blob)
+            body = response_body(
+                decrypt_body,
+                "plaintext",
+                decrypt_plaintext_blob,
+                response_key_id=decrypt_response_key_id,
+            )
             return SimpleNamespace(body=body)
 
     kms_package = ModuleType("alibabacloud_kms20160120")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from base64 import b64decode, b64encode
 from binascii import Error as BinasciiError
 from dataclasses import dataclass
+from typing import Any
 
 from ai_company_api.services.aliyun_config import (
     AliyunSettings,
@@ -32,10 +33,11 @@ class SdkAliyunKmsClient:
                 plaintext=plaintext_blob,
             )
         )
-        ciphertext = str(getattr(getattr(result, "body", None), "ciphertext_blob", "") or "")
-        if ciphertext == "":
-            raise ValueError("Invalid KMS encrypt response")
-        return ciphertext
+        return _required_response_field(
+            getattr(result, "body", None),
+            "ciphertext_blob",
+            "Invalid KMS encrypt response",
+        )
 
     def decrypt(self, key_id: str, ciphertext: str) -> str:
         from alibabacloud_kms20160120 import models as kms_models
@@ -43,8 +45,18 @@ class SdkAliyunKmsClient:
         result = self._client().decrypt(
             kms_models.DecryptRequest(ciphertext_blob=ciphertext)
         )
-        plaintext_blob = str(getattr(getattr(result, "body", None), "plaintext", "") or "")
-        if plaintext_blob == "":
+        body = getattr(result, "body", None)
+        plaintext_blob = _required_response_field(
+            body,
+            "plaintext",
+            "Invalid KMS decrypt response",
+        )
+        response_key_id = getattr(body, "key_id", None)
+        if (
+            isinstance(response_key_id, str)
+            and response_key_id != ""
+            and response_key_id != key_id
+        ):
             raise ValueError("Invalid KMS decrypt response")
         try:
             return b64decode(
@@ -57,7 +69,7 @@ class SdkAliyunKmsClient:
     def delete(self, key_id: str, ciphertext: str) -> None:
         _ = (key_id, ciphertext)
 
-    def _client(self):
+    def _client(self) -> Any:
         from alibabacloud_kms20160120.client import Client
         from alibabacloud_tea_openapi import models as openapi_models
 
@@ -84,3 +96,10 @@ def get_aliyun_kms_client(
         settings=settings or load_aliyun_settings(),
     )
     return SdkAliyunKmsClient(resolved)
+
+
+def _required_response_field(body: object, field_name: str, error_message: str) -> str:
+    value = getattr(body, field_name, None)
+    if not isinstance(value, str) or value == "":
+        raise ValueError(error_message)
+    return value
