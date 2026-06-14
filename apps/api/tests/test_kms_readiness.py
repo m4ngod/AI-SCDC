@@ -48,6 +48,7 @@ def clear_kms_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "AI_SCDC_ALIYUN_REGION_ID",
         "AI_SCDC_ALIYUN_ACCESS_KEY_ID",
         "AI_SCDC_ALIYUN_ACCESS_KEY_SECRET",
+        "AI_SCDC_ALIYUN_ECI_CPU",
     ):
         monkeypatch.delenv(name, raising=False)
     set_secret_vault_for_tests(None)
@@ -58,7 +59,11 @@ def result_json(result) -> str:
     return json.dumps(result.model_dump(), sort_keys=True)
 
 
-def test_kms_readiness_exposes_preflight_api_surface() -> None:
+def test_kms_readiness_exposes_preflight_api_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_kms_env(monkeypatch)
+
     result = run_kms_readiness(
         live=False,
         vault_factory=lambda: pytest.fail("dev provider should fail first"),
@@ -92,6 +97,27 @@ def test_kms_preflight_succeeds_for_complete_aliyun_config_without_kms_call(
     assert result.key_id_hint.startswith("sha256:")
     assert "kms-key-production" not in serialized
     assert "ak-secret-value" not in serialized
+    assert fake_kms.encrypt_requests == []
+    assert fake_kms.decrypt_requests == []
+    assert fake_kms.delete_requests == []
+
+
+def test_kms_preflight_ignores_malformed_unrelated_aliyun_optional_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_kms_env(monkeypatch)
+    set_complete_aliyun_kms_env(monkeypatch)
+    monkeypatch.setenv("AI_SCDC_ALIYUN_ECI_CPU", "not-a-float")
+    fake_kms = FakeKmsClient()
+    set_kms_client_for_tests(fake_kms)
+    try:
+        result = run_kms_preflight()
+    finally:
+        set_kms_client_for_tests(None)
+
+    assert result.status == "ready_for_live_smoke"
+    assert result.stage == "preflight"
+    assert result.provider == "aliyun_kms"
     assert fake_kms.encrypt_requests == []
     assert fake_kms.decrypt_requests == []
     assert fake_kms.delete_requests == []
@@ -190,3 +216,19 @@ def test_kms_preflight_allows_generic_kms_only_with_configured_client(
     assert fake_kms.encrypt_requests == []
     assert fake_kms.decrypt_requests == []
     assert fake_kms.delete_requests == []
+
+
+def test_kms_preflight_fails_closed_for_generic_kms_without_client_without_key_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_kms_env(monkeypatch)
+    monkeypatch.setenv(SECRET_VAULT_PROVIDER_ENV, "kms")
+    monkeypatch.setenv(SECRET_VAULT_KMS_KEY_ID_ENV, "generic-key-without-client")
+
+    result = run_kms_preflight()
+    serialized = result_json(result)
+
+    assert result.status == "failed"
+    assert result.stage == "preflight"
+    assert result.error_code == "configuration_error"
+    assert "generic-key-without-client" not in serialized

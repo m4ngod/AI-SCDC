@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from ai_company_api.services.aliyun_config import (
     AliyunConfigurationError,
-    load_aliyun_settings,
+    AliyunSettings,
     require_aliyun_settings,
 )
 from ai_company_api.services.secret_vault import (
@@ -119,7 +119,7 @@ def run_kms_preflight(
             require_aliyun_settings(
                 provider_name="kms",
                 required_names=_ALIYUN_KMS_REQUIRED_NAMES,
-                settings=load_aliyun_settings(),
+                settings=_load_kms_aliyun_settings(),
             )
         else:
             vault_factory()
@@ -187,6 +187,30 @@ def _configured_key_id() -> str:
 
 def _generated_secret() -> str:
     return f"ai-scdc-kms-smoke-{secrets.token_urlsafe(24)}"
+
+
+def _load_kms_aliyun_settings() -> AliyunSettings:
+    return AliyunSettings(
+        region_id=_optional_env("AI_SCDC_ALIYUN_REGION_ID"),
+        access_key_id=_optional_env("AI_SCDC_ALIYUN_ACCESS_KEY_ID"),
+        access_key_secret=_optional_env("AI_SCDC_ALIYUN_ACCESS_KEY_SECRET"),
+        mns_endpoint=None,
+        mns_queue_name=None,
+        oss_endpoint=None,
+        oss_bucket=None,
+        eci_vswitch_id=None,
+        eci_security_group_id=None,
+        eci_image=None,
+        api_public_base_url=None,
+    )
+
+
+def _optional_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def _key_id_hint(key_id: str) -> str | None:
