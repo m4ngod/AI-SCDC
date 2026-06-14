@@ -126,7 +126,29 @@ organization-scoped operator controls exist.
 
 ## Production KMS Boundary
 
-`DevSecretVault` is development-only. Production must provide a KMS-backed
-implementation of the existing `SecretVault` protocol before commercial beta.
-The RAM policies here do not grant KMS permissions because Phase 13A does not
-integrate a real KMS SDK.
+`DevSecretVault` is development-only. For production-style secret sealing, set
+`AI_SCDC_SECRET_VAULT_PROVIDER=aliyun_kms`, `AI_SCDC_KMS_KEY_ID`,
+`AI_SCDC_ALIYUN_REGION_ID`, `AI_SCDC_ALIYUN_ACCESS_KEY_ID`, and
+`AI_SCDC_ALIYUN_ACCESS_KEY_SECRET`. The API process uses the Aliyun Classic KMS
+SDK `Encrypt` and `Decrypt` actions; automated tests use fake SDK modules and
+do not contact Aliyun.
+
+Add KMS permissions only to the API control-plane role that seals and opens
+stored model/GitHub credentials:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "kms:Encrypt",
+    "kms:Decrypt"
+  ],
+  "Resource": [
+    "acs:kms:cn-hangzhou:1234567890123456:key/<kms-key-id>"
+  ]
+}
+```
+
+Validate the resource form in the Aliyun RAM policy simulator for the selected
+KMS key. The pull worker role and assigned ECI worker must not receive KMS
+decrypt permission or the API process's Aliyun access key secret.

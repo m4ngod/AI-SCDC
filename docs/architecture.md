@@ -296,17 +296,16 @@ active workspace. Worker callback endpoints keep their run-scoped callback
 token boundary and are not converted into user-session endpoints.
 
 The next Phase 13B slice extends the `SecretVault` protocol with rotate,
-delete, and fingerprint operations, adds a fail-closed provider factory, and
-adds a test-backed `KmsSecretVault` provider boundary for `kms`/`aliyun_kms`
-configuration instead of falling back to development storage. KMS mode wraps
-provider, key id, and ciphertext metadata in a `kms-vault:v1:` envelope,
-requires `AI_SCDC_KMS_KEY_ID` plus an explicitly configured KMS client seam,
-and keeps the real Aliyun KMS SDK adapter for a later slice. It also adds
+delete, and fingerprint semantics, adds a fail-closed provider factory, adds a
+test-backed `KmsSecretVault` provider boundary for generic `kms`, and wires
+`aliyun_kms` to a real Aliyun Classic KMS SDK adapter. KMS mode wraps provider,
+key id, and ciphertext metadata in a `kms-vault:v1:` envelope, requires
+`AI_SCDC_KMS_KEY_ID`, and never falls back to development storage. The Aliyun
+adapter uses the existing Aliyun region/access-key settings and encodes
+plaintext through the SDK-required base64 request field. It also adds
 `SecretAccessAuditLog` records for model and GitHub credential create/delete,
 plus model planner, GitHub pull-request, Docker cloud-run, and remote-worker
-payload credential opens. Audit records capture scope, actor, secret kind/id,
-reason, operation, and success status without storing raw or encrypted secret
-payloads.
+payload credential opens.
 
 Phase 13B now also includes a narrow authenticated operator API facade for
 Aliyun maintenance actions that were already implemented as service helpers.
@@ -319,8 +318,8 @@ runtime job ids, queue receipts, callback tokens, raw provider errors, Aliyun
 access keys, and raw provider URLs.
 
 Phase 13B is not complete yet. This slice does not add full login/session
-issuance, production IdP integration, the real Aliyun KMS SDK adapter and cloud
-KMS credential path or cloud KMS smoke path, billing, a full operator console,
+issuance, production IdP integration, cloud KMS credential provisioning and
+cloud KMS smoke validation, billing, a full operator console,
 public destructive OSS cleanup, complete audit logging, or a complete
 role-by-route permission matrix.
 
@@ -377,8 +376,8 @@ In progress:
    API-token lookup, RBAC foundations, a fail-closed secret-vault provider
    factory, a test-backed `KmsSecretVault` provider boundary for
    `kms`/`aliyun_kms`, and secret-access audit logs. Remaining work includes
-   the real Aliyun KMS SDK adapter, cloud KMS credential path, cloud KMS smoke
-   path, full sessions, broader/full organization-scoped operator controls or
+   cloud KMS credential provisioning, cloud KMS smoke validation,
+   full sessions, broader/full organization-scoped operator controls or
    operator console coverage, broader audit coverage, and a complete permission
    matrix.
 2. Phase 13C cost/quota guardrail foundation with execution usage types,

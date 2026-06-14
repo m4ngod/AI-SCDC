@@ -26,10 +26,12 @@ Operator references:
 
 Use OSS lifecycle rules for development object retention. Do not add broad
 API-side OSS deletion until authenticated organization-scoped operator controls
-exist. `DevSecretVault` remains development-only; the API now has a fail-closed
-secret-vault provider factory, a not-configured KMS adapter placeholder, and
-secret create/open/delete audit records, but commercial production still must
-provide a real KMS-backed `SecretVault` implementation before beta traffic.
+exist. `DevSecretVault` remains development-only. When
+`AI_SCDC_SECRET_VAULT_PROVIDER=aliyun_kms`, the API uses a real Aliyun Classic
+KMS SDK adapter with `AI_SCDC_KMS_KEY_ID` plus the existing Aliyun
+region/access-key settings. Automated tests use fake SDK modules and do not
+contact Aliyun; commercial production still needs RAM policy review, credential
+provisioning, and live KMS smoke validation before beta traffic.
 
 Phase 13C starts cost protection without payment integration. The API now has
 execution-plane usage types, workspace manual credit grants, spend limits,

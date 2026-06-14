@@ -40,11 +40,19 @@ Safe fields for troubleshooting:
 
 ## KMS Boundary
 
-The codebase currently uses `DevSecretVault` for development secret sealing.
-Commercial production must provide a KMS-backed implementation of the existing
-`SecretVault` protocol before beta traffic. Operators must not compensate by
-copying plaintext access keys, callback tokens, queue receipts, signed URLs, or
-GitHub tokens into operational records.
+The codebase uses `DevSecretVault` by default for local development. For
+production-style secret sealing, start the API with
+`AI_SCDC_SECRET_VAULT_PROVIDER=aliyun_kms`, `AI_SCDC_KMS_KEY_ID`, and the
+existing Aliyun region/access-key environment variables. The adapter calls
+Aliyun Classic KMS `Encrypt` and `Decrypt`; it does not perform a remote delete
+for ciphertext blobs.
+
+Local automated tests use fake SDK modules and do not validate live Aliyun
+credentials. Before beta traffic, operators must run a live KMS smoke in the
+target account and verify RAM policy scope, KMS key state, request audit logs,
+and failure behavior without pasting plaintext access keys, callback tokens,
+queue receipts, signed URLs, GitHub tokens, or raw KMS plaintext into
+operational records.
 
 ## Cleanup Decision Rules
 
