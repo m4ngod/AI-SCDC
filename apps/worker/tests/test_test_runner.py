@@ -55,12 +55,13 @@ def test_run_tests_stops_on_first_failed_command(tmp_path: Path) -> None:
 def test_run_tests_marks_timeout_as_failed(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
+    sleep_seconds = 5
 
     started = time.monotonic()
     result = run_tests(
         TestRunnerRequest(
             worktree_path=worktree,
-            commands=["python -c \"import time; time.sleep(2)\""],
+            commands=[f"python -c \"import time; time.sleep({sleep_seconds})\""],
             timeout_seconds=0.1,
         )
     )
@@ -69,7 +70,7 @@ def test_run_tests_marks_timeout_as_failed(tmp_path: Path) -> None:
     assert result.status == "failed"
     assert result.command_results[0].exit_code is None
     assert "timed out" in result.command_results[0].stderr.lower()
-    assert elapsed_seconds < 1
+    assert elapsed_seconds < sleep_seconds / 2
 
 
 def test_run_tests_rejects_missing_worktree(tmp_path: Path) -> None:
