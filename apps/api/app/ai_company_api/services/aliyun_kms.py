@@ -51,13 +51,12 @@ class SdkAliyunKmsClient:
             "plaintext",
             "Invalid KMS decrypt response",
         )
-        response_key_id = getattr(body, "key_id", None)
-        if (
-            isinstance(response_key_id, str)
-            and response_key_id != ""
-            and response_key_id != key_id
-        ):
-            raise ValueError("Invalid KMS decrypt response")
+        if hasattr(body, "key_id"):
+            response_key_id = getattr(body, "key_id")
+            if not isinstance(response_key_id, str):
+                raise ValueError("Invalid KMS decrypt response")
+            if response_key_id != "" and response_key_id != key_id:
+                raise ValueError("Invalid KMS decrypt response")
         try:
             return b64decode(
                 plaintext_blob.encode("ascii"),

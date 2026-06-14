@@ -125,6 +125,25 @@ def test_sdk_aliyun_kms_decrypt_accepts_matching_response_key_id(
     assert plaintext == "opened-secret"
 
 
+def test_sdk_aliyun_kms_decrypt_accepts_empty_response_key_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_kms_sdk(
+        monkeypatch,
+        decrypt_plaintext_blob=b64encode("opened-secret".encode("utf-8")).decode(
+            "ascii"
+        ),
+        decrypt_response_key_id="",
+    )
+
+    plaintext = SdkAliyunKmsClient(_aliyun_settings()).decrypt(
+        "kms-key-1",
+        "kms-ciphertext-1",
+    )
+
+    assert plaintext == "opened-secret"
+
+
 @pytest.mark.parametrize(
     "encrypt_kwargs",
     [
@@ -163,6 +182,7 @@ def test_sdk_aliyun_kms_encrypt_rejects_invalid_ciphertext_response(
         },
         {"decrypt_plaintext_blob": "not base64"},
         {"decrypt_response_key_id": "other-kms-key"},
+        {"decrypt_response_key_id": 123},
     ],
     ids=[
         "missing-body",
@@ -171,6 +191,7 @@ def test_sdk_aliyun_kms_encrypt_rejects_invalid_ciphertext_response(
         "non-string-plaintext",
         "malformed-plaintext",
         "mismatched-response-key-id",
+        "non-string-response-key-id",
     ],
 )
 def test_sdk_aliyun_kms_decrypt_rejects_invalid_plaintext_response(
