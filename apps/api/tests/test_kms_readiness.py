@@ -77,6 +77,70 @@ def result_json(result) -> str:
     return json.dumps(result.model_dump(), sort_keys=True)
 
 
+def test_kms_readiness_preflight_cli_outputs_redacted_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from ai_company_api.tools import kms_readiness as cli
+
+    clear_kms_env(monkeypatch)
+    set_complete_aliyun_kms_env(monkeypatch)
+
+    exit_code = cli.main([])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["status"] == "ready_for_live_smoke"
+    assert payload["stage"] == "preflight"
+    assert "kms-key-production" not in captured.out
+
+
+def test_kms_readiness_live_cli_outputs_redacted_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from ai_company_api.tools import kms_readiness as cli
+
+    clear_kms_env(monkeypatch)
+    set_complete_aliyun_kms_env(monkeypatch)
+    fake_kms = FakeKmsClient()
+    set_kms_client_for_tests(fake_kms)
+    try:
+        exit_code = cli.main(
+            ["--live"],
+            secret_factory=lambda: "temporary-smoke-secret",
+        )
+    finally:
+        set_kms_client_for_tests(None)
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["status"] == "passed"
+    assert payload["stage"] == "live_smoke"
+    assert "temporary-smoke-secret" not in captured.out
+
+
+def test_kms_readiness_cli_exits_one_for_failed_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from ai_company_api.tools import kms_readiness as cli
+
+    clear_kms_env(monkeypatch)
+    monkeypatch.setenv(SECRET_VAULT_PROVIDER_ENV, "dev")
+
+    exit_code = cli.main([])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert payload["status"] == "failed"
+    assert payload["error_code"] == "configuration_error"
+
+
 def test_kms_readiness_exposes_preflight_api_surface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
