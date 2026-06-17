@@ -281,13 +281,13 @@ def enqueue_cloud_run(
     data: CloudRunCreate,
 ) -> CloudRunResultRead:
     task = get_task(session, task_id)
+    repository = get_repository(session, data.repo_id)
     _require_audited_permission_if_authenticated(
         session,
         "run.write",
         operation="cloud_run.start",
         resource_type="cloud_run",
     )
-    repository = get_repository(session, data.repo_id)
     if repository.project_id != task.project_id:
         raise HTTPException(
             status_code=400,
@@ -1386,11 +1386,6 @@ def process_cloud_run(
     worker_id: str = "local-worker",
 ) -> CloudRunResultRead:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
-    if cloud_run.status != "queued":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cloud run is not queued",
-        )
     _require_audited_permission_if_authenticated(
         session,
         "run.write",
@@ -1398,6 +1393,11 @@ def process_cloud_run(
         resource_type="cloud_run",
         resource_id=cloud_run.id,
     )
+    if cloud_run.status != "queued":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cloud run is not queued",
+        )
 
     local_run = _get_cloud_run_local_run_or_404(session, cloud_run)
     now = utc_now()

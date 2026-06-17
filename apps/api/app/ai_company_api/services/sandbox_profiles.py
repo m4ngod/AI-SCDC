@@ -46,6 +46,12 @@ def create_sandbox_profile(
 ) -> SandboxProfileRead:
     project = get_project(session, project_id)
     repository = get_repository(session, data.repo_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "repository.write",
+        operation="sandbox_profile.create",
+        resource_type="sandbox_profile",
+    )
     if repository.project_id != project.id:
         raise HTTPException(status_code=400, detail="Repository does not belong to project")
     if repository.provider != "github":
@@ -62,12 +68,6 @@ def create_sandbox_profile(
         raise HTTPException(status_code=400, detail="Invalid Docker image")
     allowed_env_vars = _validated_allowed_env_vars(data.allowed_env_vars)
 
-    _require_audited_permission_if_authenticated(
-        session,
-        "repository.write",
-        operation="sandbox_profile.create",
-        resource_type="sandbox_profile",
-    )
     profile = SandboxProfile(
         workspace_id=project.workspace_id,
         project_id=project.id,

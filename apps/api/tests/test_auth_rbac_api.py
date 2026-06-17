@@ -803,7 +803,8 @@ def test_viewer_and_billing_manager_cannot_create_execution_resources() -> None:
 
 
 def test_reviewer_can_review_but_cannot_start_run_or_publish_pr(tmp_path: Path) -> None:
-    with build_client(tmp_path / "reviewer.db") as client:
+    database_path = tmp_path / "reviewer.db"
+    with build_client(database_path) as client:
         project = client.post(
             "/projects",
             json={"name": "review permissions"},
@@ -814,10 +815,26 @@ def test_reviewer_can_review_but_cannot_start_run_or_publish_pr(tmp_path: Path) 
             json={"title": "review target", "role_required": "backend"},
             headers=auth_headers(roles="developer"),
         ).json()
+        with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+            session.add(
+                Repository(
+                    id="repo_reviewer_run",
+                    workspace_id="workspace_a",
+                    project_id=project["id"],
+                    name="Reviewer run repo",
+                    local_path="",
+                    provider="github",
+                    repo_url="https://github.com/example/reviewer-run",
+                    github_owner="example",
+                    github_repo="reviewer-run",
+                    connection_status="active",
+                )
+            )
+            session.commit()
 
         start_response = client.post(
             f"/tasks/{task['id']}/cloud-runs",
-            json={"repo_id": "repo_missing"},
+            json={"repo_id": "repo_reviewer_run"},
             headers=auth_headers(roles="reviewer"),
         )
         assert start_response.status_code == 403
@@ -850,7 +867,8 @@ def test_cross_workspace_task_create_still_hides_project() -> None:
 def test_planner_review_reviewer_can_approve_and_reject_but_not_create_task_or_start_run(
     tmp_path: Path,
 ) -> None:
-    with build_client(tmp_path / "planner-reviewer.db") as client:
+    database_path = tmp_path / "planner-reviewer.db"
+    with build_client(database_path) as client:
         project = client.post(
             "/projects",
             json={"name": "planner reviewer permissions"},
@@ -882,9 +900,25 @@ def test_planner_review_reviewer_can_approve_and_reject_but_not_create_task_or_s
             headers=auth_headers(roles="reviewer"),
         )
         created_task = approve_response.json()["created_tasks"][0]
+        with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+            session.add(
+                Repository(
+                    id="repo_planner_reviewer_run",
+                    workspace_id="workspace_a",
+                    project_id=project["id"],
+                    name="Planner reviewer run repo",
+                    local_path="",
+                    provider="github",
+                    repo_url="https://github.com/example/planner-reviewer-run",
+                    github_owner="example",
+                    github_repo="planner-reviewer-run",
+                    connection_status="active",
+                )
+            )
+            session.commit()
         run_response = client.post(
             f"/tasks/{created_task['id']}/cloud-runs",
-            json={"repo_id": "repo_missing"},
+            json={"repo_id": "repo_planner_reviewer_run"},
             headers=auth_headers(roles="reviewer"),
         )
 

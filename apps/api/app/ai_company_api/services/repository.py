@@ -181,13 +181,13 @@ def create_repository(
     data: RepositoryCreate,
 ) -> RepositoryRead:
     project = get_project(session, project_id)
-    repo_path = _validate_local_git_repository(data.local_path)
     _require_audited_permission_if_authenticated(
         session,
         "repository.write",
         operation="repository.create",
         resource_type="repository",
     )
+    repo_path = _validate_local_git_repository(data.local_path)
     repository = ProjectRepository(
         workspace_id=project.workspace_id,
         project_id=project_id,
@@ -596,9 +596,7 @@ def approve_planner_run(
     planner_run_id: str,
 ) -> PlannerRunDecisionRead:
     planner_run = get_planner_run(session, planner_run_id)
-    _ensure_planner_run_is_drafted(planner_run)
     project = get_project(session, planner_run.project_id)
-    drafts = list_planner_task_drafts(session, planner_run.id)
     _require_audited_permission_if_authenticated(
         session,
         "planner.review",
@@ -606,6 +604,8 @@ def approve_planner_run(
         resource_type="planner_run",
         resource_id=planner_run.id,
     )
+    _ensure_planner_run_is_drafted(planner_run)
+    drafts = list_planner_task_drafts(session, planner_run.id)
 
     created_tasks: list[Task] = []
     try:
@@ -686,7 +686,6 @@ def reject_planner_run(
     reason: str = "",
 ) -> PlannerRunDecisionRead:
     planner_run = get_planner_run(session, planner_run_id)
-    _ensure_planner_run_is_drafted(planner_run)
     project = get_project(session, planner_run.project_id)
     _require_audited_permission_if_authenticated(
         session,
@@ -695,6 +694,7 @@ def reject_planner_run(
         resource_type="planner_run",
         resource_id=planner_run.id,
     )
+    _ensure_planner_run_is_drafted(planner_run)
 
     try:
         approval = Approval(
@@ -840,6 +840,13 @@ def transition_task(
     task = get_task(session, task_id)
     current_status = TaskStatus(task.status)
 
+    _require_audited_permission_if_authenticated(
+        session,
+        "task.write",
+        operation="task.transition",
+        resource_type="task",
+        resource_id=task.id,
+    )
     try:
         next_status = validate_transition(current_status, requested_status, actor_type)
     except InvalidTaskTransition as exc:
@@ -853,13 +860,6 @@ def transition_task(
             },
         ) from exc
 
-    _require_audited_permission_if_authenticated(
-        session,
-        "task.write",
-        operation="task.transition",
-        resource_type="task",
-        resource_id=task.id,
-    )
     task.status = next_status
     task.updated_at = utc_now()
     create_task_event(

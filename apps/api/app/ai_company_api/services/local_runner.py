@@ -66,13 +66,13 @@ def start_local_task_run(
     data: LocalRunCreate,
 ) -> LocalTaskRunRead:
     task = get_task(session, task_id)
+    repository = get_repository(session, data.repo_id)
     _require_audited_permission_if_authenticated(
         session,
         "run.write",
         operation="local_run.start",
         resource_type="local_run",
     )
-    repository = get_repository(session, data.repo_id)
     if repository.project_id != task.project_id:
         raise HTTPException(
             status_code=400,

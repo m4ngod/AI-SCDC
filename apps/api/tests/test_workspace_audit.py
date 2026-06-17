@@ -7,9 +7,11 @@ from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
     GitHubCredential,
     GitHubCredentialStatus,
+    CloudRun,
     ModelCredential,
     ModelCredentialStatus,
     Project,
+    Repository,
     SecretAccessAuditLog,
     Task,
     WorkspaceAuditLog,
@@ -707,3 +709,290 @@ def test_task_create_denied_records_failed_audit_and_does_not_create_task(
     assert audit_log.status_code == 403
     assert audit_log.error_code == "insufficient_workspace_role"
     assert audit_log.access_level.value == "high_value_write"
+
+
+def _auth_headers(
+    *,
+    user_id: str,
+    workspace_id: str = "workspace_a",
+    organization_id: str = "org_a",
+    roles: str,
+) -> dict[str, str]:
+    return {
+        "x-ai-scdc-user-id": user_id,
+        "x-ai-scdc-workspace-id": workspace_id,
+        "x-ai-scdc-organization-id": organization_id,
+        "x-ai-scdc-roles": roles,
+    }
+
+
+def _failed_audit_logs(
+    database_url: str,
+    operation: str,
+) -> list[WorkspaceAuditLog]:
+    with Session(build_engine(database_url)) as session:
+        return list(
+            session.exec(
+                select(WorkspaceAuditLog)
+                .where(WorkspaceAuditLog.operation == operation)
+                .where(WorkspaceAuditLog.success.is_(False))
+            ).all()
+        )
+
+
+def test_repository_create_denied_before_invalid_path_validation(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "repo-create-denied.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        project = client.post(
+            "/projects",
+            json={"name": "repo create denied"},
+            headers=_auth_headers(user_id="owner_user", roles="owner"),
+        ).json()
+        response = client.post(
+            f"/projects/{project['id']}/repositories",
+            json={
+                "name": "invalid local repo",
+                "local_path": str(tmp_path / "does-not-exist"),
+                "default_branch": "main",
+            },
+            headers=_auth_headers(user_id="viewer_user", roles="viewer"),
+        )
+
+    assert response.status_code == 403
+    audit_logs = _failed_audit_logs(database_url, "repository.create")
+    assert len(audit_logs) == 1
+    assert audit_logs[0].resource_type == "repository"
+    assert audit_logs[0].error_code == "insufficient_workspace_role"
+
+
+def test_planner_review_denied_before_already_decided_validation(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "planner-review-denied.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        project = client.post(
+            "/projects",
+            json={"name": "planner review denied"},
+            headers=_auth_headers(user_id="owner_user", roles="owner"),
+        ).json()
+        planner_run = client.post(
+            f"/projects/{project['id']}/planner-runs",
+            json={"goal": "Create a decided planner run"},
+            headers=_auth_headers(user_id="developer_user", roles="developer"),
+        ).json()
+        decided = client.post(
+            f"/planner-runs/{planner_run['id']}/approve",
+            headers=_auth_headers(user_id="reviewer_user", roles="reviewer"),
+        )
+        approve_again = client.post(
+            f"/planner-runs/{planner_run['id']}/approve",
+            headers=_auth_headers(user_id="developer_user", roles="developer"),
+        )
+        reject_after_decision = client.post(
+            f"/planner-runs/{planner_run['id']}/reject",
+            json={"reason": "too late"},
+            headers=_auth_headers(user_id="developer_user", roles="developer"),
+        )
+
+    assert decided.status_code == 200
+    assert approve_again.status_code == 403
+    assert reject_after_decision.status_code == 403
+    approve_audit = _failed_audit_logs(database_url, "planner_run.approve")
+    reject_audit = _failed_audit_logs(database_url, "planner_run.reject")
+    assert len(approve_audit) == 1
+    assert len(reject_audit) == 1
+    assert approve_audit[0].resource_id == planner_run["id"]
+    assert reject_audit[0].resource_id == planner_run["id"]
+
+
+def test_task_transition_denied_before_invalid_transition_validation(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "task-transition-denied.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        project = client.post(
+            "/projects",
+            json={"name": "task transition denied"},
+            headers=_auth_headers(user_id="owner_user", roles="owner"),
+        ).json()
+        task = client.post(
+            f"/projects/{project['id']}/tasks",
+            json={"title": "transition target", "role_required": "backend"},
+            headers=_auth_headers(user_id="developer_user", roles="developer"),
+        ).json()
+        response = client.patch(
+            f"/tasks/{task['id']}",
+            json={"status": "REVIEWING"},
+            headers=_auth_headers(user_id="reviewer_user", roles="reviewer"),
+        )
+
+    assert response.status_code == 403
+    audit_logs = _failed_audit_logs(database_url, "task.transition")
+    assert len(audit_logs) == 1
+    assert audit_logs[0].resource_id == task["id"]
+
+
+def test_cloud_run_process_denied_before_non_queued_validation(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "cloud-process-denied.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        project = Project(id="project_process", workspace_id="workspace_a", name="Project")
+        task = Task(
+            id="task_process",
+            project_id=project.id,
+            title="Process task",
+            role_required="backend",
+        )
+        repository = Repository(
+            id="repo_process",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            name="Repo",
+            local_path="",
+        )
+        cloud_run = CloudRun(
+            id="cloud_run_process",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            task_id=task.id,
+            repo_id=repository.id,
+            head_branch="ai-scdc/process",
+            status="failed",
+        )
+        session.add(project)
+        session.add(task)
+        session.add(repository)
+        session.add(cloud_run)
+        session.commit()
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.post(
+            "/cloud-runs/cloud_run_process/process",
+            headers=_auth_headers(user_id="reviewer_user", roles="reviewer"),
+        )
+
+    assert response.status_code == 403
+    audit_logs = _failed_audit_logs(database_url, "cloud_run.process")
+    assert len(audit_logs) == 1
+    assert audit_logs[0].resource_id == "cloud_run_process"
+
+
+def test_sandbox_profile_create_denied_before_invalid_command_validation(
+    tmp_path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "sandbox-denied.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        project = Project(id="project_sandbox", workspace_id="workspace_a", name="Project")
+        repository = Repository(
+            id="repo_sandbox",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            name="Repo",
+            local_path="",
+            provider="github",
+            repo_url="https://github.com/example/repo",
+            github_owner="example",
+            github_repo="repo",
+            connection_status="active",
+        )
+        session.add(project)
+        session.add(repository)
+        session.commit()
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.post(
+            "/projects/project_sandbox/sandbox-profiles",
+            json={
+                "repo_id": "repo_sandbox",
+                "name": "Denied invalid profile",
+                "docker_image": "python:3.11-slim",
+                "patch_commands": [
+                    {
+                        "key": "patch",
+                        "label": "Patch",
+                        "command": "python patch.py",
+                        "is_default": False,
+                    }
+                ],
+            },
+            headers=_auth_headers(user_id="viewer_user", roles="viewer"),
+        )
+
+    assert response.status_code == 403
+    audit_logs = _failed_audit_logs(database_url, "sandbox_profile.create")
+    assert len(audit_logs) == 1
+    assert audit_logs[0].resource_type == "sandbox_profile"
+
+
+def test_cloud_and_local_run_start_hide_cross_workspace_repo_before_permission(
+    tmp_path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "cross-repo-run.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        project_a = Project(id="project_a", workspace_id="workspace_a", name="A")
+        task_a = Task(
+            id="task_a",
+            project_id=project_a.id,
+            title="Task A",
+            role_required="backend",
+        )
+        project_b = Project(id="project_b", workspace_id="workspace_b", name="B")
+        repo_b = Repository(
+            id="repo_b",
+            workspace_id="workspace_b",
+            project_id=project_b.id,
+            name="Repo B",
+            local_path="",
+            provider="github",
+            repo_url="https://github.com/example/repo-b",
+            github_owner="example",
+            github_repo="repo-b",
+            connection_status="active",
+        )
+        session.add(project_a)
+        session.add(task_a)
+        session.add(project_b)
+        session.add(repo_b)
+        session.commit()
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        headers = _auth_headers(user_id="viewer_user", roles="viewer")
+        cloud_response = client.post(
+            "/tasks/task_a/cloud-runs",
+            json={"repo_id": "repo_b"},
+            headers=headers,
+        )
+        local_response = client.post(
+            "/tasks/task_a/local-runs",
+            json={"repo_id": "repo_b"},
+            headers=headers,
+        )
+
+    assert cloud_response.status_code == 404
+    assert cloud_response.json()["detail"] == "Repository not found"
+    assert local_response.status_code == 404
+    assert local_response.json()["detail"] == "Repository not found"
+    assert _failed_audit_logs(database_url, "cloud_run.start") == []
+    assert _failed_audit_logs(database_url, "local_run.start") == []
