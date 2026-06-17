@@ -109,6 +109,12 @@ class BudgetReservationStatus(str, Enum):
     SETTLED = "settled"
 
 
+class WorkspaceAuditAccessLevel(str, Enum):
+    HIGH_VALUE_WRITE = "high_value_write"
+    HIGH_SENSITIVE_READ = "high_sensitive_read"
+    SYSTEM_EVENT = "system_event"
+
+
 class WorkspaceRole(str, Enum):
     OWNER = "owner"
     ADMIN = "admin"
@@ -545,6 +551,41 @@ class SecretAccessAuditLog(SQLModel, table=True):
     operation: str = Field(default="open", index=True)
     access_reason: str = Field(index=True)
     success: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WorkspaceAuditLog(SQLModel, table=True):
+    __tablename__ = "workspace_audit_log"
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("workspace_audit"),
+        primary_key=True,
+    )
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    organization_id: str = Field(default="dev_organization", index=True)
+    user_id: str = Field(default="dev_user", index=True)
+    auth_mode: str = Field(default="system", index=True)
+    operation: str = Field(index=True)
+    resource_type: str = Field(index=True)
+    resource_id: str | None = Field(default=None, index=True)
+    access_level: WorkspaceAuditAccessLevel = Field(
+        sa_column=Column(
+            SAEnum(
+                WorkspaceAuditAccessLevel,
+                name="workspace_audit_access_level",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    success: bool = Field(default=True, index=True)
+    status_code: int = Field(default=200, index=True)
+    error_code: str | None = Field(default=None, index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
