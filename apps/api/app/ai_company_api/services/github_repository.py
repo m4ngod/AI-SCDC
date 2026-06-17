@@ -80,6 +80,7 @@ def create_github_credential(
         session.refresh(credential)
     else:
         session.flush()
+        session.refresh(credential)
     return _github_credential_read(credential)
 
 

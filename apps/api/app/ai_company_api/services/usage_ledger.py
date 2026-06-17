@@ -189,6 +189,7 @@ def append_usage_ledger_entry(
         session.refresh(entry)
     else:
         session.flush()
+        session.refresh(entry)
     return _usage_read(entry)
 
 

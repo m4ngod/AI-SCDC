@@ -240,6 +240,7 @@ def grant_manual_credit(
         session.refresh(wallet)
     else:
         session.flush()
+        session.refresh(wallet)
     return _wallet_read(wallet)
 
 
@@ -644,6 +645,7 @@ def set_workspace_spend_limit(
         session.refresh(spend_limit)
     else:
         session.flush()
+        session.refresh(spend_limit)
     return _spend_limit_read(spend_limit)
 
 

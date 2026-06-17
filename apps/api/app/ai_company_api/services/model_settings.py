@@ -211,8 +211,7 @@ def create_model_provider(
             status_code=409,
             detail="Model provider name already exists",
         ) from exc
-    if commit:
-        session.refresh(provider)
+    session.refresh(provider)
     return _provider_read(provider)
 
 
@@ -261,6 +260,7 @@ def create_model_credential(
         session.refresh(credential)
     else:
         session.flush()
+        session.refresh(credential)
     return _credential_read(credential)
 
 
@@ -333,8 +333,7 @@ def create_model_route(
             status_code=409,
             detail="Active model route already exists for role",
         ) from exc
-    if commit:
-        session.refresh(route)
+    session.refresh(route)
     return _route_read(route)
 
 

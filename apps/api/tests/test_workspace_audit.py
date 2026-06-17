@@ -311,6 +311,69 @@ def test_github_credential_create_records_success_audit(tmp_path) -> None:
     assert audit_log.status_code == 201
 
 
+def test_github_credential_create_response_matches_list_after_audit_commit(
+    tmp_path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    headers = {
+        "x-ai-scdc-user-id": "owner_user",
+        "x-ai-scdc-workspace-id": "workspace_a",
+        "x-ai-scdc-organization-id": "org_a",
+        "x-ai-scdc-roles": "owner",
+    }
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        create_response = client.post(
+            "/github-credentials",
+            json={"display_name": "GitHub consistency", "token": "ghp_consistent_1234"},
+            headers=headers,
+        )
+        list_response = client.get("/github-credentials", headers=headers)
+
+    assert create_response.status_code == 201
+    assert list_response.status_code == 200
+    assert list_response.json() == [create_response.json()]
+
+
+def test_model_credential_create_response_matches_list_after_audit_commit(
+    tmp_path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    headers = {
+        "x-ai-scdc-user-id": "owner_user",
+        "x-ai-scdc-workspace-id": "workspace_a",
+        "x-ai-scdc-organization-id": "org_a",
+        "x-ai-scdc-roles": "owner",
+    }
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        provider = client.post(
+            "/model-providers",
+            json={"name": "deepseek-consistency", "provider_type": "deepseek"},
+            headers=headers,
+        ).json()
+        create_response = client.post(
+            "/model-credentials",
+            json={
+                "provider_id": provider["id"],
+                "display_name": "DeepSeek consistency",
+                "secret_value": "sk-consistent1234",
+            },
+            headers=headers,
+        )
+        list_response = client.get("/model-credentials", headers=headers)
+
+    assert create_response.status_code == 201
+    assert list_response.status_code == 200
+    assert list_response.json() == [create_response.json()]
+
+
 def test_github_credential_audit_failure_rolls_back_mutation(
     tmp_path,
     monkeypatch,
