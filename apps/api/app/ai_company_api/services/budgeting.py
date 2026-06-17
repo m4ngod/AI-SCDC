@@ -228,13 +228,18 @@ def _current_month_reserved_and_settled_cents(
 def grant_manual_credit(
     session: Session,
     data: ManualCreditGrantCreate,
+    *,
+    commit: bool = True,
 ) -> CreditWalletRead:
     wallet = _get_or_create_wallet(session)
     wallet.balance_cents += data.amount_cents
     wallet.updated_at = utc_now()
     session.add(wallet)
-    session.commit()
-    session.refresh(wallet)
+    if commit:
+        session.commit()
+        session.refresh(wallet)
+    else:
+        session.flush()
     return _wallet_read(wallet)
 
 
@@ -626,14 +631,19 @@ def cloud_run_cost_summary(
 def set_workspace_spend_limit(
     session: Session,
     data: SpendLimitUpdate,
+    *,
+    commit: bool = True,
 ) -> SpendLimitRead:
     spend_limit = _get_or_create_spend_limit(session)
     spend_limit.monthly_limit_cents = data.monthly_limit_cents
     spend_limit.per_run_limit_cents = data.per_run_limit_cents
     spend_limit.updated_at = utc_now()
     session.add(spend_limit)
-    session.commit()
-    session.refresh(spend_limit)
+    if commit:
+        session.commit()
+        session.refresh(spend_limit)
+    else:
+        session.flush()
     return _spend_limit_read(spend_limit)
 
 

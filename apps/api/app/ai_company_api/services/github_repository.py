@@ -57,6 +57,7 @@ def create_github_credential(
     session: Session,
     data: GitHubCredentialCreate,
     vault: SecretVault | None = None,
+    commit: bool = True,
 ) -> GitHubCredentialRead:
     sealed = (vault or get_secret_vault()).seal(data.token.get_secret_value())
     credential = GitHubCredential(
@@ -74,8 +75,11 @@ def create_github_credential(
         access_reason="github_credential_create",
         workspace_id=credential.workspace_id,
     )
-    session.commit()
-    session.refresh(credential)
+    if commit:
+        session.commit()
+        session.refresh(credential)
+    else:
+        session.flush()
     return _github_credential_read(credential)
 
 

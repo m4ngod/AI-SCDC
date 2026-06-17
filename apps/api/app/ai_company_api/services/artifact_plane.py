@@ -176,6 +176,7 @@ def cleanup_expired_cloud_run_artifacts(
     session: Session,
     *,
     request: CloudRunArtifactCleanupRequest,
+    commit: bool = True,
 ) -> CloudRunArtifactCleanupResultRead:
     context = get_current_auth_context()
     if context is not None:
@@ -267,7 +268,10 @@ def cleanup_expired_cloud_run_artifacts(
         )
         lifecycle_only_count += 1
 
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     return CloudRunArtifactCleanupResultRead(
         before=normalized_before,
         deleted_count=deleted_count,

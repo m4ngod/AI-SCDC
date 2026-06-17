@@ -188,6 +188,8 @@ def list_model_providers(session: Session) -> list[ModelProviderRead]:
 def create_model_provider(
     session: Session,
     data: ModelProviderCreate,
+    *,
+    commit: bool = True,
 ) -> ModelProviderRead:
     _reject_secret_headers(data.default_headers)
     provider = ModelProvider(
@@ -199,14 +201,18 @@ def create_model_provider(
     )
     session.add(provider)
     try:
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(
             status_code=409,
             detail="Model provider name already exists",
         ) from exc
-    session.refresh(provider)
+    if commit:
+        session.refresh(provider)
     return _provider_read(provider)
 
 
@@ -226,6 +232,8 @@ def create_model_credential(
     session: Session,
     data: ModelCredentialCreate,
     vault: SecretVault | None = None,
+    *,
+    commit: bool = True,
 ) -> ModelCredentialRead:
     provider = get_model_provider(session, data.provider_id)
     if _enum_value(provider.status) != ModelProviderStatus.ACTIVE.value:
@@ -248,8 +256,11 @@ def create_model_credential(
         access_reason="model_credential_create",
         workspace_id=credential.workspace_id,
     )
-    session.commit()
-    session.refresh(credential)
+    if commit:
+        session.commit()
+        session.refresh(credential)
+    else:
+        session.flush()
     return _credential_read(credential)
 
 
@@ -285,7 +296,12 @@ def list_model_routes(session: Session) -> list[ModelRouteRead]:
     return [_route_read(route) for route in session.exec(statement).all()]
 
 
-def create_model_route(session: Session, data: ModelRouteCreate) -> ModelRouteRead:
+def create_model_route(
+    session: Session,
+    data: ModelRouteCreate,
+    *,
+    commit: bool = True,
+) -> ModelRouteRead:
     provider, _credential = _validate_route_references(
         session,
         data.provider_id,
@@ -307,14 +323,18 @@ def create_model_route(session: Session, data: ModelRouteCreate) -> ModelRouteRe
     )
     session.add(route)
     try:
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(
             status_code=409,
             detail="Active model route already exists for role",
         ) from exc
-    session.refresh(route)
+    if commit:
+        session.refresh(route)
     return _route_read(route)
 
 

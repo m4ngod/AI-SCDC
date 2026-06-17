@@ -300,7 +300,7 @@ def post_github_credential(
         resource_type="github_credential",
         access_level="high_value_write",
     )
-    result = create_github_credential(session, data)
+    result = create_github_credential(session, data, commit=False)
     record_workspace_audit(
         session,
         operation="github_credential.create",
@@ -490,7 +490,7 @@ def post_model_provider(
         resource_type="model_provider",
         access_level="high_value_write",
     )
-    result = create_model_provider(session, data)
+    result = create_model_provider(session, data, commit=False)
     record_workspace_audit(
         session,
         operation="model_provider.create",
@@ -543,7 +543,7 @@ def post_model_credential(
         resource_type="model_credential",
         access_level="high_value_write",
     )
-    result = create_model_credential(session, data)
+    result = create_model_credential(session, data, commit=False)
     record_workspace_audit(
         session,
         operation="model_credential.create",
@@ -607,7 +607,7 @@ def post_model_route(
         resource_type="model_route",
         access_level="high_value_write",
     )
-    result = create_model_route(session, data)
+    result = create_model_route(session, data, commit=False)
     record_workspace_audit(
         session,
         operation="model_route.create",
@@ -706,7 +706,7 @@ def post_usage_ledger_entry(
         resource_type="usage_ledger",
         access_level="high_value_write",
     )
-    result = append_usage_ledger_entry(session, data)
+    result = append_usage_ledger_entry(session, data, commit=False)
     record_workspace_audit(
         session,
         operation="usage_ledger.append",
@@ -736,7 +736,7 @@ def post_manual_credit_grant(
         resource_type="credit_wallet",
         access_level="high_value_write",
     )
-    result = grant_manual_credit(session, data)
+    result = grant_manual_credit(session, data, commit=False)
     record_workspace_audit(
         session,
         operation="billing.credit_grant.create",
@@ -762,7 +762,7 @@ def put_workspace_spend_limit(
         resource_type="spend_limit",
         access_level="high_value_write",
     )
-    result = set_workspace_spend_limit(session, data)
+    result = set_workspace_spend_limit(session, data, commit=False)
     record_workspace_audit(
         session,
         operation="billing.spend_limit.update",
@@ -1115,7 +1115,7 @@ def post_cloud_run_artifact_cleanup_expired(
         resource_type="cloud_run_artifact",
         access_level="high_value_write",
     )
-    result = cleanup_expired_cloud_run_artifacts(session, request=data)
+    result = cleanup_expired_cloud_run_artifacts(session, request=data, commit=False)
     record_workspace_audit(
         session,
         operation="artifact.cleanup_expired",

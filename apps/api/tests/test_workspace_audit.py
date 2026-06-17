@@ -4,7 +4,13 @@ from sqlmodel import Session, select
 
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
-from ai_company_api.models.entities import Project, WorkspaceAuditLog, WorkspaceRole
+from ai_company_api.models.entities import (
+    GitHubCredential,
+    Project,
+    SecretAccessAuditLog,
+    WorkspaceAuditLog,
+    WorkspaceRole,
+)
 from ai_company_api.services.auth_context import AuthContext, _current_auth_context
 from ai_company_api.services.workspace_audit import (
     MAX_AUDIT_STRING_LENGTH,
@@ -269,3 +275,86 @@ def test_denied_collection_read_records_audit_without_payload(tmp_path) -> None:
     assert audit_log.status_code == 403
     assert audit_log.error_code == "insufficient_workspace_role"
     assert "ghp_" not in str(audit_log.model_dump())
+
+
+def test_github_credential_create_records_success_audit(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.post(
+            "/github-credentials",
+            json={"display_name": "GitHub write audit", "token": "ghp_success_1234"},
+            headers={
+                "x-ai-scdc-user-id": "owner_user",
+                "x-ai-scdc-workspace-id": "workspace_a",
+                "x-ai-scdc-organization-id": "org_a",
+                "x-ai-scdc-roles": "owner",
+            },
+        )
+
+    assert response.status_code == 201
+    credential = response.json()
+    with Session(build_engine(database_url)) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "github_credential.create"
+            )
+        ).one()
+
+    assert audit_log.resource_type == "github_credential"
+    assert audit_log.resource_id == credential["id"]
+    assert audit_log.access_level.value == "high_value_write"
+    assert audit_log.success is True
+    assert audit_log.status_code == 201
+
+
+def test_github_credential_audit_failure_rolls_back_mutation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from ai_company_api.api import routes as api_routes
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+
+    def fail_success_workspace_audit(*args, **kwargs):
+        if kwargs.get("operation") == "github_credential.create":
+            raise RuntimeError("workspace audit failed")
+        return original_record_workspace_audit(*args, **kwargs)
+
+    original_record_workspace_audit = api_routes.record_workspace_audit
+    monkeypatch.setattr(
+        api_routes,
+        "record_workspace_audit",
+        fail_success_workspace_audit,
+    )
+
+    with TestClient(
+        create_app(database_url=database_url),
+        raise_server_exceptions=False,
+    ) as client:
+        response = client.post(
+            "/github-credentials",
+            json={"display_name": "GitHub rollback", "token": "ghp_rollback_1234"},
+            headers={
+                "x-ai-scdc-user-id": "owner_user",
+                "x-ai-scdc-workspace-id": "workspace_a",
+                "x-ai-scdc-organization-id": "org_a",
+                "x-ai-scdc-roles": "owner",
+            },
+        )
+
+    assert response.status_code == 500
+    with Session(build_engine(database_url)) as session:
+        credentials = session.exec(select(GitHubCredential)).all()
+        secret_audit_logs = session.exec(select(SecretAccessAuditLog)).all()
+        workspace_audit_logs = session.exec(select(WorkspaceAuditLog)).all()
+
+    assert credentials == []
+    assert secret_audit_logs == []
+    assert workspace_audit_logs == []
