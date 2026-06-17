@@ -124,3 +124,91 @@ def test_denied_audited_permission_does_not_commit_caller_pending_objects(
     assert audit_logs[0].success is False
     assert audit_logs[0].status_code == 403
     assert audit_logs[0].error_code == "insufficient_workspace_role"
+
+
+def test_denied_audited_permission_rolls_back_flushed_file_backed_writes(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    context = AuthContext(
+        user_id="viewer_user",
+        workspace_id="workspace_a",
+        organization_id="org_a",
+        roles=frozenset({WorkspaceRole.VIEWER}),
+        auth_mode="dev",
+    )
+    token = _current_auth_context.set(context)
+    try:
+        with Session(engine) as session:
+            session.add(Project(id="flushed_project", name="Should not persist"))
+            session.flush()
+
+            with pytest.raises(HTTPException) as exc_info:
+                require_audited_workspace_permission(
+                    session,
+                    "credential.write",
+                    operation="unit.denied_flushed",
+                    resource_type="unit",
+                    resource_id="unit_1",
+                    access_level="high_value_write",
+                )
+
+            assert exc_info.value.status_code == 403
+    finally:
+        _current_auth_context.reset(token)
+
+    with Session(build_engine(database_url)) as session:
+        project = session.get(Project, "flushed_project")
+        audit_logs = session.exec(select(WorkspaceAuditLog)).all()
+
+    assert project is None
+    assert len(audit_logs) == 1
+    assert audit_logs[0].operation == "unit.denied_flushed"
+    assert audit_logs[0].success is False
+    assert audit_logs[0].status_code == 403
+    assert audit_logs[0].error_code == "insufficient_workspace_role"
+
+
+def test_denied_audited_permission_rolls_back_flushed_staticpool_writes() -> None:
+    engine = build_engine("sqlite://")
+    init_db(engine)
+    context = AuthContext(
+        user_id="viewer_user",
+        workspace_id="workspace_a",
+        organization_id="org_a",
+        roles=frozenset({WorkspaceRole.VIEWER}),
+        auth_mode="dev",
+    )
+    token = _current_auth_context.set(context)
+    try:
+        with Session(engine) as session:
+            session.add(Project(id="flushed_static_project", name="Should not persist"))
+            session.flush()
+
+            with pytest.raises(HTTPException) as exc_info:
+                require_audited_workspace_permission(
+                    session,
+                    "credential.write",
+                    operation="unit.denied_flushed_static",
+                    resource_type="unit",
+                    resource_id="unit_1",
+                    access_level="high_value_write",
+                )
+
+            assert exc_info.value.status_code == 403
+    finally:
+        _current_auth_context.reset(token)
+
+    with Session(engine) as session:
+        project = session.get(Project, "flushed_static_project")
+        audit_logs = session.exec(select(WorkspaceAuditLog)).all()
+
+    assert project is None
+    assert len(audit_logs) == 1
+    assert audit_logs[0].operation == "unit.denied_flushed_static"
+    assert audit_logs[0].success is False
+    assert audit_logs[0].status_code == 403
+    assert audit_logs[0].error_code == "insufficient_workspace_role"
