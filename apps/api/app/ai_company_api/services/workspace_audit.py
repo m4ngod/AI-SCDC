@@ -1,6 +1,7 @@
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy.engine import Connection
 from sqlmodel import Session
 
 from ai_company_api.models.entities import WorkspaceAuditAccessLevel, WorkspaceAuditLog
@@ -112,15 +113,23 @@ def require_audited_workspace_permission(
         require_workspace_permission(permission)
     except HTTPException as exc:
         if exc.status_code == 403:
-            record_workspace_audit(
-                session,
-                operation=operation,
-                resource_type=resource_type,
-                resource_id=resource_id,
-                access_level=access_level,
-                success=False,
-                status_code=403,
-                error_code="insufficient_workspace_role",
-                commit=True,
-            )
+            with Session(_isolated_audit_bind(session)) as audit_session:
+                record_workspace_audit(
+                    audit_session,
+                    operation=operation,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    access_level=access_level,
+                    success=False,
+                    status_code=403,
+                    error_code="insufficient_workspace_role",
+                    commit=True,
+                )
         raise
+
+
+def _isolated_audit_bind(session: Session):
+    bind = session.get_bind()
+    if isinstance(bind, Connection):
+        return bind.engine
+    return bind
