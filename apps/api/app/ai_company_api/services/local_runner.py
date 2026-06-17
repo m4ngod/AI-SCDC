@@ -146,8 +146,6 @@ def start_local_task_run(
             task,
             TaskStatus.FIX_REQUESTED,
         )
-        session.commit()
-        session.refresh(local_run)
         record_workspace_audit(
             session,
             operation="local_run.start",
@@ -156,8 +154,9 @@ def start_local_task_run(
             access_level="high_value_write",
             success=True,
             status_code=201,
-            commit=True,
         )
+        session.commit()
+        session.refresh(local_run)
         return _local_task_run_read(local_run)
 
     artifact = PatchArtifact(
@@ -205,8 +204,6 @@ def start_local_task_run(
         task,
         TaskStatus.PATCH_READY,
     )
-    session.commit()
-    session.refresh(local_run)
     record_workspace_audit(
         session,
         operation="local_run.start",
@@ -215,8 +212,9 @@ def start_local_task_run(
         access_level="high_value_write",
         success=True,
         status_code=201,
-        commit=True,
     )
+    session.commit()
+    session.refresh(local_run)
     return _local_task_run_read(local_run)
 
 

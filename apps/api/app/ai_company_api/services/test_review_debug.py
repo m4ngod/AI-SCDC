@@ -261,13 +261,6 @@ def start_patch_test_run(
     session.add(test_run)
     session.add(artifact)
     session.add(task)
-    session.commit()
-    session.refresh(task)
-    session.refresh(artifact)
-    session.refresh(test_run)
-    if debug_attempt is not None:
-        session.refresh(debug_attempt)
-
     record_workspace_audit(
         session,
         operation="patch_test.start",
@@ -276,8 +269,14 @@ def start_patch_test_run(
         access_level="high_value_write",
         success=True,
         status_code=201,
-        commit=True,
     )
+    session.commit()
+    session.refresh(task)
+    session.refresh(artifact)
+    session.refresh(test_run)
+    if debug_attempt is not None:
+        session.refresh(debug_attempt)
+
     return PatchTestRunResultRead(
         task=_task_read(task),
         patch_artifact=_patch_artifact_read(artifact),

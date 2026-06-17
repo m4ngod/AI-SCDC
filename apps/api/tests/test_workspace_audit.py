@@ -5,11 +5,14 @@ from sqlmodel import Session, select
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
+    CloudRun,
+    Conversation,
     GitHubCredential,
     GitHubCredentialStatus,
-    CloudRun,
+    LocalTaskRun,
     ModelCredential,
     ModelCredentialStatus,
+    PatchArtifact,
     Project,
     Repository,
     SecretAccessAuditLog,
@@ -996,3 +999,171 @@ def test_cloud_and_local_run_start_hide_cross_workspace_repo_before_permission(
     assert local_response.json()["detail"] == "Repository not found"
     assert _failed_audit_logs(database_url, "cloud_run.start") == []
     assert _failed_audit_logs(database_url, "local_run.start") == []
+
+
+def test_planner_run_create_denied_before_same_workspace_conversation_mismatch(
+    tmp_path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "planner-conversation-mismatch.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        project_a = Project(id="project_a", workspace_id="workspace_a", name="A")
+        project_b = Project(id="project_b", workspace_id="workspace_a", name="B")
+        conversation_b = Conversation(
+            id="conversation_b",
+            project_id=project_b.id,
+            user_id="owner_user",
+            title="Other project conversation",
+        )
+        session.add(project_a)
+        session.add(project_b)
+        session.add(conversation_b)
+        session.commit()
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.post(
+            "/projects/project_a/planner-runs",
+            json={"goal": "Plan with wrong conversation", "conversation_id": "conversation_b"},
+            headers=_auth_headers(user_id="viewer_user", roles="viewer"),
+        )
+
+    assert response.status_code == 403
+    audit_logs = _failed_audit_logs(database_url, "planner_run.create")
+    assert len(audit_logs) == 1
+    assert audit_logs[0].resource_type == "planner_run"
+    assert audit_logs[0].error_code == "insufficient_workspace_role"
+
+
+def test_task_create_denied_before_same_workspace_repository_mismatch(
+    tmp_path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "task-repository-mismatch.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        project_a = Project(id="project_a", workspace_id="workspace_a", name="A")
+        project_b = Project(id="project_b", workspace_id="workspace_a", name="B")
+        repo_b = Repository(
+            id="repo_b",
+            workspace_id="workspace_a",
+            project_id=project_b.id,
+            name="Repo B",
+            local_path="",
+        )
+        session.add(project_a)
+        session.add(project_b)
+        session.add(repo_b)
+        session.commit()
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.post(
+            "/projects/project_a/tasks",
+            json={
+                "title": "Wrong repo task",
+                "role_required": "backend",
+                "repo_id": "repo_b",
+            },
+            headers=_auth_headers(user_id="viewer_user", roles="viewer"),
+        )
+
+    assert response.status_code == 403
+    audit_logs = _failed_audit_logs(database_url, "task.create")
+    assert len(audit_logs) == 1
+    assert audit_logs[0].resource_type == "task"
+    assert audit_logs[0].error_code == "insufficient_workspace_role"
+
+
+def test_local_run_success_audit_failure_rolls_back_business_rows(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from fastapi.testclient import TestClient
+    from ai_company_worker.local_runner import LocalRunnerResult
+
+    from ai_company_api.services import local_runner as local_runner_service
+
+    database_path = tmp_path / "local-run-audit-rollback.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        project = Project(id="project_local", workspace_id="workspace_a", name="Project")
+        repository = Repository(
+            id="repo_local",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            name="Repo",
+            local_path="",
+        )
+        task = Task(
+            id="task_local",
+            project_id=project.id,
+            title="Local task",
+            role_required="backend",
+            allowed_paths=["README.md"],
+        )
+        session.add(project)
+        session.add(repository)
+        session.add(task)
+        session.commit()
+
+    def fake_run_local_task(_request):
+        return LocalRunnerResult(
+            status="patch_ready",
+            summary="Prepared patch.",
+            files_changed=["README.md"],
+            tests_run=[],
+            test_result="not_run",
+            risks=[],
+            diff_text="diff --git a/README.md b/README.md",
+            worktree_path=str(tmp_path / "worktree"),
+            base_sha="base",
+            head_sha="head",
+        )
+
+    def fail_local_run_success_audit(*args, **kwargs):
+        if kwargs.get("operation") == "local_run.start":
+            raise RuntimeError("workspace audit failed")
+        return original_record_workspace_audit(*args, **kwargs)
+
+    original_record_workspace_audit = local_runner_service.record_workspace_audit
+    monkeypatch.setattr(local_runner_service, "RUN_LOCAL_TASK", fake_run_local_task)
+    monkeypatch.setattr(
+        local_runner_service,
+        "record_workspace_audit",
+        fail_local_run_success_audit,
+    )
+
+    with TestClient(
+        create_app(database_url=database_url),
+        raise_server_exceptions=False,
+    ) as client:
+        response = client.post(
+            "/tasks/task_local/local-runs",
+            json={"repo_id": "repo_local"},
+            headers=_auth_headers(user_id="developer_user", roles="developer"),
+        )
+
+    assert response.status_code == 500
+    with Session(build_engine(database_url)) as session:
+        local_runs = session.exec(select(LocalTaskRun)).all()
+        patch_artifacts = session.exec(select(PatchArtifact)).all()
+        task = session.get(Task, "task_local")
+        audit_logs = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "local_run.start"
+            )
+        ).all()
+
+    assert local_runs == []
+    assert patch_artifacts == []
+    assert task is not None
+    assert task.status == "CREATED"
+    assert audit_logs == []

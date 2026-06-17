@@ -597,8 +597,6 @@ def enqueue_cloud_run(
         )
     session.add(local_run)
     session.add(cloud_run)
-    session.commit()
-    session.refresh(cloud_run)
     record_workspace_audit(
         session,
         operation="cloud_run.start",
@@ -607,8 +605,9 @@ def enqueue_cloud_run(
         access_level="high_value_write",
         success=True,
         status_code=201,
-        commit=True,
     )
+    session.commit()
+    session.refresh(cloud_run)
     return CloudRunResultRead(
         cloud_run=_cloud_run_read(cloud_run),
         patch_artifact=None,

@@ -479,14 +479,10 @@ def create_planner_run(
     planner: PlannerService | None = None,
 ) -> PlannerRunRead:
     project = get_project(session, project_id)
+    conversation: Conversation | None = None
 
     if data.conversation_id is not None:
         conversation = get_conversation(session, data.conversation_id)
-        if conversation.project_id != project_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Conversation does not belong to project",
-            )
 
     _require_audited_permission_if_authenticated(
         session,
@@ -494,6 +490,11 @@ def create_planner_run(
         operation="planner_run.create",
         resource_type="planner_run",
     )
+    if conversation is not None and conversation.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation does not belong to project",
+        )
     planner_run = PlannerRun(
         project_id=project_id,
         conversation_id=data.conversation_id,
@@ -741,30 +742,18 @@ def reject_planner_run(
 
 def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
     get_project(session, project_id)
+    conversation: Conversation | None = None
+    parent_task: Task | None = None
+    repository: ProjectRepository | None = None
 
     if data.conversation_id is not None:
         conversation = get_conversation(session, data.conversation_id)
-        if conversation.project_id != project_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Conversation does not belong to project",
-            )
 
     if data.parent_task_id is not None:
         parent_task = get_task(session, data.parent_task_id)
-        if parent_task.project_id != project_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Parent task does not belong to project",
-            )
 
     if data.repo_id is not None:
         repository = get_repository(session, data.repo_id)
-        if repository.project_id != project_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Repository does not belong to project",
-            )
 
     _require_audited_permission_if_authenticated(
         session,
@@ -772,6 +761,21 @@ def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
         operation="task.create",
         resource_type="task",
     )
+    if conversation is not None and conversation.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation does not belong to project",
+        )
+    if parent_task is not None and parent_task.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Parent task does not belong to project",
+        )
+    if repository is not None and repository.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository does not belong to project",
+        )
     task = Task(
         project_id=project_id,
         conversation_id=data.conversation_id,

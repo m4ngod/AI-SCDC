@@ -141,6 +141,15 @@ def approve_patch_artifact(
         )
         session.add(task)
         session.add(approval)
+        record_workspace_audit(
+            session,
+            operation="patch_artifact.approve",
+            resource_type="patch_artifact",
+            resource_id=artifact.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=201,
+        )
         session.commit()
     except IntegrityError as exc:
         session.rollback()
@@ -153,16 +162,6 @@ def approve_patch_artifact(
         ) from exc
 
     session.refresh(approval)
-    record_workspace_audit(
-        session,
-        operation="patch_artifact.approve",
-        resource_type="patch_artifact",
-        resource_id=artifact.id,
-        access_level="high_value_write",
-        success=True,
-        status_code=201,
-        commit=True,
-    )
     return _approval_result_read(session, approval), 201
 
 
