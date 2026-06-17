@@ -256,6 +256,226 @@ def test_owner_and_admin_can_manage_credentials_and_model_config() -> None:
             assert github_credential.status_code == 201
 
 
+def test_credential_delete_requires_owner_or_admin_role() -> None:
+    with build_client() as client:
+        for role in ("viewer", "developer"):
+            headers = auth_headers(
+                roles="owner",
+                workspace_id=f"workspace_gh_delete_{role}",
+                organization_id=f"org_gh_delete_{role}",
+            )
+            credential = client.post(
+                "/github-credentials",
+                json={"display_name": f"gh-{role}", "token": f"ghp_{role}_1234"},
+                headers=headers,
+            ).json()
+
+            response = client.delete(
+                f"/github-credentials/{credential['id']}",
+                headers=auth_headers(
+                    roles=role,
+                    workspace_id=f"workspace_gh_delete_{role}",
+                    organization_id=f"org_gh_delete_{role}",
+                ),
+            )
+
+            assert response.status_code == 403
+            assert response.json()["detail"] == "Insufficient workspace role"
+
+        owner_headers = auth_headers(
+            roles="owner",
+            workspace_id="workspace_gh_delete_owner",
+            organization_id="org_gh_delete_owner",
+        )
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "gh-owner", "token": "ghp_owner_delete_1234"},
+            headers=owner_headers,
+        ).json()
+        response = client.delete(
+            f"/github-credentials/{credential['id']}",
+            headers=owner_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "deleted"
+
+
+def test_model_credential_delete_requires_owner_or_admin_role() -> None:
+    with build_client() as client:
+        for role in ("viewer", "developer"):
+            owner_headers = auth_headers(
+                roles="owner",
+                workspace_id=f"workspace_model_delete_{role}",
+                organization_id=f"org_model_delete_{role}",
+            )
+            provider = client.post(
+                "/model-providers",
+                json={"name": f"provider-{role}", "provider_type": "deepseek"},
+                headers=owner_headers,
+            ).json()
+            credential = client.post(
+                "/model-credentials",
+                json={
+                    "provider_id": provider["id"],
+                    "display_name": f"model-{role}",
+                    "secret_value": f"sk-{role}-delete-1234",
+                },
+                headers=owner_headers,
+            ).json()
+
+            response = client.delete(
+                f"/model-credentials/{credential['id']}",
+                headers=auth_headers(
+                    roles=role,
+                    workspace_id=f"workspace_model_delete_{role}",
+                    organization_id=f"org_model_delete_{role}",
+                ),
+            )
+
+            assert response.status_code == 403
+            assert response.json()["detail"] == "Insufficient workspace role"
+
+        owner_headers = auth_headers(
+            roles="owner",
+            workspace_id="workspace_model_delete_owner",
+            organization_id="org_model_delete_owner",
+        )
+        provider = client.post(
+            "/model-providers",
+            json={"name": "provider-owner", "provider_type": "deepseek"},
+            headers=owner_headers,
+        ).json()
+        credential = client.post(
+            "/model-credentials",
+            json={
+                "provider_id": provider["id"],
+                "display_name": "model-owner",
+                "secret_value": "sk-owner-delete-1234",
+            },
+            headers=owner_headers,
+        ).json()
+        response = client.delete(
+            f"/model-credentials/{credential['id']}",
+            headers=owner_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "deleted"
+
+
+def test_model_route_patch_requires_owner_or_admin_role() -> None:
+    with build_client() as client:
+        for role in ("developer", "reviewer", "viewer", "billing_manager"):
+            owner_headers = auth_headers(
+                roles="owner",
+                workspace_id=f"workspace_route_patch_{role}",
+                organization_id=f"org_route_patch_{role}",
+            )
+            provider = client.post(
+                "/model-providers",
+                json={"name": f"provider-{role}", "provider_type": "fake"},
+                headers=owner_headers,
+            ).json()
+            route = client.post(
+                "/model-routes",
+                json={
+                    "agent_role": "planner",
+                    "provider_id": provider["id"],
+                    "model_name": f"fake-{role}",
+                },
+                headers=owner_headers,
+            ).json()
+
+            response = client.patch(
+                f"/model-routes/{route['id']}",
+                json={"model_name": f"fake-{role}-updated"},
+                headers=auth_headers(
+                    roles=role,
+                    workspace_id=f"workspace_route_patch_{role}",
+                    organization_id=f"org_route_patch_{role}",
+                ),
+            )
+
+            assert response.status_code == 403
+            assert response.json()["detail"] == "Insufficient workspace role"
+
+        for role in ("owner", "admin"):
+            headers = auth_headers(
+                roles=role,
+                workspace_id=f"workspace_route_patch_{role}",
+                organization_id=f"org_route_patch_{role}",
+            )
+            provider = client.post(
+                "/model-providers",
+                json={"name": f"provider-{role}", "provider_type": "fake"},
+                headers=headers,
+            ).json()
+            route = client.post(
+                "/model-routes",
+                json={
+                    "agent_role": "planner",
+                    "provider_id": provider["id"],
+                    "model_name": f"fake-{role}",
+                },
+                headers=headers,
+            ).json()
+            response = client.patch(
+                f"/model-routes/{route['id']}",
+                json={"model_name": f"fake-{role}-updated"},
+                headers=headers,
+            )
+
+            assert response.status_code == 200
+            assert response.json()["model_name"] == f"fake-{role}-updated"
+
+
+def test_cross_workspace_credential_delete_and_model_route_patch_still_hide_resource() -> None:
+    headers_a = auth_headers(workspace_id="workspace_a", organization_id="org_a")
+    headers_b_developer = auth_headers(
+        user_id="user_b",
+        workspace_id="workspace_b",
+        organization_id="org_b",
+        roles="developer",
+    )
+
+    with build_client() as client:
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "gh-cross", "token": "ghp_cross_1234"},
+            headers=headers_a,
+        ).json()
+        provider = client.post(
+            "/model-providers",
+            json={"name": "fake-cross", "provider_type": "fake"},
+            headers=headers_a,
+        ).json()
+        route = client.post(
+            "/model-routes",
+            json={
+                "agent_role": "planner",
+                "provider_id": provider["id"],
+                "model_name": "fake-cross",
+            },
+            headers=headers_a,
+        ).json()
+
+        delete_response = client.delete(
+            f"/github-credentials/{credential['id']}",
+            headers=headers_b_developer,
+        )
+        patch_response = client.patch(
+            f"/model-routes/{route['id']}",
+            json={"model_name": "fake-cross-updated"},
+            headers=headers_b_developer,
+        )
+
+    assert delete_response.status_code == 404
+    assert delete_response.json()["detail"] == "GitHub credential not found"
+    assert patch_response.status_code == 404
+    assert patch_response.json()["detail"] == "Model route not found"
+
+
 def test_workspace_scope_hides_projects_and_project_children() -> None:
     headers_a = auth_headers(workspace_id="workspace_a", organization_id="org_a")
     headers_b = auth_headers(

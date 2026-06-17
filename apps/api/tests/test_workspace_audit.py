@@ -6,6 +6,9 @@ from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
     GitHubCredential,
+    GitHubCredentialStatus,
+    ModelCredential,
+    ModelCredentialStatus,
     Project,
     SecretAccessAuditLog,
     WorkspaceAuditLog,
@@ -421,3 +424,196 @@ def test_github_credential_audit_failure_rolls_back_mutation(
     assert credentials == []
     assert secret_audit_logs == []
     assert workspace_audit_logs == []
+
+
+def test_denied_github_credential_delete_records_audit_and_keeps_credential(
+    tmp_path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    owner_headers = {
+        "x-ai-scdc-user-id": "owner_user",
+        "x-ai-scdc-workspace-id": "workspace_a",
+        "x-ai-scdc-organization-id": "org_a",
+        "x-ai-scdc-roles": "owner",
+    }
+    viewer_headers = {
+        "x-ai-scdc-user-id": "viewer_user",
+        "x-ai-scdc-workspace-id": "workspace_a",
+        "x-ai-scdc-organization-id": "org_a",
+        "x-ai-scdc-roles": "viewer",
+    }
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "GitHub denied delete", "token": "ghp_denied_1234"},
+            headers=owner_headers,
+        ).json()
+        response = client.delete(
+            f"/github-credentials/{credential['id']}",
+            headers=viewer_headers,
+        )
+
+    assert response.status_code == 403
+    with Session(build_engine(database_url)) as session:
+        stored_credential = session.get(GitHubCredential, credential["id"])
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "github_credential.delete"
+            )
+        ).one()
+
+    assert stored_credential is not None
+    assert stored_credential.status == GitHubCredentialStatus.ACTIVE
+    assert audit_log.resource_id == credential["id"]
+    assert audit_log.success is False
+    assert audit_log.status_code == 403
+    assert audit_log.error_code == "insufficient_workspace_role"
+
+
+def test_github_credential_delete_records_success_audit_and_secret_audit(
+    tmp_path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    headers = {
+        "x-ai-scdc-user-id": "owner_user",
+        "x-ai-scdc-workspace-id": "workspace_a",
+        "x-ai-scdc-organization-id": "org_a",
+        "x-ai-scdc-roles": "owner",
+    }
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "GitHub delete audit", "token": "ghp_delete_1234"},
+            headers=headers,
+        ).json()
+        response = client.delete(
+            f"/github-credentials/{credential['id']}",
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    with Session(build_engine(database_url)) as session:
+        stored_credential = session.get(GitHubCredential, credential["id"])
+        workspace_audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "github_credential.delete"
+            )
+        ).one()
+        secret_delete_log = session.exec(
+            select(SecretAccessAuditLog).where(
+                SecretAccessAuditLog.operation == "delete"
+            )
+        ).one()
+
+    assert stored_credential is not None
+    assert stored_credential.status == GitHubCredentialStatus.DELETED
+    assert workspace_audit_log.resource_id == credential["id"]
+    assert workspace_audit_log.resource_type == "github_credential"
+    assert workspace_audit_log.success is True
+    assert workspace_audit_log.status_code == 200
+    assert secret_delete_log.secret_kind == "github_credential"
+    assert secret_delete_log.secret_id == credential["id"]
+
+
+def test_model_credential_delete_records_success_audit(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    headers = {
+        "x-ai-scdc-user-id": "owner_user",
+        "x-ai-scdc-workspace-id": "workspace_a",
+        "x-ai-scdc-organization-id": "org_a",
+        "x-ai-scdc-roles": "owner",
+    }
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        provider = client.post(
+            "/model-providers",
+            json={"name": "deepseek-delete-audit", "provider_type": "deepseek"},
+            headers=headers,
+        ).json()
+        credential = client.post(
+            "/model-credentials",
+            json={
+                "provider_id": provider["id"],
+                "display_name": "DeepSeek delete audit",
+                "secret_value": "sk-delete-audit-1234",
+            },
+            headers=headers,
+        ).json()
+        response = client.delete(
+            f"/model-credentials/{credential['id']}",
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    with Session(build_engine(database_url)) as session:
+        stored_credential = session.get(ModelCredential, credential["id"])
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "model_credential.delete"
+            )
+        ).one()
+
+    assert stored_credential is not None
+    assert stored_credential.status == ModelCredentialStatus.DELETED
+    assert audit_log.resource_id == credential["id"]
+    assert audit_log.resource_type == "model_credential"
+    assert audit_log.success is True
+    assert audit_log.status_code == 200
+
+
+def test_model_route_update_records_success_audit(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    headers = {
+        "x-ai-scdc-user-id": "owner_user",
+        "x-ai-scdc-workspace-id": "workspace_a",
+        "x-ai-scdc-organization-id": "org_a",
+        "x-ai-scdc-roles": "owner",
+    }
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        provider = client.post(
+            "/model-providers",
+            json={"name": "fake-update-audit", "provider_type": "fake"},
+            headers=headers,
+        ).json()
+        route = client.post(
+            "/model-routes",
+            json={
+                "agent_role": "planner",
+                "provider_id": provider["id"],
+                "model_name": "fake-before",
+            },
+            headers=headers,
+        ).json()
+        response = client.patch(
+            f"/model-routes/{route['id']}",
+            json={"model_name": "fake-after"},
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    with Session(build_engine(database_url)) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "model_route.update"
+            )
+        ).one()
+
+    assert audit_log.resource_id == route["id"]
+    assert audit_log.resource_type == "model_route"
+    assert audit_log.success is True
+    assert audit_log.status_code == 200

@@ -322,7 +322,18 @@ def delete_github_credential_by_id(
     credential_id: str,
     session: SessionDep,
 ) -> GitHubCredentialRead:
-    return delete_github_credential(session, credential_id)
+    result = delete_github_credential(session, credential_id, commit=False)
+    record_workspace_audit(
+        session,
+        operation="github_credential.delete",
+        resource_type="github_credential",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        commit=True,
+    )
+    return result
 
 
 @router.post(
@@ -565,7 +576,18 @@ def delete_model_credential_by_id(
     credential_id: str,
     session: SessionDep,
 ) -> ModelCredentialRead:
-    return delete_model_credential(session, credential_id)
+    result = delete_model_credential(session, credential_id, commit=False)
+    record_workspace_audit(
+        session,
+        operation="model_credential.delete",
+        resource_type="model_credential",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        commit=True,
+    )
+    return result
 
 
 @router.get("/model-routes", response_model=list[ModelRouteRead])
@@ -627,7 +649,18 @@ def patch_model_route(
     data: ModelRouteUpdate,
     session: SessionDep,
 ) -> ModelRouteRead:
-    return update_model_route(session, route_id, data)
+    result = update_model_route(session, route_id, data, commit=False)
+    record_workspace_audit(
+        session,
+        operation="model_route.update",
+        resource_type="model_route",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        commit=True,
+    )
+    return result
 
 
 @router.get("/model-routes/resolve", response_model=ResolvedModelRouteRead)

@@ -23,6 +23,7 @@ from ai_company_api.services.auth_context import (
 from ai_company_api.services.repository import _repository_read, get_project
 from ai_company_api.services.secret_access_audit import record_secret_access
 from ai_company_api.services.secret_vault import SecretVault, get_secret_vault
+from ai_company_api.services.workspace_audit import require_audited_workspace_permission
 
 
 def _enum_value(value) -> str:
@@ -101,11 +102,21 @@ def get_active_github_credential(
 def delete_github_credential(
     session: Session,
     credential_id: str,
+    *,
+    commit: bool = True,
 ) -> GitHubCredentialRead:
     credential = session.get(GitHubCredential, credential_id)
     if credential is None:
         raise HTTPException(status_code=404, detail="GitHub credential not found")
     enforce_workspace_access(credential.workspace_id, detail="GitHub credential not found")
+    require_audited_workspace_permission(
+        session,
+        "credential.write",
+        operation="github_credential.delete",
+        resource_type="github_credential",
+        resource_id=credential.id,
+        access_level="high_value_write",
+    )
 
     get_secret_vault().delete(credential.encrypted_token)
     credential.status = GitHubCredentialStatus.DELETED
@@ -119,8 +130,12 @@ def delete_github_credential(
         access_reason="github_credential_delete",
         workspace_id=credential.workspace_id,
     )
-    session.commit()
-    session.refresh(credential)
+    if commit:
+        session.commit()
+        session.refresh(credential)
+    else:
+        session.flush()
+        session.refresh(credential)
     return _github_credential_read(credential)
 
 
