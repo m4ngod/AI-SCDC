@@ -182,14 +182,13 @@ from ai_company_api.services.usage_ledger import (
     list_usage_ledger_entries,
 )
 from ai_company_api.services.auth_context import current_user_id, require_workspace_role
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
+)
 
 router = APIRouter()
 SessionDep = Annotated[Session, Depends(get_session_dependency)]
-BILLING_WORKSPACE_ROLES = {
-    WorkspaceRole.OWNER,
-    WorkspaceRole.ADMIN,
-    WorkspaceRole.BILLING_MANAGER,
-}
 OPERATOR_WORKSPACE_ROLES = {
     WorkspaceRole.OWNER,
     WorkspaceRole.ADMIN,
@@ -264,7 +263,25 @@ def delete_repository_by_id(repo_id: str, session: SessionDep) -> RepositoryRead
 
 @router.get("/github-credentials", response_model=list[GitHubCredentialRead])
 def get_github_credentials(session: SessionDep) -> list[GitHubCredentialRead]:
-    return list_github_credentials(session)
+    require_audited_workspace_permission(
+        session,
+        "credential.metadata.read",
+        operation="github_credential.list",
+        resource_type="github_credential",
+        access_level="high_sensitive_read",
+    )
+    result = list_github_credentials(session)
+    record_workspace_audit(
+        session,
+        operation="github_credential.list",
+        resource_type="github_credential",
+        access_level="high_sensitive_read",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        metadata={"count": len(result)},
+        commit=True,
+    )
+    return result
 
 
 @router.post(
@@ -276,7 +293,25 @@ def post_github_credential(
     data: GitHubCredentialCreate,
     session: SessionDep,
 ) -> GitHubCredentialRead:
-    return create_github_credential(session, data)
+    require_audited_workspace_permission(
+        session,
+        "credential.write",
+        operation="github_credential.create",
+        resource_type="github_credential",
+        access_level="high_value_write",
+    )
+    result = create_github_credential(session, data)
+    record_workspace_audit(
+        session,
+        operation="github_credential.create",
+        resource_type="github_credential",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_201_CREATED,
+        commit=True,
+    )
+    return result
 
 
 @router.delete(
@@ -418,7 +453,25 @@ def reject_planner_run_by_id(
 
 @router.get("/model-providers", response_model=list[ModelProviderRead])
 def get_model_providers(session: SessionDep) -> list[ModelProviderRead]:
-    return list_model_providers(session)
+    require_audited_workspace_permission(
+        session,
+        "model_config.read",
+        operation="model_provider.list",
+        resource_type="model_provider",
+        access_level="high_sensitive_read",
+    )
+    result = list_model_providers(session)
+    record_workspace_audit(
+        session,
+        operation="model_provider.list",
+        resource_type="model_provider",
+        access_level="high_sensitive_read",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        metadata={"count": len(result)},
+        commit=True,
+    )
+    return result
 
 
 @router.post(
@@ -430,12 +483,48 @@ def post_model_provider(
     data: ModelProviderCreate,
     session: SessionDep,
 ) -> ModelProviderRead:
-    return create_model_provider(session, data)
+    require_audited_workspace_permission(
+        session,
+        "model_config.write",
+        operation="model_provider.create",
+        resource_type="model_provider",
+        access_level="high_value_write",
+    )
+    result = create_model_provider(session, data)
+    record_workspace_audit(
+        session,
+        operation="model_provider.create",
+        resource_type="model_provider",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_201_CREATED,
+        commit=True,
+    )
+    return result
 
 
 @router.get("/model-credentials", response_model=list[ModelCredentialRead])
 def get_model_credentials(session: SessionDep) -> list[ModelCredentialRead]:
-    return list_model_credentials(session)
+    require_audited_workspace_permission(
+        session,
+        "credential.metadata.read",
+        operation="model_credential.list",
+        resource_type="model_credential",
+        access_level="high_sensitive_read",
+    )
+    result = list_model_credentials(session)
+    record_workspace_audit(
+        session,
+        operation="model_credential.list",
+        resource_type="model_credential",
+        access_level="high_sensitive_read",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        metadata={"count": len(result)},
+        commit=True,
+    )
+    return result
 
 
 @router.post(
@@ -447,7 +536,25 @@ def post_model_credential(
     data: ModelCredentialCreate,
     session: SessionDep,
 ) -> ModelCredentialRead:
-    return create_model_credential(session, data)
+    require_audited_workspace_permission(
+        session,
+        "credential.write",
+        operation="model_credential.create",
+        resource_type="model_credential",
+        access_level="high_value_write",
+    )
+    result = create_model_credential(session, data)
+    record_workspace_audit(
+        session,
+        operation="model_credential.create",
+        resource_type="model_credential",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_201_CREATED,
+        commit=True,
+    )
+    return result
 
 
 @router.delete(
@@ -463,7 +570,25 @@ def delete_model_credential_by_id(
 
 @router.get("/model-routes", response_model=list[ModelRouteRead])
 def get_model_routes(session: SessionDep) -> list[ModelRouteRead]:
-    return list_model_routes(session)
+    require_audited_workspace_permission(
+        session,
+        "model_config.read",
+        operation="model_route.list",
+        resource_type="model_route",
+        access_level="high_sensitive_read",
+    )
+    result = list_model_routes(session)
+    record_workspace_audit(
+        session,
+        operation="model_route.list",
+        resource_type="model_route",
+        access_level="high_sensitive_read",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        metadata={"count": len(result)},
+        commit=True,
+    )
+    return result
 
 
 @router.post(
@@ -475,7 +600,25 @@ def post_model_route(
     data: ModelRouteCreate,
     session: SessionDep,
 ) -> ModelRouteRead:
-    return create_model_route(session, data)
+    require_audited_workspace_permission(
+        session,
+        "model_config.write",
+        operation="model_route.create",
+        resource_type="model_route",
+        access_level="high_value_write",
+    )
+    result = create_model_route(session, data)
+    record_workspace_audit(
+        session,
+        operation="model_route.create",
+        resource_type="model_route",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_201_CREATED,
+        commit=True,
+    )
+    return result
 
 
 @router.patch("/model-routes/{route_id}", response_model=ModelRouteRead)
@@ -492,7 +635,26 @@ def resolve_model_route_for_role(
     agent_role: AgentRole,
     session: SessionDep,
 ) -> ResolvedModelRouteRead:
-    return resolve_model_route(session, agent_role)
+    require_audited_workspace_permission(
+        session,
+        "model_config.read",
+        operation="model_route.resolve",
+        resource_type="model_route",
+        access_level="high_sensitive_read",
+    )
+    result = resolve_model_route(session, agent_role)
+    record_workspace_audit(
+        session,
+        operation="model_route.resolve",
+        resource_type="model_route",
+        resource_id=result.route_id,
+        access_level="high_sensitive_read",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        metadata={"agent_role": agent_role.value},
+        commit=True,
+    )
+    return result
 
 
 @router.get("/usage-ledger", response_model=list[UsageLedgerRead])
@@ -502,12 +664,30 @@ def get_usage_ledger(
     planner_run_id: str | None = None,
     task_id: str | None = None,
 ) -> list[UsageLedgerRead]:
-    return list_usage_ledger_entries(
+    require_audited_workspace_permission(
+        session,
+        "billing.read",
+        operation="usage_ledger.list",
+        resource_type="usage_ledger",
+        access_level="high_sensitive_read",
+    )
+    result = list_usage_ledger_entries(
         session,
         project_id=project_id,
         planner_run_id=planner_run_id,
         task_id=task_id,
     )
+    record_workspace_audit(
+        session,
+        operation="usage_ledger.list",
+        resource_type="usage_ledger",
+        access_level="high_sensitive_read",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        metadata={"count": len(result)},
+        commit=True,
+    )
+    return result
 
 
 @router.post(
@@ -519,7 +699,25 @@ def post_usage_ledger_entry(
     data: UsageLedgerCreate,
     session: SessionDep,
 ) -> UsageLedgerRead:
-    return append_usage_ledger_entry(session, data)
+    require_audited_workspace_permission(
+        session,
+        "billing.write",
+        operation="usage_ledger.append",
+        resource_type="usage_ledger",
+        access_level="high_value_write",
+    )
+    result = append_usage_ledger_entry(session, data)
+    record_workspace_audit(
+        session,
+        operation="usage_ledger.append",
+        resource_type="usage_ledger",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_201_CREATED,
+        commit=True,
+    )
+    return result
 
 
 @router.post(
@@ -531,8 +729,25 @@ def post_manual_credit_grant(
     data: ManualCreditGrantCreate,
     session: SessionDep,
 ) -> CreditWalletRead:
-    require_workspace_role(BILLING_WORKSPACE_ROLES)
-    return grant_manual_credit(session, data)
+    require_audited_workspace_permission(
+        session,
+        "billing.write",
+        operation="billing.credit_grant.create",
+        resource_type="credit_wallet",
+        access_level="high_value_write",
+    )
+    result = grant_manual_credit(session, data)
+    record_workspace_audit(
+        session,
+        operation="billing.credit_grant.create",
+        resource_type="credit_wallet",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_201_CREATED,
+        commit=True,
+    )
+    return result
 
 
 @router.put("/workspace/spend-limit", response_model=SpendLimitRead)
@@ -540,8 +755,25 @@ def put_workspace_spend_limit(
     data: SpendLimitUpdate,
     session: SessionDep,
 ) -> SpendLimitRead:
-    require_workspace_role(BILLING_WORKSPACE_ROLES)
-    return set_workspace_spend_limit(session, data)
+    require_audited_workspace_permission(
+        session,
+        "billing.write",
+        operation="billing.spend_limit.update",
+        resource_type="spend_limit",
+        access_level="high_value_write",
+    )
+    result = set_workspace_spend_limit(session, data)
+    record_workspace_audit(
+        session,
+        operation="billing.spend_limit.update",
+        resource_type="spend_limit",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        commit=True,
+    )
+    return result
 
 
 @router.get("/workspace/usage-summary", response_model=UsageSummaryRead)
@@ -550,11 +782,29 @@ def get_workspace_usage_summary(
     project_id: str | None = None,
     task_id: str | None = None,
 ) -> UsageSummaryRead:
-    return workspace_usage_summary(
+    require_audited_workspace_permission(
+        session,
+        "billing.read",
+        operation="billing.usage_summary.read",
+        resource_type="usage_summary",
+        access_level="high_sensitive_read",
+    )
+    result = workspace_usage_summary(
         session,
         project_id=project_id,
         task_id=task_id,
     )
+    record_workspace_audit(
+        session,
+        operation="billing.usage_summary.read",
+        resource_type="usage_summary",
+        access_level="high_sensitive_read",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        metadata={"item_count": len(result.items)},
+        commit=True,
+    )
+    return result
 
 
 @router.get("/projects/{project_id}/tasks")
@@ -858,7 +1108,28 @@ def post_cloud_run_artifact_cleanup_expired(
     data: CloudRunArtifactCleanupRequest,
     session: SessionDep,
 ) -> CloudRunArtifactCleanupResultRead:
-    return cleanup_expired_cloud_run_artifacts(session, request=data)
+    require_audited_workspace_permission(
+        session,
+        "artifact.cleanup",
+        operation="artifact.cleanup_expired",
+        resource_type="cloud_run_artifact",
+        access_level="high_value_write",
+    )
+    result = cleanup_expired_cloud_run_artifacts(session, request=data)
+    record_workspace_audit(
+        session,
+        operation="artifact.cleanup_expired",
+        resource_type="cloud_run_artifact",
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        metadata={
+            "deleted_count": result.deleted_count,
+            "lifecycle_only_count": result.lifecycle_only_count,
+        },
+        commit=True,
+    )
+    return result
 
 
 @router.get(

@@ -3,6 +3,7 @@ from fastapi import HTTPException
 from sqlmodel import Session, select
 
 from ai_company_api.db.session import build_engine, init_db
+from ai_company_api.main import create_app
 from ai_company_api.models.entities import Project, WorkspaceAuditLog, WorkspaceRole
 from ai_company_api.services.auth_context import AuthContext, _current_auth_context
 from ai_company_api.services.workspace_audit import (
@@ -212,3 +213,59 @@ def test_denied_audited_permission_rolls_back_flushed_staticpool_writes() -> Non
     assert audit_logs[0].success is False
     assert audit_logs[0].status_code == 403
     assert audit_logs[0].error_code == "insufficient_workspace_role"
+
+
+def test_sensitive_collection_read_records_redacted_audit(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.get(
+            "/github-credentials",
+            headers={
+                "x-ai-scdc-user-id": "owner_user",
+                "x-ai-scdc-workspace-id": "workspace_a",
+                "x-ai-scdc-organization-id": "org_a",
+                "x-ai-scdc-roles": "owner",
+            },
+        )
+
+    assert response.status_code == 200
+    with Session(build_engine(database_url)) as session:
+        audit_log = session.exec(select(WorkspaceAuditLog)).one()
+
+    assert audit_log.operation == "github_credential.list"
+    assert audit_log.resource_type == "github_credential"
+    assert audit_log.access_level.value == "high_sensitive_read"
+    assert audit_log.success is True
+    assert audit_log.workspace_id == "workspace_a"
+
+
+def test_denied_collection_read_records_audit_without_payload(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.get(
+            "/github-credentials",
+            headers={
+                "x-ai-scdc-user-id": "viewer_user",
+                "x-ai-scdc-workspace-id": "workspace_a",
+                "x-ai-scdc-organization-id": "org_a",
+                "x-ai-scdc-roles": "viewer",
+            },
+        )
+
+    assert response.status_code == 403
+    with Session(build_engine(database_url)) as session:
+        audit_log = session.exec(select(WorkspaceAuditLog)).one()
+
+    assert audit_log.operation == "github_credential.list"
+    assert audit_log.success is False
+    assert audit_log.status_code == 403
+    assert audit_log.error_code == "insufficient_workspace_role"
+    assert "ghp_" not in str(audit_log.model_dump())

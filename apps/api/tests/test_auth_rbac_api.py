@@ -190,6 +190,72 @@ def test_money_moving_workspace_endpoints_require_billing_role() -> None:
                 assert response.status_code == success_status
 
 
+def test_viewer_cannot_read_credentials_or_billing_detail() -> None:
+    with build_client() as client:
+        for path in (
+            "/github-credentials",
+            "/model-credentials",
+            "/usage-ledger",
+            "/workspace/usage-summary",
+        ):
+            response = client.get(path, headers=auth_headers(roles="viewer"))
+            assert response.status_code == 403
+            assert response.json()["detail"] == "Insufficient workspace role"
+
+
+def test_billing_manager_can_read_billing_but_not_credentials_or_models() -> None:
+    with build_client() as client:
+        assert client.get(
+            "/usage-ledger",
+            headers=auth_headers(roles="billing_manager"),
+        ).status_code == 200
+        assert client.get(
+            "/workspace/usage-summary",
+            headers=auth_headers(roles="billing_manager"),
+        ).status_code == 200
+
+        for path in (
+            "/github-credentials",
+            "/model-credentials",
+            "/model-providers",
+            "/model-routes",
+        ):
+            response = client.get(path, headers=auth_headers(roles="billing_manager"))
+            assert response.status_code == 403
+
+
+def test_developer_and_reviewer_can_read_model_config_but_not_manage_it() -> None:
+    with build_client() as client:
+        for role in ("developer", "reviewer"):
+            assert client.get(
+                "/model-providers",
+                headers=auth_headers(roles=role),
+            ).status_code == 200
+            create_response = client.post(
+                "/model-providers",
+                json={"name": f"provider-{role}", "provider_type": "fake"},
+                headers=auth_headers(roles=role),
+            )
+            assert create_response.status_code == 403
+
+
+def test_owner_and_admin_can_manage_credentials_and_model_config() -> None:
+    with build_client() as client:
+        for role in ("owner", "admin"):
+            provider = client.post(
+                "/model-providers",
+                json={"name": f"fake-{role}", "provider_type": "fake"},
+                headers=auth_headers(roles=role, workspace_id=f"workspace_{role}"),
+            )
+            assert provider.status_code == 201
+            github_credential = client.post(
+                "/github-credentials",
+                json={"display_name": f"gh-{role}", "token": f"ghp_{role}_1234"},
+                headers=auth_headers(roles=role, workspace_id=f"workspace_{role}"),
+            )
+            assert github_credential.status_code == 201
+
+
 def test_workspace_scope_hides_projects_and_project_children() -> None:
     headers_a = auth_headers(workspace_id="workspace_a", organization_id="org_a")
     headers_b = auth_headers(
