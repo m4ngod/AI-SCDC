@@ -445,3 +445,54 @@ def test_workspace_scope_denies_cross_workspace_cloud_run_and_artifacts(
     assert cloud_run_response.json()["detail"] == "Cloud run not found"
     assert artifact_response.status_code == 404
     assert artifact_response.json()["detail"] == "Cloud run not found"
+
+
+def test_workspace_permission_policy_declares_phase_13b_permissions() -> None:
+    from ai_company_api.services.workspace_permissions import (
+        PERMISSION_ROLES,
+        allowed_roles_for_permission,
+    )
+
+    expected_permissions = {
+        "workspace.metadata.read",
+        "project.write",
+        "repository.write",
+        "conversation.write",
+        "planner.write",
+        "planner.review",
+        "task.write",
+        "run.write",
+        "execution.evidence.read",
+        "conversation.sensitive.read",
+        "execution_config.read",
+        "artifact.sensitive.read",
+        "artifact.cleanup",
+        "log.sensitive.read",
+        "review.write",
+        "approval.write",
+        "pull_request.publish",
+        "credential.metadata.read",
+        "credential.write",
+        "model_config.read",
+        "model_config.write",
+        "billing.read",
+        "billing.write",
+        "operator.write",
+    }
+    assert set(PERMISSION_ROLES) == expected_permissions
+    assert {
+        role.value for role in allowed_roles_for_permission("workspace.metadata.read")
+    } == {
+        "owner",
+        "admin",
+        "developer",
+        "reviewer",
+        "billing_manager",
+        "viewer",
+    }
+    assert {
+        role.value for role in allowed_roles_for_permission("credential.write")
+    } == {"owner", "admin"}
+    assert {
+        role.value for role in allowed_roles_for_permission("billing.read")
+    } == {"owner", "admin", "billing_manager"}
