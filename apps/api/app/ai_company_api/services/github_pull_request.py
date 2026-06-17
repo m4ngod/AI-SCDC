@@ -31,7 +31,11 @@ from ai_company_api.services.github_repository import (
     validate_github_repository_url,
 )
 from ai_company_api.services.repository import create_task_event, get_task
-from ai_company_api.services.auth_context import current_user_id, enforce_workspace_access
+from ai_company_api.services.auth_context import (
+    current_user_id,
+    enforce_workspace_access,
+    get_current_auth_context,
+)
 from ai_company_api.services.secret_access_audit import open_secret
 from ai_company_api.services.secret_vault import SecretVault
 from ai_company_api.services.task_state import (
@@ -39,6 +43,10 @@ from ai_company_api.services.task_state import (
     TaskStatus,
     allowed_next_statuses,
     validate_transition,
+)
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
 )
 
 
@@ -154,6 +162,26 @@ GITHUB_PR_ADAPTER_ENV = "AI_SCDC_GITHUB_PR_ADAPTER"
 DEFAULT_ADAPTER = FakeGitHubPullRequestAdapter()
 
 
+def _require_audited_permission_if_authenticated(
+    session: Session,
+    permission: str,
+    *,
+    operation: str,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> None:
+    if get_current_auth_context() is None:
+        return
+    require_audited_workspace_permission(
+        session,
+        permission,
+        operation=operation,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        access_level="high_value_write",
+    )
+
+
 def _default_pull_request_adapter() -> GitHubPullRequestAdapter | FakeGitHubPullRequestAdapter:
     if os.getenv(GITHUB_PR_ADAPTER_ENV, "").strip().lower() == "real":
         return GitHubPullRequestAdapter()
@@ -171,10 +199,28 @@ def create_pull_request_for_approval(
     if approval is None:
         raise HTTPException(status_code=404, detail="Patch approval not found")
     enforce_workspace_access(approval.workspace_id, detail="Patch approval not found")
+    _require_audited_permission_if_authenticated(
+        session,
+        "pull_request.publish",
+        operation="pull_request.publish",
+        resource_type="patch_approval",
+        resource_id=approval.id,
+    )
 
     existing = _existing_pull_request(session, approval.id)
     if existing is not None:
-        return _handle_existing_pull_request(session, existing)
+        result, status_code = _handle_existing_pull_request(session, existing)
+        record_workspace_audit(
+            session,
+            operation="pull_request.publish",
+            resource_type="patch_approval",
+            resource_id=approval.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=status_code,
+            commit=True,
+        )
+        return result, status_code
 
     artifact = _get_patch_artifact_entity(session, approval.patch_artifact_id)
     task = get_task(session, approval.task_id)
@@ -269,7 +315,18 @@ def create_pull_request_for_approval(
         ) from exc
 
     _persist_pull_request_finalizing(session, record_id, created_pr)
-    return _finalize_pull_request(session, record_id, 201)
+    result, status_code = _finalize_pull_request(session, record_id, 201)
+    record_workspace_audit(
+        session,
+        operation="pull_request.publish",
+        resource_type="patch_approval",
+        resource_id=approval.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status_code,
+        commit=True,
+    )
+    return result, status_code
 
 
 def list_pull_requests_for_patch_artifact(

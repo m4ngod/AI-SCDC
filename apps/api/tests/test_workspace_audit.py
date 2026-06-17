@@ -11,6 +11,7 @@ from ai_company_api.models.entities import (
     ModelCredentialStatus,
     Project,
     SecretAccessAuditLog,
+    Task,
     WorkspaceAuditLog,
     WorkspaceRole,
 )
@@ -617,3 +618,92 @@ def test_model_route_update_records_success_audit(tmp_path) -> None:
     assert audit_log.resource_type == "model_route"
     assert audit_log.success is True
     assert audit_log.status_code == 200
+
+
+def test_high_value_task_write_records_audit(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        project = client.post(
+            "/projects",
+            json={"name": "audit project"},
+            headers={
+                "x-ai-scdc-user-id": "dev_user_a",
+                "x-ai-scdc-workspace-id": "workspace_a",
+                "x-ai-scdc-organization-id": "org_a",
+                "x-ai-scdc-roles": "developer",
+            },
+        ).json()
+        response = client.post(
+            f"/projects/{project['id']}/tasks",
+            json={"title": "audit task", "role_required": "backend"},
+            headers={
+                "x-ai-scdc-user-id": "dev_user_a",
+                "x-ai-scdc-workspace-id": "workspace_a",
+                "x-ai-scdc-organization-id": "org_a",
+                "x-ai-scdc-roles": "developer",
+            },
+        )
+
+    assert response.status_code == 201
+    with Session(build_engine(database_url)) as session:
+        audit_logs = session.exec(select(WorkspaceAuditLog)).all()
+
+    assert any(
+        log.operation == "task.create"
+        and log.resource_type == "task"
+        and log.success is True
+        and log.access_level.value == "high_value_write"
+        for log in audit_logs
+    )
+
+
+def test_task_create_denied_records_failed_audit_and_does_not_create_task(
+    tmp_path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        project = client.post(
+            "/projects",
+            json={"name": "denied task audit"},
+            headers={
+                "x-ai-scdc-user-id": "owner_user",
+                "x-ai-scdc-workspace-id": "workspace_a",
+                "x-ai-scdc-organization-id": "org_a",
+                "x-ai-scdc-roles": "owner",
+            },
+        ).json()
+        response = client.post(
+            f"/projects/{project['id']}/tasks",
+            json={"title": "denied task", "role_required": "backend"},
+            headers={
+                "x-ai-scdc-user-id": "viewer_user",
+                "x-ai-scdc-workspace-id": "workspace_a",
+                "x-ai-scdc-organization-id": "org_a",
+                "x-ai-scdc-roles": "viewer",
+            },
+        )
+
+    assert response.status_code == 403
+    with Session(build_engine(database_url)) as session:
+        tasks = session.exec(select(Task)).all()
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "task.create"
+            )
+        ).one()
+
+    assert tasks == []
+    assert audit_log.resource_type == "task"
+    assert audit_log.resource_id is None
+    assert audit_log.success is False
+    assert audit_log.status_code == 403
+    assert audit_log.error_code == "insufficient_workspace_role"
+    assert audit_log.access_level.value == "high_value_write"

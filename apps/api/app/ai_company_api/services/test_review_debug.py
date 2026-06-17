@@ -24,12 +24,16 @@ from ai_company_api.schemas.api import (
     TaskRead,
 )
 from ai_company_api.services.repository import create_task_event, get_task
-from ai_company_api.services.auth_context import enforce_workspace_access
+from ai_company_api.services.auth_context import enforce_workspace_access, get_current_auth_context
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
     allowed_next_statuses,
     validate_transition,
+)
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
 )
 from ai_company_worker.test_runner import (
     TestRunnerError,
@@ -46,12 +50,39 @@ RUN_TESTS = run_tests
 DETERMINISTIC_REVIEWER_KIND = "deterministic"
 
 
+def _require_audited_permission_if_authenticated(
+    session: Session,
+    permission: str,
+    *,
+    operation: str,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> None:
+    if get_current_auth_context() is None:
+        return
+    require_audited_workspace_permission(
+        session,
+        permission,
+        operation=operation,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        access_level="high_value_write",
+    )
+
+
 def start_patch_test_run(
     session: Session,
     patch_artifact_id: str,
 ) -> PatchTestRunResultRead:
     artifact = _get_patch_artifact_entity(session, patch_artifact_id)
     task = get_task(session, artifact.task_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "run.write",
+        operation="patch_test.start",
+        resource_type="patch_artifact",
+        resource_id=artifact.id,
+    )
     if TaskStatus(task.status) != TaskStatus.PATCH_READY:
         current_status = TaskStatus(task.status)
         raise HTTPException(
@@ -66,9 +97,31 @@ def start_patch_test_run(
 
     local_run = _get_local_run_entity(session, artifact.local_run_id)
     if local_run.runner_kind == "cloud_fake":
-        return _start_cloud_fake_test_run(session, artifact, task, local_run)
+        result = _start_cloud_fake_test_run(session, artifact, task, local_run)
+        record_workspace_audit(
+            session,
+            operation="patch_test.start",
+            resource_type="patch_artifact",
+            resource_id=artifact.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=201,
+            commit=True,
+        )
+        return result
     if local_run.runner_kind == "docker_local":
-        return _start_persisted_docker_test_run(session, artifact, task, local_run)
+        result = _start_persisted_docker_test_run(session, artifact, task, local_run)
+        record_workspace_audit(
+            session,
+            operation="patch_test.start",
+            resource_type="patch_artifact",
+            resource_id=artifact.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=201,
+            commit=True,
+        )
+        return result
     if not local_run.worktree_path:
         raise HTTPException(
             status_code=400,
@@ -215,6 +268,16 @@ def start_patch_test_run(
     if debug_attempt is not None:
         session.refresh(debug_attempt)
 
+    record_workspace_audit(
+        session,
+        operation="patch_test.start",
+        resource_type="patch_artifact",
+        resource_id=artifact.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+        commit=True,
+    )
     return PatchTestRunResultRead(
         task=_task_read(task),
         patch_artifact=_patch_artifact_read(artifact),
@@ -440,9 +503,27 @@ def start_patch_review(
     patch_artifact_id: str,
 ) -> PatchReviewResultRead:
     artifact = _get_patch_artifact_entity(session, patch_artifact_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "review.write",
+        operation="patch_review.start",
+        resource_type="patch_artifact",
+        resource_id=artifact.id,
+    )
     existing_review = _existing_deterministic_review(session, artifact.id)
     if existing_review is not None:
-        return _review_result_read(session, existing_review)
+        result = _review_result_read(session, existing_review)
+        record_workspace_audit(
+            session,
+            operation="patch_review.start",
+            resource_type="patch_artifact",
+            resource_id=artifact.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+            commit=True,
+        )
+        return result
 
     task = get_task(session, artifact.task_id)
     if TaskStatus(task.status) != TaskStatus.REVIEWING:
@@ -530,6 +611,16 @@ def start_patch_review(
         ) from exc
 
     session.refresh(review)
+    record_workspace_audit(
+        session,
+        operation="patch_review.start",
+        resource_type="patch_artifact",
+        resource_id=artifact.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+        commit=True,
+    )
     return _review_result_read(session, review)
 
 

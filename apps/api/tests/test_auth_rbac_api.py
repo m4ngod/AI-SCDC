@@ -9,6 +9,7 @@ from ai_company_api.models.entities import (
     CloudRun,
     Organization,
     OrganizationMember,
+    PatchArtifact,
     PlannerRun,
     Project,
     Repository,
@@ -782,3 +783,204 @@ def test_workspace_permission_policy_declares_phase_13b_permissions() -> None:
     assert {
         role.value for role in allowed_roles_for_permission("billing.read")
     } == {"owner", "admin", "billing_manager"}
+
+
+def test_viewer_and_billing_manager_cannot_create_execution_resources() -> None:
+    with build_client() as client:
+        project = client.post(
+            "/projects",
+            json={"name": "execution matrix"},
+            headers=auth_headers(roles="owner"),
+        ).json()
+
+        for role in ("viewer", "billing_manager", "reviewer"):
+            task_response = client.post(
+                f"/projects/{project['id']}/tasks",
+                json={"title": f"task {role}", "role_required": "backend"},
+                headers=auth_headers(roles=role),
+            )
+            assert task_response.status_code == 403
+
+
+def test_reviewer_can_review_but_cannot_start_run_or_publish_pr(tmp_path: Path) -> None:
+    with build_client(tmp_path / "reviewer.db") as client:
+        project = client.post(
+            "/projects",
+            json={"name": "review permissions"},
+            headers=auth_headers(roles="owner"),
+        ).json()
+        task = client.post(
+            f"/projects/{project['id']}/tasks",
+            json={"title": "review target", "role_required": "backend"},
+            headers=auth_headers(roles="developer"),
+        ).json()
+
+        start_response = client.post(
+            f"/tasks/{task['id']}/cloud-runs",
+            json={"repo_id": "repo_missing"},
+            headers=auth_headers(roles="reviewer"),
+        )
+        assert start_response.status_code == 403
+
+
+def test_cross_workspace_task_create_still_hides_project() -> None:
+    headers_a = auth_headers(workspace_id="workspace_a", organization_id="org_a")
+    headers_b = auth_headers(
+        user_id="dev_b",
+        workspace_id="workspace_b",
+        organization_id="org_b",
+        roles="viewer",
+    )
+    with build_client() as client:
+        project = client.post(
+            "/projects",
+            json={"name": "private project"},
+            headers=headers_a,
+        ).json()
+        response = client.post(
+            f"/projects/{project['id']}/tasks",
+            json={"title": "hidden", "role_required": "backend"},
+            headers=headers_b,
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+
+
+def test_planner_review_reviewer_can_approve_and_reject_but_not_create_task_or_start_run(
+    tmp_path: Path,
+) -> None:
+    with build_client(tmp_path / "planner-reviewer.db") as client:
+        project = client.post(
+            "/projects",
+            json={"name": "planner reviewer permissions"},
+            headers=auth_headers(roles="owner"),
+        ).json()
+        approve_run = client.post(
+            f"/projects/{project['id']}/planner-runs",
+            json={"goal": "Build reviewer approval task"},
+            headers=auth_headers(roles="developer"),
+        ).json()
+        reject_run = client.post(
+            f"/projects/{project['id']}/planner-runs",
+            json={"goal": "Build reviewer rejection task"},
+            headers=auth_headers(roles="developer"),
+        ).json()
+
+        task_response = client.post(
+            f"/projects/{project['id']}/tasks",
+            json={"title": "reviewer task", "role_required": "backend"},
+            headers=auth_headers(roles="reviewer"),
+        )
+        approve_response = client.post(
+            f"/planner-runs/{approve_run['id']}/approve",
+            headers=auth_headers(roles="reviewer"),
+        )
+        reject_response = client.post(
+            f"/planner-runs/{reject_run['id']}/reject",
+            json={"reason": "not now"},
+            headers=auth_headers(roles="reviewer"),
+        )
+        created_task = approve_response.json()["created_tasks"][0]
+        run_response = client.post(
+            f"/tasks/{created_task['id']}/cloud-runs",
+            json={"repo_id": "repo_missing"},
+            headers=auth_headers(roles="reviewer"),
+        )
+
+    assert task_response.status_code == 403
+    assert approve_response.status_code == 200
+    assert reject_response.status_code == 200
+    assert run_response.status_code == 403
+
+
+def test_patch_approval_developer_cannot_review_planner_run_or_approve_patch_artifact(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "developer-review.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        project = Project(
+            id="project_patch_approval",
+            workspace_id="workspace_a",
+            name="Patch approval project",
+        )
+        task = Task(
+            id="task_patch_approval",
+            project_id=project.id,
+            title="Patch approval task",
+            role_required="backend",
+            status="APPROVED",
+        )
+        artifact = PatchArtifact(
+            id="artifact_patch_approval",
+            workspace_id=project.workspace_id,
+            project_id=project.id,
+            task_id=task.id,
+            local_run_id="local_run_missing",
+            summary="Patch",
+            files_changed=["app.py"],
+            test_result="passed",
+            diff_text="diff --git a/app.py b/app.py",
+        )
+        session.add(project)
+        session.add(task)
+        session.add(artifact)
+        session.commit()
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        project = client.post(
+            "/projects",
+            json={"name": "planner developer denied"},
+            headers=auth_headers(roles="owner"),
+        ).json()
+        planner_run = client.post(
+            f"/projects/{project['id']}/planner-runs",
+            json={"goal": "Developer cannot decide"},
+            headers=auth_headers(roles="developer"),
+        ).json()
+
+        approve_response = client.post(
+            f"/planner-runs/{planner_run['id']}/approve",
+            headers=auth_headers(roles="developer"),
+        )
+        reject_response = client.post(
+            f"/planner-runs/{planner_run['id']}/reject",
+            json={"reason": "no"},
+            headers=auth_headers(roles="developer"),
+        )
+        patch_approval_response = client.post(
+            "/patch-artifacts/artifact_patch_approval/approvals",
+            headers=auth_headers(roles="developer"),
+        )
+
+    assert approve_response.status_code == 403
+    assert reject_response.status_code == 403
+    assert patch_approval_response.status_code == 403
+
+
+def test_developer_can_create_task_and_pass_run_permission_to_validation(
+    tmp_path: Path,
+) -> None:
+    with build_client(tmp_path / "developer-run.db") as client:
+        project = client.post(
+            "/projects",
+            json={"name": "developer execution"},
+            headers=auth_headers(roles="owner"),
+        ).json()
+        task_response = client.post(
+            f"/projects/{project['id']}/tasks",
+            json={"title": "developer task", "role_required": "backend"},
+            headers=auth_headers(roles="developer"),
+        )
+        run_response = client.post(
+            f"/tasks/{task_response.json()['id']}/cloud-runs",
+            json={"repo_id": "repo_missing"},
+            headers=auth_headers(roles="developer"),
+        )
+
+    assert task_response.status_code == 201
+    assert run_response.status_code == 404
+    assert run_response.json()["detail"] == "Repository not found"

@@ -19,12 +19,16 @@ from ai_company_api.services.repository import (
     get_repository,
     get_task,
 )
-from ai_company_api.services.auth_context import enforce_workspace_access
+from ai_company_api.services.auth_context import enforce_workspace_access, get_current_auth_context
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
     allowed_next_statuses,
     validate_transition,
+)
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
 )
 from ai_company_worker.local_runner import (
     LocalRunnerError,
@@ -36,12 +40,38 @@ from ai_company_worker.local_runner import (
 RUN_LOCAL_TASK = run_local_task
 
 
+def _require_audited_permission_if_authenticated(
+    session: Session,
+    permission: str,
+    *,
+    operation: str,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> None:
+    if get_current_auth_context() is None:
+        return
+    require_audited_workspace_permission(
+        session,
+        permission,
+        operation=operation,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        access_level="high_value_write",
+    )
+
+
 def start_local_task_run(
     session: Session,
     task_id: str,
     data: LocalRunCreate,
 ) -> LocalTaskRunRead:
     task = get_task(session, task_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "run.write",
+        operation="local_run.start",
+        resource_type="local_run",
+    )
     repository = get_repository(session, data.repo_id)
     if repository.project_id != task.project_id:
         raise HTTPException(
@@ -118,6 +148,16 @@ def start_local_task_run(
         )
         session.commit()
         session.refresh(local_run)
+        record_workspace_audit(
+            session,
+            operation="local_run.start",
+            resource_type="local_run",
+            resource_id=local_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=201,
+            commit=True,
+        )
         return _local_task_run_read(local_run)
 
     artifact = PatchArtifact(
@@ -167,6 +207,16 @@ def start_local_task_run(
     )
     session.commit()
     session.refresh(local_run)
+    record_workspace_audit(
+        session,
+        operation="local_run.start",
+        resource_type="local_run",
+        resource_id=local_run.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+        commit=True,
+    )
     return _local_task_run_read(local_run)
 
 

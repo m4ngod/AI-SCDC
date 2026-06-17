@@ -12,7 +12,31 @@ from ai_company_api.services.docker_sandbox import (
     validate_docker_image,
 )
 from ai_company_api.services.repository import get_project, get_repository
-from ai_company_api.services.auth_context import enforce_workspace_access
+from ai_company_api.services.auth_context import enforce_workspace_access, get_current_auth_context
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
+)
+
+
+def _require_audited_permission_if_authenticated(
+    session: Session,
+    permission: str,
+    *,
+    operation: str,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> None:
+    if get_current_auth_context() is None:
+        return
+    require_audited_workspace_permission(
+        session,
+        permission,
+        operation=operation,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        access_level="high_value_write",
+    )
 
 
 def create_sandbox_profile(
@@ -38,6 +62,12 @@ def create_sandbox_profile(
         raise HTTPException(status_code=400, detail="Invalid Docker image")
     allowed_env_vars = _validated_allowed_env_vars(data.allowed_env_vars)
 
+    _require_audited_permission_if_authenticated(
+        session,
+        "repository.write",
+        operation="sandbox_profile.create",
+        resource_type="sandbox_profile",
+    )
     profile = SandboxProfile(
         workspace_id=project.workspace_id,
         project_id=project.id,
@@ -50,6 +80,16 @@ def create_sandbox_profile(
         network_enabled=data.network_enabled,
     )
     session.add(profile)
+    session.flush()
+    record_workspace_audit(
+        session,
+        operation="sandbox_profile.create",
+        resource_type="sandbox_profile",
+        resource_id=profile.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(profile)
     return _sandbox_profile_read(profile)

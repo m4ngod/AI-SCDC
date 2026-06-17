@@ -19,13 +19,41 @@ from ai_company_api.schemas.api import (
     TaskRead,
 )
 from ai_company_api.services.repository import create_task_event, get_task
-from ai_company_api.services.auth_context import current_user_id, enforce_workspace_access
+from ai_company_api.services.auth_context import (
+    current_user_id,
+    enforce_workspace_access,
+    get_current_auth_context,
+)
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
     allowed_next_statuses,
     validate_transition,
 )
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
+)
+
+
+def _require_audited_permission_if_authenticated(
+    session: Session,
+    permission: str,
+    *,
+    operation: str,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> None:
+    if get_current_auth_context() is None:
+        return
+    require_audited_workspace_permission(
+        session,
+        permission,
+        operation=operation,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        access_level="high_value_write",
+    )
 
 
 def approve_patch_artifact(
@@ -33,9 +61,27 @@ def approve_patch_artifact(
     patch_artifact_id: str,
 ) -> tuple[PatchApprovalResultRead, int]:
     artifact = _get_patch_artifact_entity(session, patch_artifact_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "approval.write",
+        operation="patch_artifact.approve",
+        resource_type="patch_artifact",
+        resource_id=artifact.id,
+    )
     existing_approval = _existing_patch_approval(session, artifact.id)
     if existing_approval is not None:
-        return _approval_result_read(session, existing_approval), 200
+        result = _approval_result_read(session, existing_approval)
+        record_workspace_audit(
+            session,
+            operation="patch_artifact.approve",
+            resource_type="patch_artifact",
+            resource_id=artifact.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+            commit=True,
+        )
+        return result, 200
 
     task = get_task(session, artifact.task_id)
     if TaskStatus(task.status) != TaskStatus.APPROVED:
@@ -107,6 +153,16 @@ def approve_patch_artifact(
         ) from exc
 
     session.refresh(approval)
+    record_workspace_audit(
+        session,
+        operation="patch_artifact.approve",
+        resource_type="patch_artifact",
+        resource_id=artifact.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+        commit=True,
+    )
     return _approval_result_read(session, approval), 201
 
 
@@ -141,6 +197,13 @@ def request_human_approval(
     enforce_workspace_access(approval.workspace_id, detail="Patch approval not found")
 
     task = get_task(session, approval.task_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "approval.write",
+        operation="patch_approval.request_human",
+        resource_type="patch_approval",
+        resource_id=approval.id,
+    )
     if TaskStatus(task.status) != TaskStatus.MERGE_READY:
         current_status = TaskStatus(task.status)
         raise HTTPException(
@@ -172,6 +235,15 @@ def request_human_approval(
         TaskStatus.HUMAN_APPROVAL,
     )
     session.add(task)
+    record_workspace_audit(
+        session,
+        operation="patch_approval.request_human",
+        resource_type="patch_approval",
+        resource_id=approval.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=200,
+    )
     session.commit()
     session.refresh(approval)
     return _approval_result_read(session, approval)

@@ -50,13 +50,43 @@ from ai_company_api.services.task_state import (
     allowed_next_statuses,
     validate_transition,
 )
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
+)
 from ai_company_llm_gateway.openai_compatible import OpenAICompatibleChatAdapter
 
 
 MODEL_PLANNER_ADAPTER_FACTORY = OpenAICompatibleChatAdapter
 
 
+def _require_audited_permission_if_authenticated(
+    session: Session,
+    permission: str,
+    *,
+    operation: str,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> None:
+    if get_current_auth_context() is None:
+        return
+    require_audited_workspace_permission(
+        session,
+        permission,
+        operation=operation,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        access_level="high_value_write",
+    )
+
+
 def create_project(session: Session, data: ProjectCreate) -> Project:
+    _require_audited_permission_if_authenticated(
+        session,
+        "project.write",
+        operation="project.create",
+        resource_type="project",
+    )
     project = Project(
         workspace_id=current_workspace_id(),
         name=data.name,
@@ -64,6 +94,16 @@ def create_project(session: Session, data: ProjectCreate) -> Project:
         created_by=current_user_id(),
     )
     session.add(project)
+    session.flush()
+    record_workspace_audit(
+        session,
+        operation="project.create",
+        resource_type="project",
+        resource_id=project.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(project)
     return project
@@ -142,6 +182,12 @@ def create_repository(
 ) -> RepositoryRead:
     project = get_project(session, project_id)
     repo_path = _validate_local_git_repository(data.local_path)
+    _require_audited_permission_if_authenticated(
+        session,
+        "repository.write",
+        operation="repository.create",
+        resource_type="repository",
+    )
     repository = ProjectRepository(
         workspace_id=project.workspace_id,
         project_id=project_id,
@@ -150,6 +196,16 @@ def create_repository(
         default_branch=data.default_branch,
     )
     session.add(repository)
+    session.flush()
+    record_workspace_audit(
+        session,
+        operation="repository.create",
+        resource_type="repository",
+        resource_id=repository.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(repository)
     return _repository_read(repository)
@@ -179,10 +235,26 @@ def get_repository_read(session: Session, repo_id: str) -> RepositoryRead:
 
 def delete_repository(session: Session, repo_id: str) -> RepositoryRead:
     repository = get_repository(session, repo_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "repository.write",
+        operation="repository.delete",
+        resource_type="repository",
+        resource_id=repository.id,
+    )
     repository.status = "deleted"
     repository.connection_status = "inactive"
     repository.updated_at = utc_now()
     session.add(repository)
+    record_workspace_audit(
+        session,
+        operation="repository.delete",
+        resource_type="repository",
+        resource_id=repository.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=200,
+    )
     session.commit()
     session.refresh(repository)
     return _repository_read(repository)
@@ -194,6 +266,12 @@ def create_conversation(
     data: ConversationCreate,
 ) -> Conversation:
     get_project(session, project_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "conversation.write",
+        operation="conversation.create",
+        resource_type="conversation",
+    )
     conversation = Conversation(
         project_id=project_id,
         user_id=current_user_id(),
@@ -201,6 +279,16 @@ def create_conversation(
         conversation_type=data.conversation_type,
     )
     session.add(conversation)
+    session.flush()
+    record_workspace_audit(
+        session,
+        operation="conversation.create",
+        resource_type="conversation",
+        resource_id=conversation.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(conversation)
     return conversation
@@ -230,6 +318,12 @@ def create_message(
     data: MessageCreate,
 ) -> Message:
     get_conversation(session, conversation_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "conversation.write",
+        operation="conversation.message.create",
+        resource_type="message",
+    )
     message = Message(
         conversation_id=conversation_id,
         sender_type=data.sender_type,
@@ -238,6 +332,16 @@ def create_message(
         structured_payload=data.structured_payload,
     )
     session.add(message)
+    session.flush()
+    record_workspace_audit(
+        session,
+        operation="conversation.message.create",
+        resource_type="message",
+        resource_id=message.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(message)
     return message
@@ -384,6 +488,12 @@ def create_planner_run(
                 detail="Conversation does not belong to project",
             )
 
+    _require_audited_permission_if_authenticated(
+        session,
+        "planner.write",
+        operation="planner_run.create",
+        resource_type="planner_run",
+    )
     planner_run = PlannerRun(
         project_id=project_id,
         conversation_id=data.conversation_id,
@@ -430,6 +540,15 @@ def create_planner_run(
             )
         )
 
+    record_workspace_audit(
+        session,
+        operation="planner_run.create",
+        resource_type="planner_run",
+        resource_id=planner_run.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(planner_run)
     return _planner_run_read(session, planner_run)
@@ -480,6 +599,13 @@ def approve_planner_run(
     _ensure_planner_run_is_drafted(planner_run)
     project = get_project(session, planner_run.project_id)
     drafts = list_planner_task_drafts(session, planner_run.id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "planner.review",
+        operation="planner_run.approve",
+        resource_type="planner_run",
+        resource_id=planner_run.id,
+    )
 
     created_tasks: list[Task] = []
     try:
@@ -524,6 +650,15 @@ def approve_planner_run(
         planner_run.status = PlannerRunStatus.APPROVED
         planner_run.updated_at = utc_now()
         session.add(planner_run)
+        record_workspace_audit(
+            session,
+            operation="planner_run.approve",
+            resource_type="planner_run",
+            resource_id=planner_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+        )
         session.commit()
     except IntegrityError as exc:
         session.rollback()
@@ -553,6 +688,13 @@ def reject_planner_run(
     planner_run = get_planner_run(session, planner_run_id)
     _ensure_planner_run_is_drafted(planner_run)
     project = get_project(session, planner_run.project_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "planner.review",
+        operation="planner_run.reject",
+        resource_type="planner_run",
+        resource_id=planner_run.id,
+    )
 
     try:
         approval = Approval(
@@ -569,6 +711,15 @@ def reject_planner_run(
         planner_run.status = PlannerRunStatus.REJECTED
         planner_run.updated_at = utc_now()
         session.add(planner_run)
+        record_workspace_audit(
+            session,
+            operation="planner_run.reject",
+            resource_type="planner_run",
+            resource_id=planner_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+        )
         session.commit()
     except IntegrityError as exc:
         session.rollback()
@@ -615,6 +766,12 @@ def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
                 detail="Repository does not belong to project",
             )
 
+    _require_audited_permission_if_authenticated(
+        session,
+        "task.write",
+        operation="task.create",
+        resource_type="task",
+    )
     task = Task(
         project_id=project_id,
         conversation_id=data.conversation_id,
@@ -642,6 +799,15 @@ def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
         "user",
         current_user_id(),
         {"status": task.status.value},
+    )
+    record_workspace_audit(
+        session,
+        operation="task.create",
+        resource_type="task",
+        resource_id=task.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
     )
     session.commit()
     session.refresh(task)
@@ -687,6 +853,13 @@ def transition_task(
             },
         ) from exc
 
+    _require_audited_permission_if_authenticated(
+        session,
+        "task.write",
+        operation="task.transition",
+        resource_type="task",
+        resource_id=task.id,
+    )
     task.status = next_status
     task.updated_at = utc_now()
     create_task_event(
@@ -698,6 +871,15 @@ def transition_task(
         {"from_status": current_status.value, "to_status": next_status.value},
     )
     session.add(task)
+    record_workspace_audit(
+        session,
+        operation="task.transition",
+        resource_type="task",
+        resource_id=task.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=200,
+    )
     session.commit()
     session.refresh(task)
     return task
