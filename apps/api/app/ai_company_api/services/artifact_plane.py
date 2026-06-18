@@ -37,6 +37,10 @@ from ai_company_api.services.auth_context import (
     get_current_auth_context,
     require_workspace_role,
 )
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission_if_authenticated,
+)
 
 
 ARTIFACT_LABELS: dict[str, str] = {
@@ -69,8 +73,16 @@ def build_cloud_run_artifact_manifest(
     cloud_run_id: str,
 ) -> CloudRunArtifactManifestRead:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "artifact.sensitive.read",
+        operation="artifact.manifest.read",
+        resource_type="cloud_run_artifact",
+        resource_id=cloud_run.id,
+        access_level="high_sensitive_read",
+    )
     sources = _cloud_run_artifact_sources(session, cloud_run)
-    return CloudRunArtifactManifestRead(
+    result = CloudRunArtifactManifestRead(
         version=1,
         cloud_run_id=cloud_run.id,
         workspace_id=cloud_run.workspace_id,
@@ -78,6 +90,19 @@ def build_cloud_run_artifact_manifest(
         retention=_retention_read(sources),
         artifacts=[source.descriptor for source in sources],
     )
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="artifact.manifest.read",
+            resource_type="cloud_run_artifact",
+            resource_id=cloud_run.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"cloud_run_id": cloud_run.id, "count": len(result.artifacts)},
+            commit=True,
+        )
+    return result
 
 
 def list_cloud_run_artifacts(
@@ -85,10 +110,29 @@ def list_cloud_run_artifacts(
     *,
     cloud_run_id: str,
 ) -> list[CloudRunArtifactDescriptorRead]:
-    return build_cloud_run_artifact_manifest(
+    cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
         session,
-        cloud_run_id=cloud_run_id,
-    ).artifacts
+        "artifact.sensitive.read",
+        operation="artifact.list",
+        resource_type="cloud_run_artifact",
+        resource_id=cloud_run.id,
+        access_level="high_sensitive_read",
+    )
+    artifacts = [source.descriptor for source in _cloud_run_artifact_sources(session, cloud_run)]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="artifact.list",
+            resource_type="cloud_run_artifact",
+            resource_id=cloud_run.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"cloud_run_id": cloud_run.id, "count": len(artifacts)},
+            commit=True,
+        )
+    return artifacts
 
 
 def get_cloud_run_artifact_descriptor(
@@ -97,11 +141,36 @@ def get_cloud_run_artifact_descriptor(
     cloud_run_id: str,
     artifact_id: str,
 ) -> CloudRunArtifactDescriptorRead:
-    return _get_cloud_run_artifact_source(
+    source = _get_cloud_run_artifact_source(
         session,
         cloud_run_id=cloud_run_id,
         artifact_id=artifact_id,
-    ).descriptor
+    )
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "artifact.sensitive.read",
+        operation="artifact.descriptor.read",
+        resource_type="cloud_run_artifact",
+        resource_id=source.descriptor.id,
+        access_level="high_sensitive_read",
+    )
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="artifact.descriptor.read",
+            resource_type="cloud_run_artifact",
+            resource_id=source.descriptor.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={
+                "cloud_run_id": source.descriptor.cloud_run_id,
+                "kind": source.descriptor.kind,
+                "size_bytes": source.descriptor.size_bytes,
+            },
+            commit=True,
+        )
+    return source.descriptor
 
 
 def read_cloud_run_artifact_content(
@@ -117,6 +186,14 @@ def read_cloud_run_artifact_content(
         artifact_id=artifact_id,
     )
     _raise_if_expired(source.descriptor.expires_at)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "artifact.sensitive.read",
+        operation="artifact.content.read",
+        resource_type="cloud_run_artifact",
+        resource_id=source.descriptor.id,
+        access_level="high_sensitive_read",
+    )
 
     if source.patch_artifact_id is not None:
         content = _read_patch_artifact_diff(
@@ -124,10 +201,27 @@ def read_cloud_run_artifact_content(
             cloud_run=cloud_run,
             patch_artifact_id=source.patch_artifact_id,
         )
-        return CloudRunArtifactContentRead(
+        result = CloudRunArtifactContentRead(
             artifact=source.descriptor,
             content=content,
         )
+        if should_audit:
+            record_workspace_audit(
+                session,
+                operation="artifact.content.read",
+                resource_type="cloud_run_artifact",
+                resource_id=source.descriptor.id,
+                access_level="high_sensitive_read",
+                success=True,
+                status_code=200,
+                metadata={
+                    "cloud_run_id": cloud_run.id,
+                    "kind": source.descriptor.kind,
+                    "size_bytes": source.descriptor.size_bytes,
+                },
+                commit=True,
+            )
+        return result
 
     if source.storage_ref is None:
         raise HTTPException(status_code=404, detail="Cloud run artifact not found")
@@ -145,10 +239,27 @@ def read_cloud_run_artifact_content(
     ) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return CloudRunArtifactContentRead(
+    result = CloudRunArtifactContentRead(
         artifact=source.descriptor,
         content=content,
     )
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="artifact.content.read",
+            resource_type="cloud_run_artifact",
+            resource_id=source.descriptor.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={
+                "cloud_run_id": cloud_run.id,
+                "kind": source.descriptor.kind,
+                "size_bytes": source.descriptor.size_bytes,
+            },
+            commit=True,
+        )
+    return result
 
 
 def build_cloud_run_artifact_download(
@@ -162,7 +273,15 @@ def build_cloud_run_artifact_download(
         cloud_run_id=cloud_run_id,
         artifact_id=artifact_id,
     )
-    return CloudRunArtifactDownloadRead(
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "artifact.sensitive.read",
+        operation="artifact.download.create",
+        resource_type="cloud_run_artifact",
+        resource_id=source.descriptor.id,
+        access_level="high_sensitive_read",
+    )
+    result = CloudRunArtifactDownloadRead(
         artifact=source.descriptor,
         download_url=source.descriptor.download_url,
         expires_at=source.descriptor.expires_at,
@@ -170,6 +289,23 @@ def build_cloud_run_artifact_download(
         size_bytes=source.descriptor.size_bytes,
         sha256=source.descriptor.sha256,
     )
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="artifact.download.create",
+            resource_type="cloud_run_artifact",
+            resource_id=source.descriptor.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={
+                "cloud_run_id": source.descriptor.cloud_run_id,
+                "kind": source.descriptor.kind,
+                "size_bytes": source.descriptor.size_bytes,
+            },
+            commit=True,
+        )
+    return result
 
 
 def cleanup_expired_cloud_run_artifacts(

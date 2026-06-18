@@ -6,10 +6,12 @@ from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
     CloudRun,
+    CloudRunLogEntry,
     Conversation,
     GitHubCredential,
     GitHubCredentialStatus,
     LocalTaskRun,
+    Message,
     ModelCredential,
     ModelCredentialStatus,
     PatchArtifact,
@@ -94,6 +96,82 @@ def test_record_workspace_audit_redacts_and_commits_without_auth_context(
     assert stored.user_id == "dev_user"
     assert stored.auth_mode == "system"
     assert stored.metadata_json == {"token": "[redacted]", "status": "ok"}
+
+
+def _seed_sensitive_read_audit_fixture(database_url: str) -> None:
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        project = Project(
+            id="project_sensitive_audit",
+            workspace_id="workspace_a",
+            name="Sensitive audit project",
+        )
+        conversation = Conversation(
+            id="conversation_sensitive_audit",
+            project_id=project.id,
+            title="Sensitive audit conversation",
+        )
+        message = Message(
+            id="message_sensitive_audit",
+            conversation_id=conversation.id,
+            sender_type="user",
+            content="never store this message content in audit logs",
+            structured_payload={"prompt": "private prompt payload"},
+        )
+        repository = Repository(
+            id="repo_sensitive_audit",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            name="Sensitive audit repo",
+            local_path="",
+            provider="github",
+            repo_url="https://github.com/example/sensitive-audit",
+            github_owner="example",
+            github_repo="sensitive-audit",
+        )
+        task = Task(
+            id="task_sensitive_audit",
+            project_id=project.id,
+            title="Sensitive audit task",
+            role_required="backend",
+        )
+        local_run = LocalTaskRun(
+            id="local_run_sensitive_audit",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            task_id=task.id,
+            repo_id=repository.id,
+            status="completed",
+        )
+        cloud_run = CloudRun(
+            id="cloud_run_sensitive_audit",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            task_id=task.id,
+            repo_id=repository.id,
+            local_run_id=local_run.id,
+            head_branch="ai-scdc/sensitive-audit",
+            status="completed",
+        )
+        log_entry = CloudRunLogEntry(
+            id="log_sensitive_audit",
+            cloud_run_id=cloud_run.id,
+            workspace_id="workspace_a",
+            level="info",
+            event="command.output",
+            message="do not store this log content in audit metadata",
+            payload={"stdout": "private stdout"},
+        )
+        session.add(project)
+        session.add(conversation)
+        session.add(message)
+        session.add(repository)
+        session.add(task)
+        session.add(local_run)
+        session.add(cloud_run)
+        session.add(log_entry)
+        session.commit()
 
 
 def test_denied_audited_permission_does_not_commit_caller_pending_objects(
@@ -256,6 +334,111 @@ def test_sensitive_collection_read_records_redacted_audit(tmp_path) -> None:
     assert audit_log.access_level.value == "high_sensitive_read"
     assert audit_log.success is True
     assert audit_log.workspace_id == "workspace_a"
+
+
+def test_sensitive_message_read_audit_does_not_store_message_content(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "sensitive-message-read.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    _seed_sensitive_read_audit_fixture(database_url)
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.get(
+            "/conversations/conversation_sensitive_audit/messages",
+            headers={
+                "x-ai-scdc-user-id": "reviewer_user",
+                "x-ai-scdc-workspace-id": "workspace_a",
+                "x-ai-scdc-organization-id": "org_a",
+                "x-ai-scdc-roles": "reviewer",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0]["content"] == "never store this message content in audit logs"
+    with Session(build_engine(database_url)) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "conversation.message.list"
+            )
+        ).one()
+
+    serialized_audit = str(audit_log.model_dump())
+    assert audit_log.access_level.value == "high_sensitive_read"
+    assert audit_log.resource_type == "conversation"
+    assert audit_log.resource_id == "conversation_sensitive_audit"
+    assert audit_log.success is True
+    assert audit_log.status_code == 200
+    assert audit_log.metadata_json == {"count": 1}
+    assert "never store this message content in audit logs" not in serialized_audit
+    assert "private prompt payload" not in serialized_audit
+
+
+def test_same_workspace_sensitive_read_denial_records_audit(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "same-workspace-sensitive-denial.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    _seed_sensitive_read_audit_fixture(database_url)
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.get(
+            "/cloud-runs/cloud_run_sensitive_audit/logs",
+            headers={
+                "x-ai-scdc-user-id": "viewer_user",
+                "x-ai-scdc-workspace-id": "workspace_a",
+                "x-ai-scdc-organization-id": "org_a",
+                "x-ai-scdc-roles": "viewer",
+            },
+        )
+
+    assert response.status_code == 403
+    with Session(build_engine(database_url)) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "cloud_log.list"
+            )
+        ).one()
+
+    assert audit_log.resource_type == "cloud_run_log"
+    assert audit_log.resource_id == "cloud_run_sensitive_audit"
+    assert audit_log.access_level.value == "high_sensitive_read"
+    assert audit_log.success is False
+    assert audit_log.status_code == 403
+    assert audit_log.error_code == "insufficient_workspace_role"
+    assert "do not store this log content" not in str(audit_log.model_dump())
+
+
+def test_cross_workspace_sensitive_read_stays_hidden_without_denied_audit(
+    tmp_path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    database_path = tmp_path / "cross-workspace-sensitive-read.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    _seed_sensitive_read_audit_fixture(database_url)
+
+    with TestClient(create_app(database_url=database_url)) as client:
+        response = client.get(
+            "/cloud-runs/cloud_run_sensitive_audit",
+            headers={
+                "x-ai-scdc-user-id": "reviewer_b",
+                "x-ai-scdc-workspace-id": "workspace_b",
+                "x-ai-scdc-organization-id": "org_b",
+                "x-ai-scdc-roles": "reviewer",
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cloud run not found"
+    with Session(build_engine(database_url)) as session:
+        failed_audits = session.exec(
+            select(WorkspaceAuditLog)
+            .where(WorkspaceAuditLog.operation == "cloud_run.read")
+            .where(WorkspaceAuditLog.success.is_(False))
+        ).all()
+
+    assert failed_audits == []
 
 
 def test_denied_collection_read_records_audit_without_payload(tmp_path) -> None:

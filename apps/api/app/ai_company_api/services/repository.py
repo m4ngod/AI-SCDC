@@ -53,6 +53,7 @@ from ai_company_api.services.task_state import (
 from ai_company_api.services.workspace_audit import (
     record_workspace_audit,
     require_audited_workspace_permission,
+    require_audited_workspace_permission_if_authenticated,
 )
 from ai_company_llm_gateway.openai_compatible import OpenAICompatibleChatAdapter
 
@@ -348,13 +349,36 @@ def create_message(
 
 
 def list_messages(session: Session, conversation_id: str) -> list[Message]:
-    get_conversation(session, conversation_id)
+    conversation = get_conversation(session, conversation_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "conversation.sensitive.read",
+        operation="conversation.message.list",
+        resource_type="conversation",
+        resource_id=conversation.id,
+        access_level="high_sensitive_read",
+    )
     statement = (
         select(Message)
         .where(Message.conversation_id == conversation_id)
         .order_by(Message.created_at)
     )
-    return list(session.exec(statement).all())
+    messages = list(session.exec(statement).all())
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="conversation.message.list",
+            resource_type="conversation",
+            resource_id=conversation.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"count": len(messages)},
+            commit=True,
+        )
+        for message in messages:
+            session.refresh(message)
+    return messages
 
 
 def get_task(session: Session, task_id: str) -> Task:

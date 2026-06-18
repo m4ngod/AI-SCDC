@@ -7,6 +7,10 @@ from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
     CloudRun,
+    CloudRunLogEntry,
+    Conversation,
+    LocalTaskRun,
+    Message,
     Organization,
     OrganizationMember,
     PatchArtifact,
@@ -783,6 +787,159 @@ def test_workspace_permission_policy_declares_phase_13b_permissions() -> None:
     assert {
         role.value for role in allowed_roles_for_permission("billing.read")
     } == {"owner", "admin", "billing_manager"}
+
+
+def _seed_sensitive_read_fixture(database_path: Path) -> None:
+    engine = build_engine(f"sqlite:///{database_path.as_posix()}")
+    with Session(engine) as session:
+        project = Project(
+            id="project_sensitive_read",
+            workspace_id="workspace_a",
+            name="Sensitive read project",
+        )
+        conversation = Conversation(
+            id="conversation_sensitive_read",
+            project_id=project.id,
+            title="Sensitive conversation",
+        )
+        message = Message(
+            id="message_sensitive_read",
+            conversation_id=conversation.id,
+            sender_type="user",
+            content="do not leak this prompt",
+        )
+        repository = Repository(
+            id="repo_sensitive_read",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            name="Sensitive repo",
+            local_path="",
+            provider="github",
+            repo_url="https://github.com/example/sensitive-read",
+            github_owner="example",
+            github_repo="sensitive-read",
+        )
+        task = Task(
+            id="task_sensitive_read",
+            project_id=project.id,
+            title="Sensitive task",
+            role_required="backend",
+        )
+        local_run = LocalTaskRun(
+            id="local_run_sensitive_read",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            task_id=task.id,
+            repo_id=repository.id,
+            status="completed",
+        )
+        patch_artifact = PatchArtifact(
+            id="patch_sensitive_read",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            task_id=task.id,
+            local_run_id=local_run.id,
+            summary="Sensitive patch",
+            files_changed=["app.py"],
+            test_result="passed",
+            diff_text="diff --git a/app.py b/app.py\n+secret implementation detail",
+        )
+        cloud_run = CloudRun(
+            id="cloud_run_sensitive_read",
+            workspace_id="workspace_a",
+            project_id=project.id,
+            task_id=task.id,
+            repo_id=repository.id,
+            local_run_id=local_run.id,
+            patch_artifact_id=patch_artifact.id,
+            head_branch="ai-scdc/sensitive-read",
+            status="completed",
+        )
+        log_entry = CloudRunLogEntry(
+            id="log_sensitive_read",
+            cloud_run_id=cloud_run.id,
+            workspace_id="workspace_a",
+            level="info",
+            event="command.output",
+            message="sensitive log output",
+            payload={"stdout": "private command output"},
+        )
+        session.add(project)
+        session.add(conversation)
+        session.add(message)
+        session.add(repository)
+        session.add(task)
+        session.add(local_run)
+        session.add(patch_artifact)
+        session.add(cloud_run)
+        session.add(log_entry)
+        session.commit()
+
+
+def test_viewer_cannot_read_sensitive_execution_or_conversation_content(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "sensitive-read.db"
+    with build_client(database_path) as client:
+        _seed_sensitive_read_fixture(database_path)
+
+        headers = auth_headers(roles="viewer")
+        responses = [
+            client.get(
+                "/conversations/conversation_sensitive_read/messages",
+                headers=headers,
+            ),
+            client.get("/tasks/task_sensitive_read/cloud-runs", headers=headers),
+            client.get("/cloud-runs/cloud_run_sensitive_read", headers=headers),
+            client.get("/cloud-runs/cloud_run_sensitive_read/logs", headers=headers),
+            client.get(
+                "/cloud-runs/cloud_run_sensitive_read/artifacts/manifest",
+                headers=headers,
+            ),
+        ]
+
+    assert [response.status_code for response in responses] == [403, 403, 403, 403, 403]
+
+
+def test_reviewer_can_read_sensitive_conversation_content(tmp_path: Path) -> None:
+    database_path = tmp_path / "reviewer-sensitive-read.db"
+    with build_client(database_path) as client:
+        _seed_sensitive_read_fixture(database_path)
+
+        response = client.get(
+            "/conversations/conversation_sensitive_read/messages",
+            headers=auth_headers(roles="reviewer"),
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0]["content"] == "do not leak this prompt"
+
+
+def test_developer_and_reviewer_can_read_sensitive_execution_artifact_and_logs(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "execution-sensitive-read.db"
+    with build_client(database_path) as client:
+        _seed_sensitive_read_fixture(database_path)
+
+        developer_cloud_run = client.get(
+            "/cloud-runs/cloud_run_sensitive_read",
+            headers=auth_headers(roles="developer"),
+        )
+        reviewer_logs = client.get(
+            "/cloud-runs/cloud_run_sensitive_read/logs",
+            headers=auth_headers(roles="reviewer"),
+        )
+        reviewer_artifact_manifest = client.get(
+            "/cloud-runs/cloud_run_sensitive_read/artifacts/manifest",
+            headers=auth_headers(roles="reviewer"),
+        )
+
+    assert developer_cloud_run.status_code == 200
+    assert reviewer_logs.status_code == 200
+    assert reviewer_logs.json()[0]["message"] == "sensitive log output"
+    assert reviewer_artifact_manifest.status_code == 200
+    assert reviewer_artifact_manifest.json()["artifacts"][0]["kind"] == "diff"
 
 
 def test_viewer_and_billing_manager_cannot_create_execution_resources() -> None:

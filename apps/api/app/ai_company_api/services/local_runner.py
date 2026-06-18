@@ -29,6 +29,7 @@ from ai_company_api.services.task_state import (
 from ai_company_api.services.workspace_audit import (
     record_workspace_audit,
     require_audited_workspace_permission,
+    require_audited_workspace_permission_if_authenticated,
 )
 from ai_company_worker.local_runner import (
     LocalRunnerError,
@@ -219,13 +220,32 @@ def start_local_task_run(
 
 
 def list_local_task_runs(session: Session, task_id: str) -> list[LocalTaskRunRead]:
-    get_task(session, task_id)
+    task = get_task(session, task_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="local_run.list",
+        resource_type="local_run",
+        access_level="high_sensitive_read",
+    )
     statement = (
         select(LocalTaskRun)
         .where(LocalTaskRun.task_id == task_id)
         .order_by(LocalTaskRun.created_at, LocalTaskRun.id)
     )
-    return [_local_task_run_read(local_run) for local_run in session.exec(statement).all()]
+    runs = [_local_task_run_read(local_run) for local_run in session.exec(statement).all()]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="local_run.list",
+            resource_type="local_run",
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"task_id": task.id, "count": len(runs)},
+            commit=True,
+        )
+    return runs
 
 
 def get_local_task_run(session: Session, local_run_id: str) -> LocalTaskRunRead:
@@ -233,7 +253,28 @@ def get_local_task_run(session: Session, local_run_id: str) -> LocalTaskRunRead:
     if local_run is None:
         raise HTTPException(status_code=404, detail="Local task run not found")
     enforce_workspace_access(local_run.workspace_id, detail="Local task run not found")
-    return _local_task_run_read(local_run)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="local_run.read",
+        resource_type="local_run",
+        resource_id=local_run.id,
+        access_level="high_sensitive_read",
+    )
+    result = _local_task_run_read(local_run)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="local_run.read",
+            resource_type="local_run",
+            resource_id=local_run.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"task_id": local_run.task_id, "project_id": local_run.project_id},
+            commit=True,
+        )
+    return result
 
 
 def get_patch_artifact(session: Session, patch_artifact_id: str) -> PatchArtifactRead:
@@ -241,7 +282,32 @@ def get_patch_artifact(session: Session, patch_artifact_id: str) -> PatchArtifac
     if artifact is None:
         raise HTTPException(status_code=404, detail="Patch artifact not found")
     enforce_workspace_access(artifact.workspace_id, detail="Patch artifact not found")
-    return _patch_artifact_read(artifact)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="patch_artifact.read",
+        resource_type="patch_artifact",
+        resource_id=artifact.id,
+        access_level="high_sensitive_read",
+    )
+    result = _patch_artifact_read(artifact)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="patch_artifact.read",
+            resource_type="patch_artifact",
+            resource_id=artifact.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={
+                "task_id": artifact.task_id,
+                "local_run_id": artifact.local_run_id,
+                "files_changed_count": len(artifact.files_changed or []),
+            },
+            commit=True,
+        )
+    return result
 
 
 def _transition_task_for_local_runner(

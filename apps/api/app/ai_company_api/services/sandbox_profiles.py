@@ -16,6 +16,7 @@ from ai_company_api.services.auth_context import enforce_workspace_access, get_c
 from ai_company_api.services.workspace_audit import (
     record_workspace_audit,
     require_audited_workspace_permission,
+    require_audited_workspace_permission_if_authenticated,
 )
 
 
@@ -96,20 +97,61 @@ def create_sandbox_profile(
 
 
 def list_sandbox_profiles(session: Session, project_id: str) -> list[SandboxProfileRead]:
-    get_project(session, project_id)
+    project = get_project(session, project_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution_config.read",
+        operation="sandbox_profile.list",
+        resource_type="sandbox_profile",
+        access_level="high_sensitive_read",
+    )
     statement = (
         select(SandboxProfile)
         .where(SandboxProfile.project_id == project_id)
         .order_by(SandboxProfile.created_at, SandboxProfile.id)
     )
-    return [_sandbox_profile_read(profile) for profile in session.exec(statement).all()]
+    profiles = [_sandbox_profile_read(profile) for profile in session.exec(statement).all()]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="sandbox_profile.list",
+            resource_type="sandbox_profile",
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"project_id": project.id, "count": len(profiles)},
+            commit=True,
+        )
+    return profiles
 
 
 def get_sandbox_profile_read(
     session: Session,
     sandbox_profile_id: str,
 ) -> SandboxProfileRead:
-    return _sandbox_profile_read(get_sandbox_profile(session, sandbox_profile_id))
+    profile = get_sandbox_profile(session, sandbox_profile_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution_config.read",
+        operation="sandbox_profile.read",
+        resource_type="sandbox_profile",
+        resource_id=profile.id,
+        access_level="high_sensitive_read",
+    )
+    result = _sandbox_profile_read(profile)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="sandbox_profile.read",
+            resource_type="sandbox_profile",
+            resource_id=profile.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"project_id": profile.project_id, "repo_id": profile.repo_id},
+            commit=True,
+        )
+    return result
 
 
 def get_sandbox_profile(session: Session, profile_id: str) -> SandboxProfile:

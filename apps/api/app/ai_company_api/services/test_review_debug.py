@@ -34,6 +34,7 @@ from ai_company_api.services.task_state import (
 from ai_company_api.services.workspace_audit import (
     record_workspace_audit,
     require_audited_workspace_permission,
+    require_audited_workspace_permission_if_authenticated,
 )
 from ai_company_worker.test_runner import (
     TestRunnerError,
@@ -289,13 +290,32 @@ def list_patch_test_runs(
     session: Session,
     patch_artifact_id: str,
 ) -> list[LocalTestRunRead]:
-    _get_patch_artifact_entity(session, patch_artifact_id)
+    artifact = _get_patch_artifact_entity(session, patch_artifact_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="patch_test.list",
+        resource_type="local_test_run",
+        access_level="high_sensitive_read",
+    )
     statement = (
         select(LocalTestRun)
         .where(LocalTestRun.patch_artifact_id == patch_artifact_id)
         .order_by(LocalTestRun.created_at, LocalTestRun.id)
     )
-    return [_test_run_read(test_run) for test_run in session.exec(statement).all()]
+    runs = [_test_run_read(test_run) for test_run in session.exec(statement).all()]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="patch_test.list",
+            resource_type="local_test_run",
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"patch_artifact_id": artifact.id, "count": len(runs)},
+            commit=True,
+        )
+    return runs
 
 
 def get_test_run(session: Session, test_run_id: str) -> LocalTestRunRead:
@@ -303,7 +323,32 @@ def get_test_run(session: Session, test_run_id: str) -> LocalTestRunRead:
     if test_run is None:
         raise HTTPException(status_code=404, detail="Local test run not found")
     enforce_workspace_access(test_run.workspace_id, detail="Local test run not found")
-    return _test_run_read(test_run)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="patch_test.read",
+        resource_type="local_test_run",
+        resource_id=test_run.id,
+        access_level="high_sensitive_read",
+    )
+    result = _test_run_read(test_run)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="patch_test.read",
+            resource_type="local_test_run",
+            resource_id=test_run.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={
+                "patch_artifact_id": test_run.patch_artifact_id,
+                "local_run_id": test_run.local_run_id,
+                "command_count": len(test_run.commands or []),
+            },
+            commit=True,
+        )
+    return result
 
 
 def _start_cloud_fake_test_run(
@@ -488,13 +533,35 @@ def _start_persisted_docker_test_run(
 
 
 def list_debug_attempts(session: Session, task_id: str) -> list[DebugAttemptRead]:
-    get_task(session, task_id)
+    task = get_task(session, task_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="debug_attempt.list",
+        resource_type="debug_attempt",
+        access_level="high_sensitive_read",
+    )
     statement = (
         select(DebugAttempt)
         .where(DebugAttempt.task_id == task_id)
         .order_by(DebugAttempt.created_at, DebugAttempt.id)
     )
-    return [_debug_attempt_read(debug_attempt) for debug_attempt in session.exec(statement).all()]
+    attempts = [
+        _debug_attempt_read(debug_attempt)
+        for debug_attempt in session.exec(statement).all()
+    ]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="debug_attempt.list",
+            resource_type="debug_attempt",
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"task_id": task.id, "count": len(attempts)},
+            commit=True,
+        )
+    return attempts
 
 
 def start_patch_review(
@@ -627,13 +694,32 @@ def list_patch_reviews(
     session: Session,
     patch_artifact_id: str,
 ) -> list[PatchReviewRead]:
-    _get_patch_artifact_entity(session, patch_artifact_id)
+    artifact = _get_patch_artifact_entity(session, patch_artifact_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="patch_review.list",
+        resource_type="patch_review",
+        access_level="high_sensitive_read",
+    )
     statement = (
         select(PatchReview)
         .where(PatchReview.patch_artifact_id == patch_artifact_id)
         .order_by(PatchReview.created_at, PatchReview.id)
     )
-    return [_review_read(review) for review in session.exec(statement).all()]
+    reviews = [_review_read(review) for review in session.exec(statement).all()]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="patch_review.list",
+            resource_type="patch_review",
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"patch_artifact_id": artifact.id, "count": len(reviews)},
+            commit=True,
+        )
+    return reviews
 
 
 def get_patch_review(session: Session, review_id: str) -> PatchReviewRead:

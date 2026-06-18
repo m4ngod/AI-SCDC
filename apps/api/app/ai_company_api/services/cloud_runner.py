@@ -90,6 +90,7 @@ from ai_company_api.services.worker_callback_auth import (
 from ai_company_api.services.workspace_audit import (
     record_workspace_audit,
     require_audited_workspace_permission,
+    require_audited_workspace_permission_if_authenticated,
 )
 
 SENSITIVE_PAYLOAD_KEYS = {
@@ -1805,13 +1806,34 @@ def list_cloud_run_logs(
     *,
     cloud_run_id: str,
 ) -> list[CloudRunLogEntryRead]:
-    _get_cloud_run_or_404(session, cloud_run_id)
+    cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "log.sensitive.read",
+        operation="cloud_log.list",
+        resource_type="cloud_run_log",
+        resource_id=cloud_run.id,
+        access_level="high_sensitive_read",
+    )
     entries = session.exec(
         select(CloudRunLogEntry)
         .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
         .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
     ).all()
-    return [_cloud_run_log_entry_read(entry) for entry in entries]
+    result = [_cloud_run_log_entry_read(entry) for entry in entries]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="cloud_log.list",
+            resource_type="cloud_run_log",
+            resource_id=cloud_run.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"count": len(result)},
+            commit=True,
+        )
+    return result
 
 
 def _execute_claimed_cloud_run(
@@ -2218,13 +2240,32 @@ def _existing_cloud_run_result(
 
 
 def list_cloud_runs(session: Session, task_id: str) -> list[CloudRunRead]:
-    get_task(session, task_id)
+    task = get_task(session, task_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="cloud_run.list",
+        resource_type="cloud_run",
+        access_level="high_sensitive_read",
+    )
     statement = (
         select(CloudRun)
         .where(CloudRun.task_id == task_id)
         .order_by(CloudRun.created_at, CloudRun.id)
     )
-    return [_cloud_run_read(cloud_run) for cloud_run in session.exec(statement).all()]
+    runs = [_cloud_run_read(cloud_run) for cloud_run in session.exec(statement).all()]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="cloud_run.list",
+            resource_type="cloud_run",
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"task_id": task.id, "count": len(runs)},
+            commit=True,
+        )
+    return runs
 
 
 def _get_cloud_run_or_404(session: Session, cloud_run_id: str) -> CloudRun:
@@ -2329,7 +2370,28 @@ def _get_cloud_run_local_run_or_404(
 
 def get_cloud_run_read(session: Session, cloud_run_id: str) -> CloudRunRead:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
-    return _cloud_run_read(cloud_run)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="cloud_run.read",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+        access_level="high_sensitive_read",
+    )
+    result = _cloud_run_read(cloud_run)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="cloud_run.read",
+            resource_type="cloud_run",
+            resource_id=cloud_run.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"task_id": cloud_run.task_id, "project_id": cloud_run.project_id},
+            commit=True,
+        )
+    return result
 
 
 def _select_profile_commands(

@@ -32,6 +32,10 @@ from ai_company_api.services.auth_context import (
     current_workspace_id,
     enforce_workspace_access,
 )
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission_if_authenticated,
+)
 
 
 DEFAULT_CLOUD_RUN_RESERVATION_CENTS = 100
@@ -587,6 +591,14 @@ def cloud_run_cost_summary(
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
     enforce_workspace_access(cloud_run.workspace_id, detail="Cloud run not found")
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "billing.read",
+        operation="billing.cloud_run_cost_summary.read",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+        access_level="high_sensitive_read",
+    )
     reservation = (
         session.get(BudgetReservation, cloud_run.budget_reservation_id)
         if cloud_run.budget_reservation_id is not None
@@ -615,7 +627,7 @@ def cloud_run_cost_summary(
         ("billable_cost_cents", "actual_cost_cents", "actual_cents"),
         cloud_run.actual_cost_cents,
     )
-    return CloudRunCostSummaryRead(
+    result = CloudRunCostSummaryRead(
         cloud_run_id=cloud_run.id,
         workspace_id=cloud_run.workspace_id,
         project_id=cloud_run.project_id,
@@ -627,6 +639,23 @@ def cloud_run_cost_summary(
         reservation=_reservation_read(reservation) if reservation is not None else None,
         usage_entries=[_usage_entry_read(entry) for entry in usage_entries],
     )
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="billing.cloud_run_cost_summary.read",
+            resource_type="cloud_run",
+            resource_id=cloud_run.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={
+                "cloud_run_id": cloud_run.id,
+                "usage_entry_count": len(usage_entries),
+                "has_reservation": reservation is not None,
+            },
+            commit=True,
+        )
+    return result
 
 
 def set_workspace_spend_limit(

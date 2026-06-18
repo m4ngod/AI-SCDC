@@ -25,6 +25,10 @@ from ai_company_api.services.object_storage import (
     get_object_storage_provider,
 )
 from ai_company_api.services.auth_context import enforce_workspace_access
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission_if_authenticated,
+)
 
 
 BASE64URL_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -60,6 +64,14 @@ def list_cloud_run_log_window(
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
     enforce_workspace_access(cloud_run.workspace_id, detail="Cloud run not found")
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "log.sensitive.read",
+        operation="cloud_log.window.read",
+        resource_type="cloud_run_log",
+        resource_id=cloud_run.id,
+        access_level="high_sensitive_read",
+    )
 
     cursor = _decode_cursor(after)
     if include_stream and sync_stream:
@@ -83,17 +95,43 @@ def list_cloud_run_log_window(
 
     if len(entries) > limit:
         returned_entries = entries[:limit]
-        return CloudRunLogWindowRead(
+        result = CloudRunLogWindowRead(
             entries=returned_entries,
             next_cursor=_entry_cursor(returned_entries[-1]),
             has_more=True,
         )
+        if should_audit:
+            record_workspace_audit(
+                session,
+                operation="cloud_log.window.read",
+                resource_type="cloud_run_log",
+                resource_id=cloud_run.id,
+                access_level="high_sensitive_read",
+                success=True,
+                status_code=200,
+                metadata={"count": len(result.entries), "has_more": result.has_more},
+                commit=True,
+            )
+        return result
 
-    return CloudRunLogWindowRead(
+    result = CloudRunLogWindowRead(
         entries=entries,
         next_cursor=None,
         has_more=False,
     )
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="cloud_log.window.read",
+            resource_type="cloud_run_log",
+            resource_id=cloud_run.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"count": len(result.entries), "has_more": result.has_more},
+            commit=True,
+        )
+    return result
 
 
 def _decode_cursor(after: str | None) -> LogWindowCursor | None:

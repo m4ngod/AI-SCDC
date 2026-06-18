@@ -125,3 +125,25 @@ def require_audited_workspace_permission(
                 commit=True,
             )
         raise
+
+
+def require_audited_workspace_permission_if_authenticated(
+    session: Session,
+    permission: str,
+    *,
+    operation: str,
+    resource_type: str,
+    resource_id: str | None = None,
+    access_level: WorkspaceAuditAccessLevel | str,
+) -> bool:
+    if get_current_auth_context() is None:
+        return False
+    require_audited_workspace_permission(
+        session,
+        permission,
+        operation=operation,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        access_level=access_level,
+    )
+    return True
