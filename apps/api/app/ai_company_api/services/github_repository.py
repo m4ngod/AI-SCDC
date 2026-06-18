@@ -149,9 +149,6 @@ def create_github_repository(
     data: GitHubRepositoryCreate,
 ) -> RepositoryRead:
     project = get_project(session, project_id)
-    credential = get_active_github_credential(session, data.github_credential_id)
-    if credential.workspace_id != project.workspace_id:
-        raise HTTPException(status_code=404, detail="GitHub credential not found")
     should_audit = require_audited_workspace_permission_if_authenticated(
         session,
         "repository.write",
@@ -159,6 +156,9 @@ def create_github_repository(
         resource_type="repository",
         access_level="high_value_write",
     )
+    credential = get_active_github_credential(session, data.github_credential_id)
+    if credential.workspace_id != project.workspace_id:
+        raise HTTPException(status_code=404, detail="GitHub credential not found")
     repo_url = validate_github_repository_url(
         data.repo_url,
         owner=data.github_owner,

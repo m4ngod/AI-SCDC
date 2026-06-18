@@ -189,6 +189,51 @@ def test_register_github_repository_requires_repository_write_and_audits_denial(
     assert audit_log.error_code == "insufficient_workspace_role"
 
 
+def test_register_github_repository_denies_viewer_before_credential_lookup(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    owner_headers = auth_headers(roles="owner")
+    viewer_headers = auth_headers(user_id="viewer_user", roles="viewer")
+
+    with build_client(database_path) as client:
+        project = client.post(
+            "/projects",
+            json={"name": "GitHub project"},
+            headers=owner_headers,
+        ).json()
+
+        response = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Denied remote",
+                "repo_url": "https://github.com/example/denied",
+                "github_owner": "example",
+                "github_repo": "denied",
+                "default_branch": "main",
+                "github_credential_id": "github_credential_missing",
+            },
+            headers=viewer_headers,
+        )
+
+    assert response.status_code == 403
+    with Session(build_engine(database_url)) as session:
+        repositories = session.exec(select(Repository)).all()
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "github_repository.create"
+            )
+        ).one()
+
+    assert repositories == []
+    assert audit_log.resource_type == "repository"
+    assert audit_log.resource_id is None
+    assert audit_log.success is False
+    assert audit_log.status_code == 403
+    assert audit_log.error_code == "insufficient_workspace_role"
+
+
 def test_register_github_repository_records_workspace_audit(tmp_path: Path) -> None:
     database_path = tmp_path / "app.db"
     database_url = f"sqlite:///{database_path.as_posix()}"
