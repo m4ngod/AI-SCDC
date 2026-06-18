@@ -261,6 +261,81 @@ def test_owner_and_admin_can_manage_credentials_and_model_config() -> None:
             assert github_credential.status_code == 201
 
 
+def test_phase_13b_permission_matrix_representative_routes() -> None:
+    cases = [
+        (
+            "get",
+            "/github-credentials",
+            None,
+            {"owner", "admin"},
+            {"viewer", "developer", "reviewer", "billing_manager"},
+        ),
+        (
+            "get",
+            "/usage-ledger",
+            None,
+            {"owner", "admin", "billing_manager"},
+            {"viewer", "developer", "reviewer"},
+        ),
+        (
+            "post",
+            "/model-providers",
+            {"name": "matrix-model", "provider_type": "fake"},
+            {"owner", "admin"},
+            {"viewer", "developer", "reviewer", "billing_manager"},
+        ),
+        (
+            "post",
+            "/projects",
+            {"name": "matrix project"},
+            {"owner", "admin", "developer"},
+            {"viewer", "reviewer", "billing_manager"},
+        ),
+    ]
+
+    with build_client() as client:
+        for case_index, (method, path, payload, allowed_roles, denied_roles) in enumerate(cases):
+            for role in allowed_roles:
+                role_payload = (
+                    {
+                        key: f"{value}-{case_index}-{role}" if key == "name" else value
+                        for key, value in payload.items()
+                    }
+                    if payload is not None
+                    else None
+                )
+                response = getattr(client, method)(
+                    path,
+                    **({"json": role_payload} if role_payload is not None else {}),
+                    headers=auth_headers(
+                        roles=role,
+                        workspace_id=f"workspace_allowed_{role}_{method}",
+                        organization_id=f"org_allowed_{role}_{method}",
+                    ),
+                )
+                assert response.status_code < 400, (method, path, role, response.text)
+
+            for role in denied_roles:
+                role_payload = (
+                    {
+                        key: f"{value}-{case_index}-{role}" if key == "name" else value
+                        for key, value in payload.items()
+                    }
+                    if payload is not None
+                    else None
+                )
+                response = getattr(client, method)(
+                    path,
+                    **({"json": role_payload} if role_payload is not None else {}),
+                    headers=auth_headers(
+                        roles=role,
+                        workspace_id=f"workspace_denied_{role}_{method}",
+                        organization_id=f"org_denied_{role}_{method}",
+                    ),
+                )
+                assert response.status_code == 403, (method, path, role, response.text)
+
+
 def test_credential_delete_requires_owner_or_admin_role() -> None:
     with build_client() as client:
         for role in ("viewer", "developer"):
