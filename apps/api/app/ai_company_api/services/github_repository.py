@@ -23,7 +23,11 @@ from ai_company_api.services.auth_context import (
 from ai_company_api.services.repository import _repository_read, get_project
 from ai_company_api.services.secret_access_audit import record_secret_access
 from ai_company_api.services.secret_vault import SecretVault, get_secret_vault
-from ai_company_api.services.workspace_audit import require_audited_workspace_permission
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
+    require_audited_workspace_permission_if_authenticated,
+)
 
 
 def _enum_value(value) -> str:
@@ -148,6 +152,13 @@ def create_github_repository(
     credential = get_active_github_credential(session, data.github_credential_id)
     if credential.workspace_id != project.workspace_id:
         raise HTTPException(status_code=404, detail="GitHub credential not found")
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "repository.write",
+        operation="github_repository.create",
+        resource_type="repository",
+        access_level="high_value_write",
+    )
     repo_url = validate_github_repository_url(
         data.repo_url,
         owner=data.github_owner,
@@ -168,6 +179,21 @@ def create_github_repository(
         connection_status="active",
     )
     session.add(repository)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="github_repository.create",
+            resource_type="repository",
+            resource_id=repository.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=201,
+            metadata={
+                "github_credential_id": credential.id,
+                "project_id": project.id,
+                "provider": "github",
+            },
+        )
     session.commit()
     session.refresh(repository)
     return _repository_read(repository)

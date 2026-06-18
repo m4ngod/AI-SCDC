@@ -115,26 +115,29 @@ def enqueue_and_process_cloud_run(
 def create_cloud_task(
     session: Session,
     *,
+    workspace_id: str = "dev_workspace",
+    organization_id: str = "dev_organization",
     provider: str = "github",
     connection_status: str = "active",
     required_tests: list[str] | None = None,
 ) -> tuple[Project, Repository, Task]:
     wallet = session.exec(
-        select(CreditWallet).where(CreditWallet.workspace_id == "dev_workspace")
+        select(CreditWallet).where(CreditWallet.workspace_id == workspace_id)
     ).first()
     if wallet is None:
         session.add(
             CreditWallet(
-                workspace_id="dev_workspace",
-                organization_id="dev_organization",
+                workspace_id=workspace_id,
+                organization_id=organization_id,
                 balance_cents=1_000_000,
             )
         )
-    project = Project(name="Cloud project")
+    project = Project(workspace_id=workspace_id, name="Cloud project")
     session.add(project)
     session.flush()
     sealed = DevSecretVault().seal("ghp_cloud_runner_secret1234")
     credential = GitHubCredential(
+        workspace_id=workspace_id,
         display_name="Cloud runner credential",
         token_last4=sealed.secret_last4,
         encrypted_token=sealed.encrypted_secret,
@@ -142,6 +145,7 @@ def create_cloud_task(
     session.add(credential)
     session.flush()
     repository = Repository(
+        workspace_id=workspace_id,
         project_id=project.id,
         name="Demo remote",
         local_path="",
@@ -3655,6 +3659,53 @@ def test_process_next_queued_fake_cloud_run_creates_patch_artifact(
     assert log_events == ["queued", "claimed", "started", "patch_ready", "completed"]
 
 
+def test_worker_process_next_records_audit_under_cloud_run_workspace(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    with Session(build_engine(database_url)) as session:
+        _project, repository, task = create_cloud_task(
+            session,
+            workspace_id="workspace_b",
+            organization_id="organization_b",
+        )
+        task_id = task.id
+        repo_id = repository.id
+
+    queued_response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+        headers=auth_headers(
+            user_id="developer_b",
+            workspace_id="workspace_b",
+            organization_id="organization_b",
+            roles="developer",
+        ),
+    )
+    queued = queued_response.json()["cloud_run"]
+
+    response = client.post(
+        "/cloud-run-worker/process-next",
+        params={"worker_id": "local-test-worker"},
+    )
+
+    assert queued_response.status_code == 201
+    assert response.status_code == 200
+    with Session(build_engine(database_url)) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog)
+            .where(WorkspaceAuditLog.operation == "cloud_run.process")
+            .where(WorkspaceAuditLog.resource_id == queued["id"])
+        ).one()
+
+    assert audit_log.workspace_id == "workspace_b"
+    assert audit_log.auth_mode == "system"
+    assert audit_log.success is True
+    assert audit_log.access_level.value == "high_value_write"
+
+
 def test_process_next_returns_no_content_when_queue_is_empty(tmp_path: Path) -> None:
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
@@ -4339,6 +4390,20 @@ def test_cloud_run_operator_endpoints_reject_non_operator_roles(
             assert response.status_code == 403
             assert response.json()["detail"] == "Insufficient workspace role"
 
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        denied_audits = session.exec(
+            select(WorkspaceAuditLog)
+            .where(WorkspaceAuditLog.operation.in_(
+                ["operator.mns_receipt_retry", "operator.eci_runtime_cleanup"]
+            ))
+            .where(WorkspaceAuditLog.success.is_(False))
+        ).all()
+
+    assert len(denied_audits) == len(endpoints) * 4
+    assert {log.resource_id for log in denied_audits} == {cloud_run_id}
+    assert all(log.access_level.value == "high_value_write" for log in denied_audits)
+    assert all(log.error_code == "insufficient_workspace_role" for log in denied_audits)
+
 
 def test_cloud_run_operator_retries_mns_receipt_delete_without_leaking_receipt(
     tmp_path: Path,
@@ -4377,6 +4442,23 @@ def test_cloud_run_operator_retries_mns_receipt_delete_without_leaking_receipt(
     assert "queue_receipt" not in response.text
     assert "receipt-1" not in response.text
     assert queued_payload["callback_token"] not in response.text
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "operator.mns_receipt_retry"
+            )
+        ).one()
+
+    assert audit_log.resource_type == "cloud_run"
+    assert audit_log.resource_id == cloud_run_id
+    assert audit_log.access_level.value == "high_value_write"
+    assert audit_log.success is True
+    assert audit_log.status_code == 200
+    assert audit_log.metadata_json == {
+        "operation_status": "succeeded",
+        "reason": "mns_message_deleted",
+    }
 
 
 def test_cloud_run_operator_skip_response_does_not_echo_external_error(
@@ -4440,6 +4522,23 @@ def test_cloud_run_operator_cleans_aliyun_eci_runtime_without_leaking_runtime_id
     assert fake_eci.deleted_container_group_ids == [runtime_job_id]
     assert "runtime_job_id" not in response.text
     assert runtime_job_id not in response.text
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "operator.eci_runtime_cleanup"
+            )
+        ).one()
+
+    assert audit_log.resource_type == "cloud_run"
+    assert audit_log.resource_id == cloud_run_id
+    assert audit_log.access_level.value == "high_value_write"
+    assert audit_log.success is True
+    assert audit_log.status_code == 200
+    assert audit_log.metadata_json == {
+        "operation_status": "succeeded",
+        "reason": "runtime_cleanup_deleted",
+    }
 
 
 def test_cloud_run_operator_endpoints_hide_cross_workspace_runs(

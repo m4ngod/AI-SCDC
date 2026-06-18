@@ -62,25 +62,29 @@ def record_workspace_audit(
     status_code: int,
     error_code: str | None = None,
     metadata: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
+    organization_id: str | None = None,
+    user_id: str | None = None,
+    auth_mode: str | None = None,
     commit: bool = False,
 ) -> WorkspaceAuditLog:
     context = get_current_auth_context()
     if context is None:
-        workspace_id = DEV_WORKSPACE_ID
-        organization_id = DEV_ORGANIZATION_ID
-        user_id = DEV_USER_ID
-        auth_mode = "system"
+        audit_workspace_id = workspace_id or DEV_WORKSPACE_ID
+        audit_organization_id = organization_id or DEV_ORGANIZATION_ID
+        audit_user_id = user_id or DEV_USER_ID
+        audit_auth_mode = auth_mode or "system"
     else:
-        workspace_id = context.workspace_id
-        organization_id = context.organization_id
-        user_id = context.user_id
-        auth_mode = context.auth_mode
+        audit_workspace_id = workspace_id or context.workspace_id
+        audit_organization_id = organization_id or context.organization_id
+        audit_user_id = user_id or context.user_id
+        audit_auth_mode = auth_mode or context.auth_mode
 
     log = WorkspaceAuditLog(
-        workspace_id=workspace_id,
-        organization_id=organization_id,
-        user_id=user_id,
-        auth_mode=auth_mode,
+        workspace_id=audit_workspace_id,
+        organization_id=audit_organization_id,
+        user_id=audit_user_id,
+        auth_mode=audit_auth_mode,
         operation=operation,
         resource_type=resource_type,
         resource_id=resource_id,

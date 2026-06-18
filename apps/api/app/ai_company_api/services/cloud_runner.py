@@ -958,6 +958,14 @@ def retry_retained_mns_queue_receipt_delete(
     cloud_run_id: str,
 ) -> CloudRunProviderOperationResult:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "operator.write",
+        operation="operator.mns_receipt_retry",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+        access_level="high_value_write",
+    )
     skip_reason = _mns_receipt_recovery_skip_reason(cloud_run)
     if skip_reason is not None:
         _append_cloud_run_log(
@@ -972,6 +980,20 @@ def retry_retained_mns_queue_receipt_delete(
         )
         cloud_run.updated_at = utc_now()
         session.add(cloud_run)
+        if should_audit:
+            record_workspace_audit(
+                session,
+                operation="operator.mns_receipt_retry",
+                resource_type="cloud_run",
+                resource_id=cloud_run.id,
+                access_level="high_value_write",
+                success=True,
+                status_code=200,
+                metadata={
+                    "operation_status": "skipped",
+                    "reason": skip_reason,
+                },
+            )
         session.commit()
         session.refresh(cloud_run)
         return CloudRunProviderOperationResult(
@@ -1024,6 +1046,20 @@ def retry_retained_mns_queue_receipt_delete(
 
     cloud_run.updated_at = utc_now()
     session.add(cloud_run)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="operator.mns_receipt_retry",
+            resource_type="cloud_run",
+            resource_id=cloud_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+            metadata={
+                "operation_status": result_status,
+                "reason": result_reason,
+            },
+        )
     session.commit()
     session.refresh(cloud_run)
     return CloudRunProviderOperationResult(
@@ -1057,6 +1093,14 @@ def cleanup_aliyun_eci_terminal_runtime_job(
     cloud_run_id: str,
 ) -> CloudRunProviderOperationResult:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "operator.write",
+        operation="operator.eci_runtime_cleanup",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+        access_level="high_value_write",
+    )
     skip_reason = _aliyun_eci_runtime_cleanup_skip_reason(cloud_run)
     if skip_reason is not None:
         _append_cloud_run_log(
@@ -1071,6 +1115,20 @@ def cleanup_aliyun_eci_terminal_runtime_job(
         )
         cloud_run.updated_at = utc_now()
         session.add(cloud_run)
+        if should_audit:
+            record_workspace_audit(
+                session,
+                operation="operator.eci_runtime_cleanup",
+                resource_type="cloud_run",
+                resource_id=cloud_run.id,
+                access_level="high_value_write",
+                success=True,
+                status_code=200,
+                metadata={
+                    "operation_status": "skipped",
+                    "reason": skip_reason,
+                },
+            )
         session.commit()
         session.refresh(cloud_run)
         return CloudRunProviderOperationResult(
@@ -1139,6 +1197,20 @@ def cleanup_aliyun_eci_terminal_runtime_job(
 
     cloud_run.updated_at = utc_now()
     session.add(cloud_run)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="operator.eci_runtime_cleanup",
+            resource_type="cloud_run",
+            resource_id=cloud_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+            metadata={
+                "operation_status": result_status,
+                "reason": result_reason,
+            },
+        )
     session.commit()
     session.refresh(cloud_run)
     return CloudRunProviderOperationResult(
@@ -1458,6 +1530,7 @@ def process_cloud_run(
         access_level="high_value_write",
         success=True,
         status_code=200,
+        workspace_id=cloud_run.workspace_id,
         commit=True,
     )
     return result

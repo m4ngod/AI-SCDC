@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlmodel import Session
 
 from ai_company_api.db.session import get_session_dependency
-from ai_company_api.models.entities import WorkspaceRole
 from ai_company_api.schemas.api import (
     AgentRole,
     CloudRunArtifactCleanupRequest,
@@ -181,7 +180,7 @@ from ai_company_api.services.usage_ledger import (
     append_usage_ledger_entry,
     list_usage_ledger_entries,
 )
-from ai_company_api.services.auth_context import current_user_id, require_workspace_role
+from ai_company_api.services.auth_context import current_user_id
 from ai_company_api.services.workspace_audit import (
     record_workspace_audit,
     require_audited_workspace_permission,
@@ -189,12 +188,6 @@ from ai_company_api.services.workspace_audit import (
 
 router = APIRouter()
 SessionDep = Annotated[Session, Depends(get_session_dependency)]
-OPERATOR_WORKSPACE_ROLES = {
-    WorkspaceRole.OWNER,
-    WorkspaceRole.ADMIN,
-}
-
-
 def _cloud_run_provider_operation_read(
     result: CloudRunProviderOperationResult,
 ) -> CloudRunProviderOperationRead:
@@ -887,7 +880,6 @@ def post_cloud_run_operator_retry_mns_receipt_delete(
     cloud_run_id: str,
     session: SessionDep,
 ) -> CloudRunProviderOperationRead:
-    require_workspace_role(OPERATOR_WORKSPACE_ROLES)
     result = retry_retained_mns_queue_receipt_delete(
         session,
         cloud_run_id=cloud_run_id,
@@ -903,7 +895,6 @@ def post_cloud_run_operator_cleanup_aliyun_eci_runtime(
     cloud_run_id: str,
     session: SessionDep,
 ) -> CloudRunProviderOperationRead:
-    require_workspace_role(OPERATOR_WORKSPACE_ROLES)
     result = cleanup_aliyun_eci_terminal_runtime_job(
         session,
         cloud_run_id=cloud_run_id,
