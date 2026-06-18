@@ -28,6 +28,7 @@ from ai_company_api.models.entities import (
     SandboxProfile,
     Task,
     UsageLedgerEntry,
+    WorkspaceAuditLog,
     utc_now,
 )
 from ai_company_api.services.cloud_sandbox_executor import (
@@ -7468,6 +7469,79 @@ def test_cloud_run_artifact_content_returns_gone_for_expired_local_object(
     )
     assert response.status_code == 410
     assert response.json()["detail"] == "Cloud run artifact expired"
+
+
+def test_expired_artifact_content_denied_viewer_records_audit_before_gone(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    client = build_client(database_path)
+    private_content = "diff --git a/private b/private\n+private expired content\n"
+    with Session(build_engine(database_url)) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(database_url)) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="diff",
+            content=private_content,
+            content_type="text/x-diff",
+            expires_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            retention_policy="development_default",
+        )
+        session.commit()
+
+    manifest = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/manifest",
+        headers=auth_headers(roles="reviewer"),
+    ).json()
+    diff_artifact = next(
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["kind"] == "diff"
+    )
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/{diff_artifact['id']}/content",
+        headers=auth_headers(roles="viewer"),
+    )
+    cross_workspace_response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/{diff_artifact['id']}/content",
+        headers=auth_headers(
+            user_id="reviewer_b",
+            workspace_id="workspace_b",
+            organization_id="org_b",
+            roles="reviewer",
+        ),
+    )
+
+    assert response.status_code == 403
+    assert cross_workspace_response.status_code == 404
+    with Session(build_engine(database_url)) as session:
+        failed_audits = session.exec(
+            select(WorkspaceAuditLog)
+            .where(WorkspaceAuditLog.operation == "artifact.content.read")
+            .where(WorkspaceAuditLog.success.is_(False))
+        ).all()
+
+    assert len(failed_audits) == 1
+    audit_log = failed_audits[0]
+    assert audit_log.resource_type == "cloud_run_artifact"
+    assert audit_log.resource_id == diff_artifact["id"]
+    assert audit_log.access_level.value == "high_sensitive_read"
+    assert audit_log.status_code == 403
+    assert audit_log.error_code == "insufficient_workspace_role"
+    assert private_content not in str(audit_log.model_dump())
 
 
 def test_cloud_run_log_window_returns_bounded_pages_without_duplicates(

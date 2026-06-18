@@ -727,7 +727,31 @@ def get_patch_review(session: Session, review_id: str) -> PatchReviewRead:
     if review is None:
         raise HTTPException(status_code=404, detail="Patch review not found")
     enforce_workspace_access(review.workspace_id, detail="Patch review not found")
-    return _review_read(review)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="patch_review.read",
+        resource_type="patch_review",
+        resource_id=review.id,
+        access_level="high_sensitive_read",
+    )
+    result = _review_read(review)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="patch_review.read",
+            resource_type="patch_review",
+            resource_id=review.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={
+                "patch_artifact_id": review.patch_artifact_id,
+                "task_id": review.task_id,
+            },
+            commit=True,
+        )
+    return result
 
 
 def _existing_deterministic_review(

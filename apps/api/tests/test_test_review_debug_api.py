@@ -19,6 +19,7 @@ from ai_company_api.models.entities import (
     Project,
     Repository,
     Task,
+    WorkspaceAuditLog,
 )
 from ai_company_api.services.task_state import TaskStatus
 from ai_company_worker.test_runner import CommandResult, TestRunnerResult
@@ -36,6 +37,21 @@ def build_client(database_path: Path) -> TestClient:
 
 def database_url(database_path: Path) -> str:
     return f"sqlite:///{database_path.as_posix()}"
+
+
+def auth_headers(
+    *,
+    user_id: str = "operator_user",
+    workspace_id: str = "dev_workspace",
+    organization_id: str = "dev_organization",
+    roles: str = "owner",
+) -> dict[str, str]:
+    return {
+        "x-ai-scdc-user-id": user_id,
+        "x-ai-scdc-workspace-id": workspace_id,
+        "x-ai-scdc-organization-id": organization_id,
+        "x-ai-scdc-roles": roles,
+    }
 
 
 def run_git(repo_path: Path, *args: str) -> str:
@@ -575,6 +591,83 @@ def test_review_approves_patch_after_passing_tests(tmp_path: Path) -> None:
 
     event_types = [event["event_type"] for event in events_response.json()]
     assert "patch_review_created" in event_types
+
+
+def test_direct_patch_review_read_enforces_sensitive_read_and_audits(
+    tmp_path: Path,
+) -> None:
+    repo_path = create_git_repo(tmp_path)
+    database_path = tmp_path / "api.db"
+    url = database_url(database_path)
+    with build_client(database_path) as client:
+        _project, _task, _local_run, artifact = create_patch_ready_task(
+            client,
+            repo_path,
+            [
+                "python -c \"from pathlib import Path; "
+                "assert Path('README.md').exists()\""
+            ],
+        )
+        test_response = client.post(f"/patch-artifacts/{artifact['id']}/test-runs")
+        with Session(build_engine(url)) as session:
+            persisted_artifact = session.get(PatchArtifact, artifact["id"])
+            assert persisted_artifact is not None
+            persisted_artifact.diff_text = ""
+            session.add(persisted_artifact)
+            session.commit()
+        review_response = client.post(f"/patch-artifacts/{artifact['id']}/reviews")
+        review = review_response.json()["review"]
+
+        viewer_response = client.get(
+            f"/patch-reviews/{review['id']}",
+            headers=auth_headers(roles="viewer"),
+        )
+        reviewer_response = client.get(
+            f"/patch-reviews/{review['id']}",
+            headers=auth_headers(roles="reviewer"),
+        )
+        cross_workspace_response = client.get(
+            f"/patch-reviews/{review['id']}",
+            headers=auth_headers(
+                user_id="reviewer_b",
+                workspace_id="workspace_b",
+                organization_id="org_b",
+                roles="reviewer",
+            ),
+        )
+
+    assert test_response.status_code == 201
+    assert review_response.status_code == 201
+    assert viewer_response.status_code == 403
+    assert reviewer_response.status_code == 200
+    assert reviewer_response.json()["id"] == review["id"]
+    assert cross_workspace_response.status_code == 404
+    with Session(build_engine(url)) as session:
+        audit_logs = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "patch_review.read"
+            )
+        ).all()
+
+    assert len(audit_logs) == 2
+    denied_audit = next(log for log in audit_logs if log.success is False)
+    success_audit = next(log for log in audit_logs if log.success is True)
+    assert denied_audit.resource_type == "patch_review"
+    assert denied_audit.resource_id == review["id"]
+    assert denied_audit.access_level.value == "high_sensitive_read"
+    assert denied_audit.status_code == 403
+    assert denied_audit.error_code == "insufficient_workspace_role"
+    assert success_audit.resource_type == "patch_review"
+    assert success_audit.resource_id == review["id"]
+    assert success_audit.access_level.value == "high_sensitive_read"
+    assert success_audit.status_code == 200
+    assert success_audit.metadata_json == {
+        "patch_artifact_id": artifact["id"],
+        "task_id": artifact["task_id"],
+    }
+    serialized_success_audit = str(success_audit.model_dump())
+    assert review["issues"][0]["message"] not in serialized_success_audit
+    assert review["required_changes"][0] not in serialized_success_audit
 
 
 def test_review_requests_changes_when_diff_is_missing(tmp_path: Path) -> None:

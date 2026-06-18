@@ -185,7 +185,6 @@ def read_cloud_run_artifact_content(
         cloud_run=cloud_run,
         artifact_id=artifact_id,
     )
-    _raise_if_expired(source.descriptor.expires_at)
     should_audit = require_audited_workspace_permission_if_authenticated(
         session,
         "artifact.sensitive.read",
@@ -194,6 +193,7 @@ def read_cloud_run_artifact_content(
         resource_id=source.descriptor.id,
         access_level="high_sensitive_read",
     )
+    _raise_if_expired(source.descriptor.expires_at)
 
     if source.patch_artifact_id is not None:
         content = _read_patch_artifact_diff(
