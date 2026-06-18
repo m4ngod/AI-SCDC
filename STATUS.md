@@ -39,6 +39,13 @@ operator response uses a redacted snapshot and does not expose runtime job ids,
 queue receipts, callback tokens, raw provider errors, Aliyun access keys, or
 raw provider URLs.
 
+Phase 13B now includes a test-backed workspace role permission matrix and a
+general `WorkspaceAuditLog` for high-value writes plus high-sensitive reads.
+Secret-specific create/open/delete audit remains in `SecretAccessAuditLog`.
+Viewer access is limited to low-sensitive metadata; current full-detail
+execution evidence, artifact, log, message, sandbox, model configuration,
+credential, and billing detail reads require explicit non-viewer permissions.
+
 Phase 13C has started the cost/quota guardrail foundation. `UsageType` now
 covers execution-plane dimensions, `CreditWallet`, `SpendLimit`, and
 `BudgetReservation` records protect cloud-run enqueue, and cloud runs expose
@@ -47,11 +54,11 @@ usage summaries aggregate usage by project/task and usage type.
 
 ## Non-Goals
 
-This is not the full commercial beta trust boundary yet. Remaining Phase 13B
-work includes full login/session issuance, automated cloud KMS credential
-provisioning, recorded target-account KMS smoke evidence, production auth/IdP
-integration, a full operator console, public destructive OSS cleanup, broader
-audit coverage, and a complete role permission matrix.
+This is not the full commercial beta trust boundary yet. Remaining commercial
+readiness work includes production IdP/session issuance, payment and invoice
+integration, desktop billing UI, full operator console, real provider price
+tables, public destructive OSS cleanup policy, and retained target-account KMS
+smoke evidence.
 
 No billing provider, payment flow, invoices, real provider price table, second
 cloud provider, public destructive provider cleanup endpoint, WebSocket/SSE log

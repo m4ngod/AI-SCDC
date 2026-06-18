@@ -113,12 +113,17 @@ workspace-scope, and secret-open audit slices:
   cloud-run budget reservations, per-run cost summaries, and workspace usage
   summary APIs.
 
-Remaining commercial trust work includes full session issuance, production
-auth/IdP integration, cloud KMS credential provisioning and retained
-target-account KMS smoke evidence, a full operator console, public destructive
-OSS cleanup, broader audit coverage, a complete role-specific permission
-matrix, real provider price tables, payment integration, invoices, and desktop
-billing UI.
+Phase 13B now includes a test-backed workspace role permission matrix and a
+general `WorkspaceAuditLog` for high-value writes plus high-sensitive reads.
+Secret-specific create/open/delete audit remains in `SecretAccessAuditLog`.
+Viewer access is limited to low-sensitive metadata; current full-detail
+execution evidence, artifact, log, message, sandbox, model configuration,
+credential, and billing detail reads require explicit non-viewer permissions.
+
+Remaining commercial readiness work includes production IdP/session issuance,
+payment and invoice integration, desktop billing UI, full operator console,
+real provider price tables, public destructive OSS cleanup policy, and retained
+target-account KMS smoke evidence.
 
 ## Verification
 
@@ -217,11 +222,13 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 ## Known Limits
 
 - Phase 13B now has request identity, workspace scope, secret-open audit
-  foundations, and a test-backed KMS SecretVault boundary, but it does not yet
-  add full login/session issuance, production IdP integration,
-  cloud KMS credential provisioning, retained target-account KMS smoke evidence,
-  billing, subscriptions, complete audit logging, WebSockets/SSE, or a second
-  cloud provider.
+  foundations, a test-backed KMS SecretVault boundary, a test-backed workspace
+  role permission matrix, and general `WorkspaceAuditLog` coverage for
+  high-value writes plus high-sensitive reads, but it does not yet add
+  production IdP/session issuance, payment and invoice integration, desktop
+  billing UI, a full operator console, real provider price tables, public
+  destructive OSS cleanup policy, retained target-account KMS smoke evidence,
+  WebSockets/SSE, or a second cloud provider.
 - Phase 13B exposes authenticated owner/admin MNS receipt recovery and ECI
   terminal cleanup endpoints for cloud runs, but public destructive OSS cleanup
   and provider deletion APIs remain unavailable; the full operator console is
@@ -237,17 +244,18 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
   from `registry-1.docker.io`, so the smoke used an already cached image.
 - Real GitHub PR publishing still requires starting the API with
   `AI_SCDC_GITHUB_PR_ADAPTER=real` and providing a real PAT.
-- Authentication, organization RBAC, subscriptions, billing collection, and
-  cloud KMS credential provisioning are still development boundaries. The local
-  readiness command exists, but operators still must run and retain
-  target-account live-smoke evidence before beta traffic.
+- Production IdP/session issuance, payment and invoice integration, desktop
+  billing UI, full operator console, real provider price tables, public
+  destructive OSS cleanup policy, and retained target-account KMS smoke
+  evidence remain before commercial beta.
 - Reviewer and debugger behavior is deterministic, not model-backed.
 - The API still initializes schema through SQLModel metadata and SQLite upgrade
   helpers; Alembic migrations remain reserved for later.
 
 ## Recommended Next Phase
 
-The next production step should continue Phase 13B with cloud KMS credential
-provisioning, retained target-account KMS smoke evidence, and broader/full
-organization-scoped operator controls and operator console coverage before
+The next production step should continue Phase 13B with production
+IdP/session issuance, payment and invoice integration, desktop billing UI,
+full operator console, real provider price tables, public destructive OSS
+cleanup policy, and retained target-account KMS smoke evidence before
 commercial beta.

@@ -323,12 +323,17 @@ runtime cleanup. The response uses a redacted operator snapshot and omits
 runtime job ids, queue receipts, callback tokens, raw provider errors, Aliyun
 access keys, and raw provider URLs.
 
-Phase 13B is not complete yet. This slice does not add full login/session
-issuance, production IdP integration, automated cloud KMS credential
-provisioning, retained target-account KMS smoke evidence, billing, a full
-operator console,
-public destructive OSS cleanup, complete audit logging, or a complete
-role-by-route permission matrix.
+Phase 13B now includes a test-backed workspace role permission matrix and a
+general `WorkspaceAuditLog` for high-value writes plus high-sensitive reads.
+Secret-specific create/open/delete audit remains in `SecretAccessAuditLog`.
+Viewer access is limited to low-sensitive metadata; current full-detail
+execution evidence, artifact, log, message, sandbox, model configuration,
+credential, and billing detail reads require explicit non-viewer permissions.
+
+Phase 13B is not complete yet. Remaining commercial readiness work includes
+production IdP/session issuance, payment and invoice integration, desktop
+billing UI, full operator console, real provider price tables, public
+destructive OSS cleanup policy, and retained target-account KMS smoke evidence.
 
 ## Phase 13C Boundary
 
@@ -384,11 +389,17 @@ In progress:
    fail-closed secret-vault provider factory, a test-backed `KmsSecretVault`
    provider boundary for generic `kms`, a real Aliyun Classic KMS SDK adapter
    for `aliyun_kms`, a local KMS readiness command, and secret-access audit
-   logs. Remaining work includes cloud KMS credential provisioning,
-   retained target-account KMS smoke evidence,
-   full sessions, broader/full organization-scoped operator controls or
-   operator console coverage, broader audit coverage, and a complete permission
-   matrix.
+   logs. Phase 13B now includes a test-backed workspace role permission matrix
+   and a general `WorkspaceAuditLog` for high-value writes plus high-sensitive
+   reads. Secret-specific create/open/delete audit remains in
+   `SecretAccessAuditLog`. Viewer access is limited to low-sensitive metadata;
+   current full-detail execution evidence, artifact, log, message, sandbox,
+   model configuration, credential, and billing detail reads require explicit
+   non-viewer permissions. Remaining commercial readiness work includes
+   production IdP/session issuance, payment and invoice integration, desktop
+   billing UI, full operator console, real provider price tables, public
+   destructive OSS cleanup policy, and retained target-account KMS smoke
+   evidence.
 2. Phase 13C cost/quota guardrail foundation with execution usage types,
    workspace credits, spend limits, budget reservations, and usage/cost summary
    APIs. Remaining work includes real provider pricing, payment integration,
