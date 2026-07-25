@@ -12,6 +12,32 @@ from ai_company_api.services.docker_sandbox import (
     validate_docker_image,
 )
 from ai_company_api.services.repository import get_project, get_repository
+from ai_company_api.services.auth_context import enforce_workspace_access, get_current_auth_context
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
+    require_audited_workspace_permission_if_authenticated,
+)
+
+
+def _require_audited_permission_if_authenticated(
+    session: Session,
+    permission: str,
+    *,
+    operation: str,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> None:
+    if get_current_auth_context() is None:
+        return
+    require_audited_workspace_permission(
+        session,
+        permission,
+        operation=operation,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        access_level="high_value_write",
+    )
 
 
 def create_sandbox_profile(
@@ -21,6 +47,12 @@ def create_sandbox_profile(
 ) -> SandboxProfileRead:
     project = get_project(session, project_id)
     repository = get_repository(session, data.repo_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "repository.write",
+        operation="sandbox_profile.create",
+        resource_type="sandbox_profile",
+    )
     if repository.project_id != project.id:
         raise HTTPException(status_code=400, detail="Repository does not belong to project")
     if repository.provider != "github":
@@ -49,32 +81,84 @@ def create_sandbox_profile(
         network_enabled=data.network_enabled,
     )
     session.add(profile)
+    session.flush()
+    record_workspace_audit(
+        session,
+        operation="sandbox_profile.create",
+        resource_type="sandbox_profile",
+        resource_id=profile.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(profile)
     return _sandbox_profile_read(profile)
 
 
 def list_sandbox_profiles(session: Session, project_id: str) -> list[SandboxProfileRead]:
-    get_project(session, project_id)
+    project = get_project(session, project_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution_config.read",
+        operation="sandbox_profile.list",
+        resource_type="sandbox_profile",
+        access_level="high_sensitive_read",
+    )
     statement = (
         select(SandboxProfile)
         .where(SandboxProfile.project_id == project_id)
         .order_by(SandboxProfile.created_at, SandboxProfile.id)
     )
-    return [_sandbox_profile_read(profile) for profile in session.exec(statement).all()]
+    profiles = [_sandbox_profile_read(profile) for profile in session.exec(statement).all()]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="sandbox_profile.list",
+            resource_type="sandbox_profile",
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"project_id": project.id, "count": len(profiles)},
+            commit=True,
+        )
+    return profiles
 
 
 def get_sandbox_profile_read(
     session: Session,
     sandbox_profile_id: str,
 ) -> SandboxProfileRead:
-    return _sandbox_profile_read(get_sandbox_profile(session, sandbox_profile_id))
+    profile = get_sandbox_profile(session, sandbox_profile_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution_config.read",
+        operation="sandbox_profile.read",
+        resource_type="sandbox_profile",
+        resource_id=profile.id,
+        access_level="high_sensitive_read",
+    )
+    result = _sandbox_profile_read(profile)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="sandbox_profile.read",
+            resource_type="sandbox_profile",
+            resource_id=profile.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"project_id": profile.project_id, "repo_id": profile.repo_id},
+            commit=True,
+        )
+    return result
 
 
 def get_sandbox_profile(session: Session, profile_id: str) -> SandboxProfile:
     profile = session.get(SandboxProfile, profile_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="Sandbox profile not found")
+    enforce_workspace_access(profile.workspace_id, detail="Sandbox profile not found")
     return profile
 
 

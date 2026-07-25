@@ -13,9 +13,11 @@ from sqlmodel import SQLModel, Session, select
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
 from ai_company_api.models.entities import (
+    BudgetReservation,
     CloudRun,
     CloudRunLogEntry,
     CloudRunStoredObject,
+    CreditWallet,
     TaskEvent,
     GitHubCredential,
     LocalTaskRun,
@@ -25,6 +27,8 @@ from ai_company_api.models.entities import (
     Repository,
     SandboxProfile,
     Task,
+    UsageLedgerEntry,
+    WorkspaceAuditLog,
     utc_now,
 )
 from ai_company_api.services.cloud_sandbox_executor import (
@@ -58,8 +62,36 @@ from ai_company_api.services.task_state import TaskStatus
 
 def build_client(database_path: Path) -> TestClient:
     database_url = f"sqlite:///{database_path.as_posix()}"
-    init_db(build_engine(database_url))
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        wallet = session.exec(
+            select(CreditWallet).where(CreditWallet.workspace_id == "dev_workspace")
+        ).first()
+        if wallet is None:
+            wallet = CreditWallet(
+                workspace_id="dev_workspace",
+                organization_id="dev_organization",
+                balance_cents=1_000_000,
+            )
+            session.add(wallet)
+            session.commit()
     return TestClient(create_app(database_url=database_url))
+
+
+def auth_headers(
+    *,
+    user_id: str = "operator_user",
+    workspace_id: str = "dev_workspace",
+    organization_id: str = "dev_organization",
+    roles: str = "owner",
+) -> dict[str, str]:
+    return {
+        "x-ai-scdc-user-id": user_id,
+        "x-ai-scdc-workspace-id": workspace_id,
+        "x-ai-scdc-organization-id": organization_id,
+        "x-ai-scdc-roles": roles,
+    }
 
 
 def enqueue_and_process_cloud_run(
@@ -83,15 +115,29 @@ def enqueue_and_process_cloud_run(
 def create_cloud_task(
     session: Session,
     *,
+    workspace_id: str = "dev_workspace",
+    organization_id: str = "dev_organization",
     provider: str = "github",
     connection_status: str = "active",
     required_tests: list[str] | None = None,
 ) -> tuple[Project, Repository, Task]:
-    project = Project(name="Cloud project")
+    wallet = session.exec(
+        select(CreditWallet).where(CreditWallet.workspace_id == workspace_id)
+    ).first()
+    if wallet is None:
+        session.add(
+            CreditWallet(
+                workspace_id=workspace_id,
+                organization_id=organization_id,
+                balance_cents=1_000_000,
+            )
+        )
+    project = Project(workspace_id=workspace_id, name="Cloud project")
     session.add(project)
     session.flush()
     sealed = DevSecretVault().seal("ghp_cloud_runner_secret1234")
     credential = GitHubCredential(
+        workspace_id=workspace_id,
         display_name="Cloud runner credential",
         token_last4=sealed.secret_last4,
         encrypted_token=sealed.encrypted_secret,
@@ -99,6 +145,7 @@ def create_cloud_task(
     session.add(credential)
     session.flush()
     repository = Repository(
+        workspace_id=workspace_id,
         project_id=project.id,
         name="Demo remote",
         local_path="",
@@ -2659,6 +2706,9 @@ def test_remote_worker_payload_rejects_hashless_current_lease(
         def run(self, _request):
             raise AssertionError("executor should not run during enqueue")
 
+    def fail_open_secret(*_args, **_kwargs):
+        raise AssertionError("vault should not open token during enqueue")
+
     monkeypatch.setattr(
         cloud_runner,
         "select_cloud_sandbox_executor",
@@ -3507,22 +3557,25 @@ def test_docker_cloud_run_enqueue_stores_metadata_without_opening_token(
 ) -> None:
     from ai_company_api.services import cloud_runner
 
-    class VaultShouldNotOpen:
-        def open(self, _encrypted_secret: str) -> str:
-            raise AssertionError("vault should not open token during enqueue")
-
     class DockerExecutorShouldNotRun:
         sandbox_kind = "docker_local"
 
         def run(self, _request):
             raise AssertionError("executor should not run during enqueue")
 
+    def fail_open_secret(*_args, **_kwargs):
+        raise AssertionError("vault should not open token during enqueue")
+
     monkeypatch.setattr(
         cloud_runner,
         "select_cloud_sandbox_executor",
         lambda: DockerExecutorShouldNotRun(),
     )
-    monkeypatch.setattr(cloud_runner, "DevSecretVault", VaultShouldNotOpen)
+    monkeypatch.setattr(
+        cloud_runner,
+        "open_secret",
+        fail_open_secret,
+    )
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
@@ -3604,6 +3657,53 @@ def test_process_next_queued_fake_cloud_run_creates_patch_artifact(
     assert local_run.status == "patch_ready"
     assert task_after_process.status == TaskStatus.PATCH_READY
     assert log_events == ["queued", "claimed", "started", "patch_ready", "completed"]
+
+
+def test_worker_process_next_records_audit_under_cloud_run_workspace(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    with Session(build_engine(database_url)) as session:
+        _project, repository, task = create_cloud_task(
+            session,
+            workspace_id="workspace_b",
+            organization_id="organization_b",
+        )
+        task_id = task.id
+        repo_id = repository.id
+
+    queued_response = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+        headers=auth_headers(
+            user_id="developer_b",
+            workspace_id="workspace_b",
+            organization_id="organization_b",
+            roles="developer",
+        ),
+    )
+    queued = queued_response.json()["cloud_run"]
+
+    response = client.post(
+        "/cloud-run-worker/process-next",
+        params={"worker_id": "local-test-worker"},
+    )
+
+    assert queued_response.status_code == 201
+    assert response.status_code == 200
+    with Session(build_engine(database_url)) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog)
+            .where(WorkspaceAuditLog.operation == "cloud_run.process")
+            .where(WorkspaceAuditLog.resource_id == queued["id"])
+        ).one()
+
+    assert audit_log.workspace_id == "workspace_b"
+    assert audit_log.auth_mode == "system"
+    assert audit_log.success is True
+    assert audit_log.access_level.value == "high_value_write"
 
 
 def test_process_next_returns_no_content_when_queue_is_empty(tmp_path: Path) -> None:
@@ -4266,6 +4366,210 @@ def test_aliyun_mns_retained_receipt_recovery_redacts_raw_provider_error_at_help
     assert "receipt-1" not in serialized_logs
     assert "provider-secret" not in serialized_logs
     assert "abc123" not in serialized_logs
+
+
+def test_cloud_run_operator_endpoints_reject_non_operator_roles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, _lease_id, _fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    client = build_client(database_path)
+    endpoints = [
+        f"/cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete",
+        f"/cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime",
+    ]
+
+    for role in ("developer", "reviewer", "billing_manager", "viewer"):
+        for endpoint in endpoints:
+            response = client.post(endpoint, headers=auth_headers(roles=role))
+
+            assert response.status_code == 403
+            assert response.json()["detail"] == "Insufficient workspace role"
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        denied_audits = session.exec(
+            select(WorkspaceAuditLog)
+            .where(WorkspaceAuditLog.operation.in_(
+                ["operator.mns_receipt_retry", "operator.eci_runtime_cleanup"]
+            ))
+            .where(WorkspaceAuditLog.success.is_(False))
+        ).all()
+
+    assert len(denied_audits) == len(endpoints) * 4
+    assert {log.resource_id for log in denied_audits} == {cloud_run_id}
+    assert all(log.access_level.value == "high_value_write" for log in denied_audits)
+    assert all(log.error_code == "insufficient_workspace_role" for log in denied_audits)
+
+
+def test_cloud_run_operator_retries_mns_receipt_delete_without_leaking_receipt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, lease_id, fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    fake_mns.delete_error = RuntimeError("delete failed for receipt-1")
+    queued_payload = json.loads(fake_mns.requests[0].body)
+    client = build_client(database_path)
+    payload = remote_stub_completion_payload(cloud_run_id)
+    payload["worker_id"] = queued_payload["worker_id"]
+    payload["callback_token"] = queued_payload["callback_token"]
+    completion = client.post(
+        f"/cloud-run-worker/leases/{lease_id}/complete",
+        json=payload,
+    )
+    assert completion.status_code == 200
+
+    fake_mns.delete_error = None
+    response = client.post(
+        f"/cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete",
+        headers=auth_headers(roles="owner"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["reason"] == "mns_message_deleted"
+    assert body["cloud_run"]["id"] == cloud_run_id
+    assert body["cloud_run"]["external_status"] == "mns_message_deleted"
+    assert fake_mns.delete_requests[-1].receipt_handle == "receipt-1"
+    assert "queue_receipt" not in response.text
+    assert "receipt-1" not in response.text
+    assert queued_payload["callback_token"] not in response.text
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "operator.mns_receipt_retry"
+            )
+        ).one()
+
+    assert audit_log.resource_type == "cloud_run"
+    assert audit_log.resource_id == cloud_run_id
+    assert audit_log.access_level.value == "high_value_write"
+    assert audit_log.success is True
+    assert audit_log.status_code == 200
+    assert audit_log.metadata_json == {
+        "operation_status": "succeeded",
+        "reason": "mns_message_deleted",
+    }
+
+
+def test_cloud_run_operator_skip_response_does_not_echo_external_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, _lease_id, _fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    unsafe_error = "receipt-1 secret=provider-secret token=abc123 arbitrary-detail"
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, cloud_run_id)
+        assert cloud_run is not None
+        cloud_run.external_error = unsafe_error
+        session.add(cloud_run)
+        session.commit()
+
+    client = build_client(database_path)
+    response = client.post(
+        f"/cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete",
+        headers=auth_headers(roles="owner"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "skipped"
+    assert body["reason"] == "mns_receipt_recovery_requires_terminal_state"
+    assert "external_error" not in body["cloud_run"]
+    assert "receipt-1" not in response.text
+    assert "provider-secret" not in response.text
+    assert "abc123" not in response.text
+    assert "arbitrary-detail" not in response.text
+
+
+def test_cloud_run_operator_cleans_aliyun_eci_runtime_without_leaking_runtime_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_eci = CleanupRecordingAliyunEciClient()
+    database_path = tmp_path / "app.db"
+    cloud_run_id, runtime_job_id = _start_completed_aliyun_eci_run(
+        tmp_path,
+        monkeypatch,
+        fake_eci,
+    )
+    client = build_client(database_path)
+
+    response = client.post(
+        f"/cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime",
+        headers=auth_headers(roles="admin"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["reason"] == "runtime_cleanup_deleted"
+    assert body["cloud_run"]["id"] == cloud_run_id
+    assert body["cloud_run"]["external_status"] == "runtime_cleanup_deleted"
+    assert fake_eci.deleted_container_group_ids == [runtime_job_id]
+    assert "runtime_job_id" not in response.text
+    assert runtime_job_id not in response.text
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "operator.eci_runtime_cleanup"
+            )
+        ).one()
+
+    assert audit_log.resource_type == "cloud_run"
+    assert audit_log.resource_id == cloud_run_id
+    assert audit_log.access_level.value == "high_value_write"
+    assert audit_log.success is True
+    assert audit_log.status_code == 200
+    assert audit_log.metadata_json == {
+        "operation_status": "succeeded",
+        "reason": "runtime_cleanup_deleted",
+    }
+
+
+def test_cloud_run_operator_endpoints_hide_cross_workspace_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "app.db"
+    cloud_run_id, _lease_id, _fake_mns = _start_claimed_aliyun_mns_run(
+        tmp_path,
+        monkeypatch,
+    )
+    client = build_client(database_path)
+
+    endpoints = [
+        f"/cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete",
+        f"/cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime",
+    ]
+
+    for endpoint in endpoints:
+        response = client.post(
+            endpoint,
+            headers=auth_headers(
+                user_id="other_operator",
+                workspace_id="other_workspace",
+                organization_id="other_organization",
+                roles="owner",
+            ),
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Cloud run not found"
 
 
 def test_aliyun_eci_terminal_cleanup_deletes_persisted_runtime_job_and_logs_safe_success(
@@ -5223,6 +5527,67 @@ def test_requeue_expired_cloud_run_lease_fails_at_max_attempts(
     assert body[0]["status"] == "failed"
     assert body[0]["failure_reason"] == "lease_attempts_exhausted"
     assert body[0]["last_queue_error"] == "lease_attempts_exhausted"
+
+
+def test_requeue_expired_cloud_run_lease_settles_failed_run_at_max_attempts(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    client = build_client(database_path)
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    client.post(
+        "/cloud-run-worker/leases",
+        json={
+            "worker_id": "remote-worker-1",
+            "worker_kind": "remote_stub",
+            "lease_seconds": 60,
+        },
+    )
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        cloud_run.attempt_count = cloud_run.max_attempts
+        cloud_run.lease_expires_at = datetime(2026, 6, 2, tzinfo=timezone.utc)
+        session.add(cloud_run)
+        session.commit()
+
+    response = client.post(
+        "/cloud-run-worker/leases/requeue-expired",
+        json={"limit": 25},
+    )
+    cost_response = client.get(f"/cloud-runs/{queued['id']}/cost-summary")
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "failed"
+    assert cost_response.status_code == 200
+    cost = cost_response.json()
+    assert cost["reservation"]["status"] == "settled"
+    assert cost["actual_cost_cents"] > 0
+    assert {entry["usage_type"] for entry in cost["usage_entries"]} >= {
+        "worker_submissions",
+        "cloud_run_runtime_seconds",
+    }
+
+    with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:
+        reservation = session.get(BudgetReservation, queued["budget_reservation_id"])
+        usage_entries = session.exec(
+            select(UsageLedgerEntry).where(
+                UsageLedgerEntry.cloud_run_id == queued["id"],
+            )
+        ).all()
+
+    assert reservation is not None
+    assert reservation.settled_cents == cost["actual_cost_cents"]
+    assert len(usage_entries) == len(cost["usage_entries"])
 
 
 def remote_stub_completion_payload(cloud_run_id: str) -> dict:
@@ -7205,6 +7570,79 @@ def test_cloud_run_artifact_content_returns_gone_for_expired_local_object(
     assert response.json()["detail"] == "Cloud run artifact expired"
 
 
+def test_expired_artifact_content_denied_viewer_records_audit_before_gone(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    client = build_client(database_path)
+    private_content = "diff --git a/private b/private\n+private expired content\n"
+    with Session(build_engine(database_url)) as session:
+        _project, repository, task = create_cloud_task(session)
+        task_id = task.id
+        repo_id = repository.id
+
+    queued = client.post(
+        f"/tasks/{task_id}/cloud-runs",
+        json={"repo_id": repo_id},
+    ).json()["cloud_run"]
+    with Session(build_engine(database_url)) as session:
+        cloud_run = session.get(CloudRun, queued["id"])
+        assert cloud_run is not None
+        store_cloud_run_artifact_ref(
+            session,
+            cloud_run,
+            kind="diff",
+            content=private_content,
+            content_type="text/x-diff",
+            expires_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            retention_policy="development_default",
+        )
+        session.commit()
+
+    manifest = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/manifest",
+        headers=auth_headers(roles="reviewer"),
+    ).json()
+    diff_artifact = next(
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["kind"] == "diff"
+    )
+
+    response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/{diff_artifact['id']}/content",
+        headers=auth_headers(roles="viewer"),
+    )
+    cross_workspace_response = client.get(
+        f"/cloud-runs/{queued['id']}/artifacts/{diff_artifact['id']}/content",
+        headers=auth_headers(
+            user_id="reviewer_b",
+            workspace_id="workspace_b",
+            organization_id="org_b",
+            roles="reviewer",
+        ),
+    )
+
+    assert response.status_code == 403
+    assert cross_workspace_response.status_code == 404
+    with Session(build_engine(database_url)) as session:
+        failed_audits = session.exec(
+            select(WorkspaceAuditLog)
+            .where(WorkspaceAuditLog.operation == "artifact.content.read")
+            .where(WorkspaceAuditLog.success.is_(False))
+        ).all()
+
+    assert len(failed_audits) == 1
+    audit_log = failed_audits[0]
+    assert audit_log.resource_type == "cloud_run_artifact"
+    assert audit_log.resource_id == diff_artifact["id"]
+    assert audit_log.access_level.value == "high_sensitive_read"
+    assert audit_log.status_code == 403
+    assert audit_log.error_code == "insufficient_workspace_role"
+    assert private_content not in str(audit_log.model_dump())
+
+
 def test_cloud_run_log_window_returns_bounded_pages_without_duplicates(
     tmp_path: Path,
 ) -> None:
@@ -7860,22 +8298,25 @@ def test_docker_cloud_run_validates_profile_before_opening_github_token(
 ) -> None:
     from ai_company_api.services import cloud_runner
 
-    class VaultShouldNotOpen:
-        def open(self, _encrypted_secret: str) -> str:
-            raise AssertionError("vault should not open token before profile validation")
-
     class DockerExecutor:
         sandbox_kind = "docker_local"
 
         def run(self, _request):
             raise AssertionError("executor should not run")
 
+    def fail_open_secret(*_args, **_kwargs):
+        raise AssertionError("vault should not open token before profile validation")
+
     monkeypatch.setattr(
         cloud_runner,
         "select_cloud_sandbox_executor",
         lambda: DockerExecutor(),
     )
-    monkeypatch.setattr(cloud_runner, "DevSecretVault", VaultShouldNotOpen)
+    monkeypatch.setattr(
+        cloud_runner,
+        "open_secret",
+        fail_open_secret,
+    )
     database_path = tmp_path / "app.db"
     client = build_client(database_path)
     with Session(build_engine(f"sqlite:///{database_path.as_posix()}")) as session:

@@ -37,6 +37,12 @@ from ai_company_api.services.model_planner import (
     PlannerExecutionResult,
     create_model_planner_result,
 )
+from ai_company_api.services.auth_context import (
+    current_user_id,
+    current_workspace_id,
+    enforce_workspace_access,
+    get_current_auth_context,
+)
 from ai_company_api.services.planner import FakePlanner, PlannerService
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
@@ -44,28 +50,80 @@ from ai_company_api.services.task_state import (
     allowed_next_statuses,
     validate_transition,
 )
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
+    require_audited_workspace_permission_if_authenticated,
+)
 from ai_company_llm_gateway.openai_compatible import OpenAICompatibleChatAdapter
 
 
 MODEL_PLANNER_ADAPTER_FACTORY = OpenAICompatibleChatAdapter
 
 
+def _require_audited_permission_if_authenticated(
+    session: Session,
+    permission: str,
+    *,
+    operation: str,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> None:
+    if get_current_auth_context() is None:
+        return
+    require_audited_workspace_permission(
+        session,
+        permission,
+        operation=operation,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        access_level="high_value_write",
+    )
+
+
 def create_project(session: Session, data: ProjectCreate) -> Project:
-    project = Project(name=data.name, description=data.description)
+    _require_audited_permission_if_authenticated(
+        session,
+        "project.write",
+        operation="project.create",
+        resource_type="project",
+    )
+    project = Project(
+        workspace_id=current_workspace_id(),
+        name=data.name,
+        description=data.description,
+        created_by=current_user_id(),
+    )
     session.add(project)
+    session.flush()
+    record_workspace_audit(
+        session,
+        operation="project.create",
+        resource_type="project",
+        resource_id=project.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(project)
     return project
 
 
 def list_projects(session: Session) -> list[Project]:
-    return list(session.exec(select(Project).order_by(Project.created_at)).all())
+    statement = select(Project)
+    context = get_current_auth_context()
+    if context is not None:
+        statement = statement.where(Project.workspace_id == context.workspace_id)
+    statement = statement.order_by(Project.created_at)
+    return list(session.exec(statement).all())
 
 
 def get_project(session: Session, project_id: str) -> Project:
     project = session.get(Project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    enforce_workspace_access(project.workspace_id, detail="Project not found")
     return project
 
 
@@ -123,15 +181,32 @@ def create_repository(
     project_id: str,
     data: RepositoryCreate,
 ) -> RepositoryRead:
-    get_project(session, project_id)
+    project = get_project(session, project_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "repository.write",
+        operation="repository.create",
+        resource_type="repository",
+    )
     repo_path = _validate_local_git_repository(data.local_path)
     repository = ProjectRepository(
+        workspace_id=project.workspace_id,
         project_id=project_id,
         name=data.name,
         local_path=str(repo_path),
         default_branch=data.default_branch,
     )
     session.add(repository)
+    session.flush()
+    record_workspace_audit(
+        session,
+        operation="repository.create",
+        resource_type="repository",
+        resource_id=repository.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(repository)
     return _repository_read(repository)
@@ -151,6 +226,7 @@ def get_repository(session: Session, repo_id: str) -> ProjectRepository:
     repository = session.get(ProjectRepository, repo_id)
     if repository is None:
         raise HTTPException(status_code=404, detail="Repository not found")
+    enforce_workspace_access(repository.workspace_id, detail="Repository not found")
     return repository
 
 
@@ -160,10 +236,26 @@ def get_repository_read(session: Session, repo_id: str) -> RepositoryRead:
 
 def delete_repository(session: Session, repo_id: str) -> RepositoryRead:
     repository = get_repository(session, repo_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "repository.write",
+        operation="repository.delete",
+        resource_type="repository",
+        resource_id=repository.id,
+    )
     repository.status = "deleted"
     repository.connection_status = "inactive"
     repository.updated_at = utc_now()
     session.add(repository)
+    record_workspace_audit(
+        session,
+        operation="repository.delete",
+        resource_type="repository",
+        resource_id=repository.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=200,
+    )
     session.commit()
     session.refresh(repository)
     return _repository_read(repository)
@@ -175,12 +267,29 @@ def create_conversation(
     data: ConversationCreate,
 ) -> Conversation:
     get_project(session, project_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "conversation.write",
+        operation="conversation.create",
+        resource_type="conversation",
+    )
     conversation = Conversation(
         project_id=project_id,
+        user_id=current_user_id(),
         title=data.title,
         conversation_type=data.conversation_type,
     )
     session.add(conversation)
+    session.flush()
+    record_workspace_audit(
+        session,
+        operation="conversation.create",
+        resource_type="conversation",
+        resource_id=conversation.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(conversation)
     return conversation
@@ -200,6 +309,7 @@ def get_conversation(session: Session, conversation_id: str) -> Conversation:
     conversation = session.get(Conversation, conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    get_project(session, conversation.project_id)
     return conversation
 
 
@@ -209,32 +319,73 @@ def create_message(
     data: MessageCreate,
 ) -> Message:
     get_conversation(session, conversation_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "conversation.write",
+        operation="conversation.message.create",
+        resource_type="message",
+    )
     message = Message(
         conversation_id=conversation_id,
         sender_type=data.sender_type,
+        sender_id=current_user_id(),
         content=data.content,
         structured_payload=data.structured_payload,
     )
     session.add(message)
+    session.flush()
+    record_workspace_audit(
+        session,
+        operation="conversation.message.create",
+        resource_type="message",
+        resource_id=message.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(message)
     return message
 
 
 def list_messages(session: Session, conversation_id: str) -> list[Message]:
-    get_conversation(session, conversation_id)
+    conversation = get_conversation(session, conversation_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "conversation.sensitive.read",
+        operation="conversation.message.list",
+        resource_type="conversation",
+        resource_id=conversation.id,
+        access_level="high_sensitive_read",
+    )
     statement = (
         select(Message)
         .where(Message.conversation_id == conversation_id)
         .order_by(Message.created_at)
     )
-    return list(session.exec(statement).all())
+    messages = list(session.exec(statement).all())
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="conversation.message.list",
+            resource_type="conversation",
+            resource_id=conversation.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"count": len(messages)},
+            commit=True,
+        )
+        for message in messages:
+            session.refresh(message)
+    return messages
 
 
 def get_task(session: Session, task_id: str) -> Task:
     task = session.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    get_project(session, task.project_id)
     return task
 
 
@@ -311,6 +462,7 @@ def get_planner_run(session: Session, planner_run_id: str) -> PlannerRun:
     planner_run = session.get(PlannerRun, planner_run_id)
     if planner_run is None:
         raise HTTPException(status_code=404, detail="Planner run not found")
+    get_project(session, planner_run.project_id)
     return planner_run
 
 
@@ -351,21 +503,29 @@ def create_planner_run(
     planner: PlannerService | None = None,
 ) -> PlannerRunRead:
     project = get_project(session, project_id)
+    conversation: Conversation | None = None
 
     if data.conversation_id is not None:
         conversation = get_conversation(session, data.conversation_id)
-        if conversation.project_id != project_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Conversation does not belong to project",
-            )
 
+    _require_audited_permission_if_authenticated(
+        session,
+        "planner.write",
+        operation="planner_run.create",
+        resource_type="planner_run",
+    )
+    if conversation is not None and conversation.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation does not belong to project",
+        )
     planner_run = PlannerRun(
         project_id=project_id,
         conversation_id=data.conversation_id,
         goal=data.goal,
         status=PlannerRunStatus.DRAFTED,
         draft_count=0,
+        created_by=current_user_id(),
     )
     session.add(planner_run)
 
@@ -405,6 +565,15 @@ def create_planner_run(
             )
         )
 
+    record_workspace_audit(
+        session,
+        operation="planner_run.create",
+        resource_type="planner_run",
+        resource_id=planner_run.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(planner_run)
     return _planner_run_read(session, planner_run)
@@ -452,8 +621,15 @@ def approve_planner_run(
     planner_run_id: str,
 ) -> PlannerRunDecisionRead:
     planner_run = get_planner_run(session, planner_run_id)
-    _ensure_planner_run_is_drafted(planner_run)
     project = get_project(session, planner_run.project_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "planner.review",
+        operation="planner_run.approve",
+        resource_type="planner_run",
+        resource_id=planner_run.id,
+    )
+    _ensure_planner_run_is_drafted(planner_run)
     drafts = list_planner_task_drafts(session, planner_run.id)
 
     created_tasks: list[Task] = []
@@ -463,7 +639,7 @@ def approve_planner_run(
             project_id=project.id,
             planner_run_id=planner_run.id,
             status=ApprovalStatus.APPROVED,
-            decided_by="dev_user",
+            decided_by=current_user_id(),
             decided_at=utc_now(),
         )
         session.add(approval)
@@ -487,7 +663,7 @@ def approve_planner_run(
                 task.id,
                 "task_created",
                 "user",
-                "dev_user",
+                current_user_id(),
                 {
                     "status": task.status.value,
                     "planner_run_id": planner_run.id,
@@ -499,6 +675,15 @@ def approve_planner_run(
         planner_run.status = PlannerRunStatus.APPROVED
         planner_run.updated_at = utc_now()
         session.add(planner_run)
+        record_workspace_audit(
+            session,
+            operation="planner_run.approve",
+            resource_type="planner_run",
+            resource_id=planner_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+        )
         session.commit()
     except IntegrityError as exc:
         session.rollback()
@@ -526,8 +711,15 @@ def reject_planner_run(
     reason: str = "",
 ) -> PlannerRunDecisionRead:
     planner_run = get_planner_run(session, planner_run_id)
-    _ensure_planner_run_is_drafted(planner_run)
     project = get_project(session, planner_run.project_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "planner.review",
+        operation="planner_run.reject",
+        resource_type="planner_run",
+        resource_id=planner_run.id,
+    )
+    _ensure_planner_run_is_drafted(planner_run)
 
     try:
         approval = Approval(
@@ -536,7 +728,7 @@ def reject_planner_run(
             planner_run_id=planner_run.id,
             reason=reason,
             status=ApprovalStatus.REJECTED,
-            decided_by="dev_user",
+            decided_by=current_user_id(),
             decided_at=utc_now(),
         )
         session.add(approval)
@@ -544,6 +736,15 @@ def reject_planner_run(
         planner_run.status = PlannerRunStatus.REJECTED
         planner_run.updated_at = utc_now()
         session.add(planner_run)
+        record_workspace_audit(
+            session,
+            operation="planner_run.reject",
+            resource_type="planner_run",
+            resource_id=planner_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+        )
         session.commit()
     except IntegrityError as exc:
         session.rollback()
@@ -565,23 +766,40 @@ def reject_planner_run(
 
 def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
     get_project(session, project_id)
+    conversation: Conversation | None = None
+    parent_task: Task | None = None
+    repository: ProjectRepository | None = None
 
     if data.conversation_id is not None:
         conversation = get_conversation(session, data.conversation_id)
-        if conversation.project_id != project_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Conversation does not belong to project",
-            )
 
     if data.parent_task_id is not None:
         parent_task = get_task(session, data.parent_task_id)
-        if parent_task.project_id != project_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Parent task does not belong to project",
-            )
 
+    if data.repo_id is not None:
+        repository = get_repository(session, data.repo_id)
+
+    _require_audited_permission_if_authenticated(
+        session,
+        "task.write",
+        operation="task.create",
+        resource_type="task",
+    )
+    if conversation is not None and conversation.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation does not belong to project",
+        )
+    if parent_task is not None and parent_task.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Parent task does not belong to project",
+        )
+    if repository is not None and repository.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository does not belong to project",
+        )
     task = Task(
         project_id=project_id,
         conversation_id=data.conversation_id,
@@ -607,8 +825,17 @@ def create_task(session: Session, project_id: str, data: TaskCreate) -> Task:
         task.id,
         "task_created",
         "user",
-        "dev_user",
+        current_user_id(),
         {"status": task.status.value},
+    )
+    record_workspace_audit(
+        session,
+        operation="task.create",
+        resource_type="task",
+        resource_id=task.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
     )
     session.commit()
     session.refresh(task)
@@ -641,6 +868,13 @@ def transition_task(
     task = get_task(session, task_id)
     current_status = TaskStatus(task.status)
 
+    _require_audited_permission_if_authenticated(
+        session,
+        "task.write",
+        operation="task.transition",
+        resource_type="task",
+        resource_id=task.id,
+    )
     try:
         next_status = validate_transition(current_status, requested_status, actor_type)
     except InvalidTaskTransition as exc:
@@ -665,6 +899,15 @@ def transition_task(
         {"from_status": current_status.value, "to_status": next_status.value},
     )
     session.add(task)
+    record_workspace_audit(
+        session,
+        operation="task.transition",
+        resource_type="task",
+        resource_id=task.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=200,
+    )
     session.commit()
     session.refresh(task)
     return task

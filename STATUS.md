@@ -1,41 +1,98 @@
-# Phase 12D Artifact Plane Status
+# Phase 13C Cost Guardrail Status
 
 ## Scope
 
-Phase 12D completes the remaining original Phase 12 artifact plane targets
-after Phase 12A, 12B, 12C, and 13A. The API exposes cloud-run artifact
-manifests, artifact list/detail/content endpoints, provider-neutral download
-descriptors, retention metadata, and expired-artifact cleanup. The desktop task
-board can display manifest artifacts and open text previews.
+Phase 13B Commercial Trust Boundary has started with test-backed identity,
+workspace-scope, and secret-access audit foundations. The API now has `User`,
+`Organization`, `Workspace`, and `OrganizationMember` models, workspace roles,
+request auth context, explicit dev auth mode, API-token member lookup mode, and
+`/me` responses based on the current auth context instead of a hard-coded route
+body.
 
-The artifact plane keeps provider-specific storage operations behind the
-existing object-storage boundary. It returns local API download descriptors
-instead of signed provider URLs, redacts provider URI query strings and
-fragments for display, deletes expired `local_inline` rows, and reports external
-provider cleanup as lifecycle-only operator intent.
+The current slice scopes project, repository, task, cloud-run, artifact,
+GitHub credential, model provider, model credential, model route, usage ledger,
+patch approval, review/debug, and pull-request reads/writes to the active
+workspace. Worker callback endpoints keep their existing run-scoped callback
+token boundary.
 
-## Phase 13A Carry-Forward Operations
+A follow-on Phase 13B slice extends the `SecretVault` protocol with
+`rotate`, `delete`, and `fingerprint`, adds a fail-closed provider factory,
+adds a test-backed `KmsSecretVault` provider boundary for `kms`, wires
+`aliyun_kms` to a real Aliyun Classic KMS SDK adapter, and records
+`SecretAccessAuditLog` rows for model/GitHub credential create/delete plus
+model planner, GitHub pull-request, Docker cloud-run, and remote-worker payload
+credential opens. Audit rows record actor/scope metadata, secret kind/id,
+reason, operation, and success status, never raw or encrypted secret payloads.
+KMS mode requires `AI_SCDC_KMS_KEY_ID`; `aliyun_kms` also requires the existing
+Aliyun region/access-key settings and never falls back to development storage.
+A local `python -m ai_company_api.tools.kms_readiness` command now provides
+redacted KMS configuration preflight and explicit operator-run live smoke for
+the configured SecretVault provider.
 
-Phase 13A Aliyun MNS/ECI cleanup helpers remain service-level only; they are
-not public destructive HTTP routes. OSS cleanup remains lifecycle- and
-operator-owned, while Phase 12D expired-artifact cleanup is limited to local
-`local_inline` rows and does not delete provider objects.
+Phase 13B now also includes a narrow authenticated cloud-run operator API
+facade. Workspace owners and admins can retry retained Aliyun MNS receipt
+deletion with
+`POST /cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete` and request
+best-effort Aliyun ECI terminal runtime cleanup with
+`POST /cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime`. The
+operator response uses a redacted snapshot and does not expose runtime job ids,
+queue receipts, callback tokens, raw provider errors, Aliyun access keys, or
+raw provider URLs.
 
-`DevSecretVault` remains development-only. Production use requires a
-KMS-backed `SecretVault` implementation before commercial beta.
+Phase 13B now includes a test-backed workspace role permission matrix and a
+general `WorkspaceAuditLog` for high-value writes plus high-sensitive reads.
+Secret-specific create/open/delete audit remains in `SecretAccessAuditLog`.
+Viewer access is limited to low-sensitive metadata; current full-detail
+execution evidence, artifact, log, message, sandbox, model configuration,
+credential, and billing detail reads require explicit non-viewer permissions.
 
-Operator references:
+Phase 13C has started the cost/quota guardrail foundation. `UsageType` now
+covers execution-plane dimensions, `CreditWallet`, `SpendLimit`, and
+`BudgetReservation` records protect cloud-run enqueue, and cloud runs expose
+reservation-backed estimated, measured, and billable cost summaries. Workspace
+usage summaries aggregate usage by project/task and usage type.
 
-- [Aliyun operational runbook](docs/operations/aliyun-operational-runbook.md)
-- [Aliyun RAM policy examples](docs/operations/aliyun-ram-policies.md)
+## Non-Goals
+
+This is not the full commercial beta trust boundary yet. Remaining commercial
+readiness work includes production IdP/session issuance, payment and invoice
+integration, desktop billing UI, full operator console, real provider price
+tables, public destructive OSS cleanup policy, and retained target-account KMS
+smoke evidence.
+
+No billing provider, payment flow, invoices, real provider price table, second
+cloud provider, public destructive provider cleanup endpoint, WebSocket/SSE log
+streaming, desktop billing UI, or model-backed review/debug/coder loop was
+added. The real Aliyun KMS SDK adapter and local readiness command are wired,
+but no retained target-account KMS smoke evidence or production cloud
+credential path was added.
 
 ## Verification
 
-- `pytest apps/api/tests/test_cloud_run_api.py -q -k "artifact_manifest or artifact_content or download_is_local or cleanup_expired or returns_gone"`: 11 passed, 161 deselected, 1 warning in 5.63s.
-- `pytest apps/api/tests/test_cloud_object_storage.py -q`: 11 passed in 4.35s.
-- `pytest apps/api/tests -q`: 479 passed, 1 warning in 191.96s (0:03:11).
-- `pnpm --filter @ai-scdc/desktop test -- App.test.tsx client.test.ts`: 2 test files passed, 75 tests passed in 10.89s.
+- `pytest apps/api/tests/test_auth_rbac_api.py -q`: 10 passed, 1 warning in 4.80s.
+- `pytest apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_usage_ledger_api.py -q`: 75 passed, 1 warning in 34.66s.
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py`: passed.
+- `pytest apps/api/tests/test_aliyun_kms.py -q`: 19 passed; covers the fake-SDK Aliyun KMS adapter seam.
+- `pytest apps/api/tests/test_secret_access_audit.py -q`: 27 passed, 1 warning; includes KMS provider boundary and Aliyun KMS factory tests.
+- `pytest apps/api/tests/test_kms_readiness.py -q`: KMS readiness preflight,
+  live-smoke, and CLI tests passed without contacting Aliyun.
+- `pytest apps/api/tests/test_secret_access_audit.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_model_planner.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q`: 103 passed, 1 warning in 19.01s.
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "docker_cloud_run_enqueue_stores_metadata_without_opening_token or docker_cloud_run_validates_profile_before_opening_github_token"`: 2 passed, 170 deselected, 1 warning in 4.57s.
+- `pytest apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q`: 73 passed, 1 warning in 49.83s.
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "remote_worker_payload or docker_cloud_run or github_token or protected_worker"`: 30 passed, 142 deselected, 1 warning in 16.47s.
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_secret_access_audit.py apps/api/tests/test_model_planner.py apps/api/tests/test_cloud_run_api.py`: passed.
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "cloud_run_operator or retained_receipt_recovery or terminal_cleanup"`: 12 passed, 165 deselected, 1 warning in 10.97s.
+- `pytest apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_cloud_run_api.py -q -k "operator or money_moving_workspace_endpoints_require_billing_role"`: 5 passed, 183 deselected, 1 warning in 4.41s.
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_cloud_run_api.py`: passed.
+- `pytest apps/api/tests/test_cloud_run_api.py apps/api/tests/test_auth_rbac_api.py -q -k "cloud_run_operator or retained_receipt_recovery or terminal_cleanup or money_moving_workspace_endpoints_require_billing_role"`: 13 passed, 175 deselected, 1 warning in 11.03s.
+- `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py -q`: 46 passed, 1 warning in 21.67s.
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "enqueue or cancel or process or completion or lease"`: 50 passed, 123 deselected, 1 warning in 76.56s.
+- `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_pull_request_api.py apps/api/tests/test_planner_endpoints.py -q`: 60 passed, 1 warning in 16.99s.
+- `pytest apps/api/tests -q`: 577 passed, 1 warning as part of `pnpm test`.
+- `pnpm test`: JavaScript 91 passed; Python 611 passed, 1 warning.
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_usage_cost_quota_api.py apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_cloud_run_api.py apps/api/tests/test_auth_rbac_api.py`: passed.
 - `pnpm typecheck`: passed; `apps/desktop` and `packages/agent-protocol` completed.
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_secret_access_audit.py apps/api/tests/test_aliyun_kms.py`: passed.
 - `git diff --check`: passed; emitted Git LF-to-CRLF working-copy warnings for edited files.
 
 ## Warnings

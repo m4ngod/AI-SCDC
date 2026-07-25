@@ -281,6 +281,83 @@ OSS lifecycle boundaries, and the production KMS boundary. It does not add a
 public destructive operations API, user auth, organization RBAC, billing, a real
 KMS SDK, API-side OSS deletion, or a second cloud provider.
 
+## Phase 13B Boundary
+
+Phase 13B has started the commercial trust boundary with identity, workspace
+scope, and secret-access audit foundations. The API now defines `User`,
+`Organization`, `Workspace`, and `OrganizationMember` records, workspace roles,
+an explicit development auth mode, an API-token member lookup mode, and a
+request auth context used by `/me` and the main HTTP control-plane routes.
+
+The first Phase 13B slice scopes project, repository, task, cloud-run,
+artifact, GitHub credential, model provider, model credential, model route,
+usage ledger, patch approval, review/debug, and pull-request access to the
+active workspace. Worker callback endpoints keep their run-scoped callback
+token boundary and are not converted into user-session endpoints.
+
+The next Phase 13B slice extends the `SecretVault` protocol with rotate,
+delete, and fingerprint semantics, adds a fail-closed provider factory, adds a
+test-backed `KmsSecretVault` provider boundary for generic `kms`, and wires
+`aliyun_kms` to a real Aliyun Classic KMS SDK adapter. KMS mode wraps provider,
+key id, and ciphertext metadata in a `kms-vault:v1:` envelope, requires
+`AI_SCDC_KMS_KEY_ID`, and never falls back to development storage. The Aliyun
+adapter uses the existing Aliyun region/access-key settings and encodes
+plaintext through the SDK-required base64 request field. It also adds
+`SecretAccessAuditLog` records for model and GitHub credential create/delete,
+plus model planner, GitHub pull-request, Docker cloud-run, and remote-worker
+payload credential opens.
+
+Phase 13B also has a local KMS readiness command. The command runs redacted
+configuration preflight by default and performs a live SecretVault
+seal/open/fingerprint/delete smoke only when `--live` is passed. This provides a
+safe operator-run validation path without exposing KMS smoke through public
+HTTP routes.
+
+Phase 13B now also includes a narrow authenticated operator API facade for
+Aliyun maintenance actions that were already implemented as service helpers.
+Workspace owners and admins can call
+`POST /cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete` for MNS
+receipt recovery and
+`POST /cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime` for ECI
+runtime cleanup. The response uses a redacted operator snapshot and omits
+runtime job ids, queue receipts, callback tokens, raw provider errors, Aliyun
+access keys, and raw provider URLs.
+
+Phase 13B now includes a test-backed workspace role permission matrix and a
+general `WorkspaceAuditLog` for high-value writes plus high-sensitive reads.
+Secret-specific create/open/delete audit remains in `SecretAccessAuditLog`.
+Viewer access is limited to low-sensitive metadata; current full-detail
+execution evidence, artifact, log, message, sandbox, model configuration,
+credential, and billing detail reads require explicit non-viewer permissions.
+
+Phase 13B is not complete yet. Remaining commercial readiness work includes
+production IdP/session issuance, payment and invoice integration, desktop
+billing UI, full operator console, real provider price tables, public
+destructive OSS cleanup policy, and retained target-account KMS smoke evidence.
+
+## Phase 13C Boundary
+
+Phase 13C has started the cost/quota and billing-ledger foundation without
+payment integration. `UsageType` now covers execution-plane cost dimensions:
+cloud-run runtime seconds, worker submissions, object-storage bytes and reads,
+log sync calls, queue messages, and PR publish attempts. `UsageLedgerEntry`
+also carries optional cloud-run id, quantity, and unit fields for non-token
+usage.
+
+The first Phase 13C slice adds workspace `CreditWallet`, `SpendLimit`, and
+`BudgetReservation` records. Cloud-run enqueue reserves a deterministic
+estimated cost and fails with 402 when credits, per-run limits, or monthly
+limits cannot cover the run. Terminal cloud-run paths release queued
+cancellations or settle measurable worker/runtime usage exactly once through a
+conditional reservation transition. Per-run cost summary APIs expose measured
+cost, reservation-capped billable cost, and the backward-compatible actual cost
+alias for future desktop and billing surfaces; workspace usage summary APIs
+expose the current usage picture by project/task and usage type.
+
+Phase 13C is not a billing system yet. This slice does not add Stripe,
+subscriptions, invoices, real provider price tables, abuse prevention, or a
+desktop billing page.
+
 ## Roadmap
 
 Completed:
@@ -305,7 +382,29 @@ Completed:
 18. Cloud-run artifact plane with manifest/list/detail/content APIs, provider-neutral download descriptors, retention metadata, local-inline cleanup, external lifecycle-only cleanup intent, and desktop artifact browser.
 19. Aliyun operational hardening with retained MNS receipt recovery, best-effort ECI terminal cleanup by persisted runtime id, least-privilege RAM examples, provider failure runbooks, OSS lifecycle guidance, and production KMS boundary documentation.
 
+In progress:
+
+1. Phase 13B commercial trust boundary with request identity, workspace scope,
+   secret-open audit foundations, API-token lookup, RBAC foundations, a
+   fail-closed secret-vault provider factory, a test-backed `KmsSecretVault`
+   provider boundary for generic `kms`, a real Aliyun Classic KMS SDK adapter
+   for `aliyun_kms`, a local KMS readiness command, and secret-access audit
+   logs. Phase 13B now includes a test-backed workspace role permission matrix
+   and a general `WorkspaceAuditLog` for high-value writes plus high-sensitive
+   reads. Secret-specific create/open/delete audit remains in
+   `SecretAccessAuditLog`. Viewer access is limited to low-sensitive metadata;
+   current full-detail execution evidence, artifact, log, message, sandbox,
+   model configuration, credential, and billing detail reads require explicit
+   non-viewer permissions. Remaining commercial readiness work includes
+   production IdP/session issuance, payment and invoice integration, desktop
+   billing UI, full operator console, real provider price tables, public
+   destructive OSS cleanup policy, and retained target-account KMS smoke
+   evidence.
+2. Phase 13C cost/quota guardrail foundation with execution usage types,
+   workspace credits, spend limits, budget reservations, and usage/cost summary
+   APIs. Remaining work includes real provider pricing, payment integration,
+   invoices, desktop billing UI, and abuse prevention.
+
 Future:
 
-1. Authenticated organization-scoped operator controls for cleanup, audit, billing, and production KMS integration before commercial beta.
-2. Broader provider coverage beyond the current Aliyun MNS/OSS/ECI production-provider path while preserving callback-token-protected payload access and completion boundaries.
+1. Broader provider coverage beyond the current Aliyun MNS/OSS/ECI production-provider path while preserving callback-token-protected payload access and completion boundaries.

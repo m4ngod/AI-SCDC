@@ -1,14 +1,14 @@
 # AI-SCDC Project Status
 
-Status last updated: 2026-06-06
+Status last updated: 2026-06-07
 
 ## Current Phase
 
-The project is through Phase 13A, with Phase 12D now completing the original
-Phase 12 artifact plane: cloud-run artifact manifests, safe artifact
-listing/detail/content APIs, provider-neutral download descriptors, retention
-metadata, local-inline cleanup, external lifecycle-only cleanup intent, and a
-minimal desktop artifact browser.
+The project is through Phase 13A, has Phase 13B Commercial Trust Boundary
+foundations in progress, and has started the Phase 13C cost/quota guardrail
+slice. The current slices add identity, workspace scope, secret-access audit,
+and execution-plane usage/cost foundations while preserving the existing
+development adapters and worker callback-token boundary.
 
 `docs/architecture.md` is the authoritative phase boundary document. The older
 `docs/superpowers/plans/*.md` files still contain unchecked implementation
@@ -78,6 +78,53 @@ tests, README smoke instructions, and git history.
     examples, provider failure runbooks, OSS lifecycle guidance, and production
     KMS boundaries.
 
+## In Progress
+
+Phase 13B Commercial Trust Boundary has started with test-backed identity,
+workspace-scope, and secret-open audit slices:
+
+- `User`, `Organization`, `Workspace`, and `OrganizationMember` models.
+- Workspace roles: owner, admin, developer, reviewer, billing_manager, viewer.
+- Request auth context with explicit `dev` mode and API-token member lookup
+  mode.
+- `/me` returns the active auth context rather than a route-local fixed
+  identity.
+- Project, repository, task, cloud-run, artifact, credential, route, usage,
+  approval, review/debug, and pull-request HTTP reads/writes are scoped to the
+  active workspace.
+- `SecretVault` protocol coverage for seal/open/rotate/delete/fingerprint with
+  a fail-closed provider factory, a test-backed `KmsSecretVault` provider
+  boundary for generic `kms`, and a real Aliyun Classic KMS SDK adapter for
+  `aliyun_kms`. KMS mode requires `AI_SCDC_KMS_KEY_ID`; `aliyun_kms` also
+  requires existing Aliyun region/access-key settings and never falls back to
+  development storage.
+- Local KMS readiness command for redacted preflight and explicit live-smoke
+  validation through the configured SecretVault provider.
+- `SecretAccessAuditLog` plus centralized secret-open auditing for model
+  planner, GitHub pull-request, Docker cloud-run, and remote-worker payload
+  credential opens.
+- Secret create/delete audit rows for model and GitHub credentials without
+  storing raw or encrypted secret payloads.
+- Narrow authenticated cloud-run operator API facade for owner/admin MNS
+  receipt recovery and ECI runtime cleanup:
+  `POST /cloud-runs/{cloud_run_id}/operator/retry-mns-receipt-delete` and
+  `POST /cloud-runs/{cloud_run_id}/operator/cleanup-aliyun-eci-runtime`.
+- Phase 13C execution usage types, workspace credit wallets, spend limits,
+  cloud-run budget reservations, per-run cost summaries, and workspace usage
+  summary APIs.
+
+Phase 13B now includes a test-backed workspace role permission matrix and a
+general `WorkspaceAuditLog` for high-value writes plus high-sensitive reads.
+Secret-specific create/open/delete audit remains in `SecretAccessAuditLog`.
+Viewer access is limited to low-sensitive metadata; current full-detail
+execution evidence, artifact, log, message, sandbox, model configuration,
+credential, and billing detail reads require explicit non-viewer permissions.
+
+Remaining commercial readiness work includes production IdP/session issuance,
+payment and invoice integration, desktop billing UI, full operator console,
+real provider price tables, public destructive OSS cleanup policy, and retained
+target-account KMS smoke evidence.
+
 ## Verification
 
 Phase 13A final verification has completed:
@@ -90,6 +137,35 @@ Phase 13A final verification has completed:
 - `pnpm --filter @ai-scdc/desktop test -- client.test.ts` -> 34 passed in 1.81s
 - `pnpm typecheck` -> `apps/desktop` and `packages/agent-protocol` completed
 - `git diff --check` -> passed
+
+Phase 13B/13C current verification snapshot:
+
+- `pytest apps/api/tests/test_auth_rbac_api.py -q` -> 10 passed, 1 warning in 4.80s
+- `pytest apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_usage_ledger_api.py -q` -> 75 passed, 1 warning in 34.66s
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_api_endpoints.py` -> passed
+- `pytest apps/api/tests/test_aliyun_kms.py -q` -> 19 passed; covers the
+  fake-SDK Aliyun KMS adapter seam.
+- `pytest apps/api/tests/test_secret_access_audit.py -q` -> 27 passed, 1
+  warning; includes KMS provider boundary and Aliyun KMS factory tests.
+- `pytest apps/api/tests/test_kms_readiness.py -q` -> KMS readiness preflight,
+  live-smoke, and CLI tests passed without contacting Aliyun.
+- `pytest apps/api/tests/test_secret_access_audit.py apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_model_planner.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q` -> 103 passed, 1 warning in 19.01s
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "docker_cloud_run_enqueue_stores_metadata_without_opening_token or docker_cloud_run_validates_profile_before_opening_github_token"` -> 2 passed, 170 deselected, 1 warning in 4.57s
+- `pytest apps/api/tests/test_model_settings_api.py apps/api/tests/test_github_repository_api.py apps/api/tests/test_planner_endpoints.py apps/api/tests/test_pull_request_api.py -q` -> 73 passed, 1 warning in 49.83s
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "remote_worker_payload or docker_cloud_run or github_token or protected_worker"` -> 30 passed, 142 deselected, 1 warning in 16.47s
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_secret_access_audit.py apps/api/tests/test_model_planner.py apps/api/tests/test_cloud_run_api.py` -> passed
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "cloud_run_operator or retained_receipt_recovery or terminal_cleanup"` -> 12 passed, 165 deselected, 1 warning in 10.97s
+- `pytest apps/api/tests/test_auth_rbac_api.py apps/api/tests/test_cloud_run_api.py -q -k "operator or money_moving_workspace_endpoints_require_billing_role"` -> 5 passed, 183 deselected, 1 warning in 4.41s
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_cloud_run_api.py` -> passed
+- `pytest apps/api/tests/test_cloud_run_api.py apps/api/tests/test_auth_rbac_api.py -q -k "cloud_run_operator or retained_receipt_recovery or terminal_cleanup or money_moving_workspace_endpoints_require_billing_role"` -> 13 passed, 175 deselected, 1 warning in 11.03s
+- `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py -q` -> 46 passed, 1 warning in 21.67s
+- `pytest apps/api/tests/test_cloud_run_api.py -q -k "enqueue or cancel or process or completion or lease"` -> 50 passed, 123 deselected, 1 warning in 76.56s
+- `pytest apps/api/tests/test_usage_ledger_api.py apps/api/tests/test_usage_cost_quota_api.py apps/api/tests/test_api_endpoints.py apps/api/tests/test_pull_request_api.py apps/api/tests/test_planner_endpoints.py -q` -> 60 passed, 1 warning in 16.99s
+- `pytest apps/api/tests -q` -> 577 passed, 1 warning as part of `pnpm test`
+- `pnpm test` -> JavaScript 91 passed; Python 611 passed, 1 warning
+- `pnpm typecheck` -> `apps/desktop` and `packages/agent-protocol` completed
+- `python -m compileall -q apps/api/app/ai_company_api apps/api/tests/test_secret_access_audit.py apps/api/tests/test_aliyun_kms.py` -> passed
+- `git diff --check` -> passed with Git LF-to-CRLF working-copy warnings only
 
 Previous Phase 10D verification:
 
@@ -145,10 +221,18 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
 
 ## Known Limits
 
-- Phase 13A adds service-level Aliyun cleanup and recovery seams plus
-  operations docs, but it does not expose public destructive cleanup endpoints,
-  add user auth/RBAC, add billing, integrate real KMS, delete OSS objects from
-  code, add WebSockets/SSE, or add a second cloud provider.
+- Phase 13B now has request identity, workspace scope, secret-open audit
+  foundations, a test-backed KMS SecretVault boundary, a test-backed workspace
+  role permission matrix, and general `WorkspaceAuditLog` coverage for
+  high-value writes plus high-sensitive reads, but it does not yet add
+  production IdP/session issuance, payment and invoice integration, desktop
+  billing UI, a full operator console, real provider price tables, public
+  destructive OSS cleanup policy, retained target-account KMS smoke evidence,
+  WebSockets/SSE, or a second cloud provider.
+- Phase 13B exposes authenticated owner/admin MNS receipt recovery and ECI
+  terminal cleanup endpoints for cloud runs, but public destructive OSS cleanup
+  and provider deletion APIs remain unavailable; the full operator console is
+  still future work.
 - The real remote worker can fetch a protected payload, clone, execute commands,
   capture diffs, upload artifacts, and complete a lease, but it does not push
   branches, create pull requests, merge changes, or provide live
@@ -160,13 +244,18 @@ approval, Phase 6 human approval request, and Phase 7 fake PR adapter.
   from `registry-1.docker.io`, so the smoke used an already cached image.
 - Real GitHub PR publishing still requires starting the API with
   `AI_SCDC_GITHUB_PR_ADAPTER=real` and providing a real PAT.
-- Authentication, organization RBAC, subscriptions, billing collection, and
-  production KMS are still development placeholders.
+- Production IdP/session issuance, payment and invoice integration, desktop
+  billing UI, full operator console, real provider price tables, public
+  destructive OSS cleanup policy, and retained target-account KMS smoke
+  evidence remain before commercial beta.
 - Reviewer and debugger behavior is deterministic, not model-backed.
 - The API still initializes schema through SQLModel metadata and SQLite upgrade
   helpers; Alembic migrations remain reserved for later.
 
 ## Recommended Next Phase
 
-The next production phase should add authenticated organization-scoped
-operator controls and production KMS integration before commercial beta.
+The next production step should continue Phase 13B with production
+IdP/session issuance, payment and invoice integration, desktop billing UI,
+full operator console, real provider price tables, public destructive OSS
+cleanup policy, and retained target-account KMS smoke evidence before
+commercial beta.

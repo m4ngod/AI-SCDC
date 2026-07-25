@@ -94,6 +94,101 @@ class ModelRouteStatus(str, Enum):
 
 class UsageType(str, Enum):
     MODEL_TOKENS = "model_tokens"
+    CLOUD_RUN_RUNTIME_SECONDS = "cloud_run_runtime_seconds"
+    WORKER_SUBMISSIONS = "worker_submissions"
+    OBJECT_STORAGE_BYTES = "object_storage_bytes"
+    OBJECT_STORAGE_READS = "object_storage_reads"
+    LOG_SYNC_CALLS = "log_sync_calls"
+    QUEUE_MESSAGES = "queue_messages"
+    PR_PUBLISH_ATTEMPTS = "pr_publish_attempts"
+
+
+class BudgetReservationStatus(str, Enum):
+    RESERVED = "reserved"
+    RELEASED = "released"
+    SETTLED = "settled"
+
+
+class WorkspaceAuditAccessLevel(str, Enum):
+    HIGH_VALUE_WRITE = "high_value_write"
+    HIGH_SENSITIVE_READ = "high_sensitive_read"
+    SYSTEM_EVENT = "system_event"
+
+
+class WorkspaceRole(str, Enum):
+    OWNER = "owner"
+    ADMIN = "admin"
+    DEVELOPER = "developer"
+    REVIEWER = "reviewer"
+    BILLING_MANAGER = "billing_manager"
+    VIEWER = "viewer"
+
+
+class User(SQLModel, table=True):
+    __tablename__ = "user_account"
+
+    id: str = Field(default_factory=lambda: prefixed_id("user"), primary_key=True)
+    email: str | None = Field(default=None, index=True)
+    display_name: str = ""
+    status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class Organization(SQLModel, table=True):
+    __tablename__ = "organization"
+
+    id: str = Field(default_factory=lambda: prefixed_id("org"), primary_key=True)
+    name: str
+    status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class Workspace(SQLModel, table=True):
+    __tablename__ = "workspace"
+
+    id: str = Field(default_factory=lambda: prefixed_id("workspace"), primary_key=True)
+    organization_id: str = Field(index=True, foreign_key="organization.id")
+    name: str
+    status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class OrganizationMember(SQLModel, table=True):
+    __tablename__ = "organization_member"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "user_id",
+            name="uq_organization_member_workspace_user",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: prefixed_id("member"), primary_key=True)
+    organization_id: str = Field(index=True, foreign_key="organization.id")
+    workspace_id: str = Field(index=True, foreign_key="workspace.id")
+    user_id: str = Field(index=True, foreign_key="user_account.id")
+    role: WorkspaceRole = Field(
+        default=WorkspaceRole.DEVELOPER,
+        sa_column=Column(
+            SAEnum(
+                WorkspaceRole,
+                name="workspace_role",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    api_token_hash: str | None = Field(default=None, index=True)
+    status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class Repository(SQLModel, table=True):
@@ -388,6 +483,13 @@ class ModelRoute(SQLModel, table=True):
 
 class UsageLedgerEntry(SQLModel, table=True):
     __tablename__ = "usage_ledger_entry"
+    __table_args__ = (
+        UniqueConstraint(
+            "cloud_run_id",
+            "usage_type",
+            name="uq_usage_ledger_cloud_run_usage_type",
+        ),
+    )
 
     id: str = Field(default_factory=lambda: prefixed_id("usage"), primary_key=True)
     workspace_id: str = Field(default="dev_workspace", index=True)
@@ -395,6 +497,11 @@ class UsageLedgerEntry(SQLModel, table=True):
     user_id: str = Field(default="dev_user", index=True)
     project_id: str | None = Field(default=None, index=True, foreign_key="project.id")
     task_id: str | None = Field(default=None, index=True, foreign_key="task.id")
+    cloud_run_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="cloud_run.id",
+    )
     planner_run_id: str | None = Field(
         default=None,
         index=True,
@@ -420,10 +527,129 @@ class UsageLedgerEntry(SQLModel, table=True):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    quantity: int = Field(default=0, index=True)
+    unit_name: str = ""
     unit_price_cents: int = 0
     amount_cents: int = 0
     raw_usage_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class SecretAccessAuditLog(SQLModel, table=True):
+    __tablename__ = "secret_access_audit_log"
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("secret_access"),
+        primary_key=True,
+    )
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    organization_id: str = Field(default="dev_organization", index=True)
+    user_id: str = Field(default="dev_user", index=True)
+    auth_mode: str = Field(default="system", index=True)
+    secret_kind: str = Field(index=True)
+    secret_id: str = Field(index=True)
+    operation: str = Field(default="open", index=True)
+    access_reason: str = Field(index=True)
+    success: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WorkspaceAuditLog(SQLModel, table=True):
+    __tablename__ = "workspace_audit_log"
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("workspace_audit"),
+        primary_key=True,
+    )
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    organization_id: str = Field(default="dev_organization", index=True)
+    user_id: str = Field(default="dev_user", index=True)
+    auth_mode: str = Field(default="system", index=True)
+    operation: str = Field(index=True)
+    resource_type: str = Field(index=True)
+    resource_id: str | None = Field(default=None, index=True)
+    access_level: WorkspaceAuditAccessLevel = Field(
+        sa_column=Column(
+            SAEnum(
+                WorkspaceAuditAccessLevel,
+                name="workspace_audit_access_level",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    success: bool = Field(default=True, index=True)
+    status_code: int = Field(default=200, index=True)
+    error_code: str | None = Field(default=None, index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class CreditWallet(SQLModel, table=True):
+    __tablename__ = "credit_wallet"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", name="uq_credit_wallet_workspace"),
+    )
+
+    id: str = Field(default_factory=lambda: prefixed_id("wallet"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    organization_id: str = Field(default="dev_organization", index=True)
+    balance_cents: int = Field(default=0, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class SpendLimit(SQLModel, table=True):
+    __tablename__ = "spend_limit"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", name="uq_spend_limit_workspace"),
+    )
+
+    id: str = Field(default_factory=lambda: prefixed_id("spend_limit"), primary_key=True)
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    monthly_limit_cents: int = Field(default=0, index=True)
+    per_run_limit_cents: int = Field(default=0, index=True)
+    status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class BudgetReservation(SQLModel, table=True):
+    __tablename__ = "budget_reservation"
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("budget_reservation"),
+        primary_key=True,
+    )
+    workspace_id: str = Field(default="dev_workspace", index=True)
+    organization_id: str = Field(default="dev_organization", index=True)
+    project_id: str = Field(index=True, foreign_key="project.id")
+    task_id: str = Field(index=True, foreign_key="task.id")
+    cloud_run_id: str | None = Field(default=None, index=True, foreign_key="cloud_run.id")
+    reserved_cents: int = Field(default=0, index=True)
+    settled_cents: int = Field(default=0, index=True)
+    status: BudgetReservationStatus = Field(
+        default=BudgetReservationStatus.RESERVED,
+        sa_column=Column(
+            SAEnum(
+                BudgetReservationStatus,
+                name="budget_reservation_status",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    settled_at: datetime | None = None
 
 
 class Task(SQLModel, table=True):
@@ -534,6 +760,14 @@ class CloudRun(SQLModel, table=True):
     callback_token_hash: str | None = Field(default=None, index=True)
     callback_token_expires_at: datetime | None = Field(default=None, index=True)
     callback_token_used_at: datetime | None = None
+    budget_reservation_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="budget_reservation.id",
+    )
+    estimated_cost_cents: int = Field(default=0, index=True)
+    actual_cost_cents: int = Field(default=0, index=True)
+    cost_summary_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now, index=True)
     updated_at: datetime = Field(default_factory=utc_now)
 

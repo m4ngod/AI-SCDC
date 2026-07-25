@@ -6,11 +6,26 @@ from sqlmodel import Session, select
 
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
-from ai_company_api.models.entities import GitHubCredential, Repository
+from ai_company_api.models.entities import GitHubCredential, Repository, WorkspaceAuditLog
 
 
 def build_client(database_path: Path) -> TestClient:
     return TestClient(create_app(database_url=f"sqlite:///{database_path.as_posix()}"))
+
+
+def auth_headers(
+    *,
+    user_id: str = "dev_user",
+    workspace_id: str = "dev_workspace",
+    organization_id: str = "dev_organization",
+    roles: str = "owner",
+) -> dict[str, str]:
+    return {
+        "x-ai-scdc-user-id": user_id,
+        "x-ai-scdc-workspace-id": workspace_id,
+        "x-ai-scdc-organization-id": organization_id,
+        "x-ai-scdc-roles": roles,
+    }
 
 
 def test_github_credential_never_returns_secret_fields(tmp_path: Path) -> None:
@@ -121,6 +136,154 @@ def test_register_github_repository_persists_provider_metadata(tmp_path: Path) -
         persisted = session.get(Repository, repository["id"])
         assert persisted is not None
         assert persisted.provider == "github"
+
+
+def test_register_github_repository_requires_repository_write_and_audits_denial(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    owner_headers = auth_headers(roles="owner")
+    viewer_headers = auth_headers(user_id="viewer_user", roles="viewer")
+
+    with build_client(database_path) as client:
+        project = client.post(
+            "/projects",
+            json={"name": "GitHub project"},
+            headers=owner_headers,
+        ).json()
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "Dev GitHub", "token": "ghp_example1234567890"},
+            headers=owner_headers,
+        ).json()
+
+        response = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Denied remote",
+                "repo_url": "https://github.com/example/denied",
+                "github_owner": "example",
+                "github_repo": "denied",
+                "default_branch": "main",
+                "github_credential_id": credential["id"],
+            },
+            headers=viewer_headers,
+        )
+
+    assert response.status_code == 403
+    with Session(build_engine(database_url)) as session:
+        repositories = session.exec(select(Repository)).all()
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "github_repository.create"
+            )
+        ).one()
+
+    assert repositories == []
+    assert audit_log.resource_type == "repository"
+    assert audit_log.resource_id is None
+    assert audit_log.access_level.value == "high_value_write"
+    assert audit_log.success is False
+    assert audit_log.status_code == 403
+    assert audit_log.error_code == "insufficient_workspace_role"
+
+
+def test_register_github_repository_denies_viewer_before_credential_lookup(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    owner_headers = auth_headers(roles="owner")
+    viewer_headers = auth_headers(user_id="viewer_user", roles="viewer")
+
+    with build_client(database_path) as client:
+        project = client.post(
+            "/projects",
+            json={"name": "GitHub project"},
+            headers=owner_headers,
+        ).json()
+
+        response = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Denied remote",
+                "repo_url": "https://github.com/example/denied",
+                "github_owner": "example",
+                "github_repo": "denied",
+                "default_branch": "main",
+                "github_credential_id": "github_credential_missing",
+            },
+            headers=viewer_headers,
+        )
+
+    assert response.status_code == 403
+    with Session(build_engine(database_url)) as session:
+        repositories = session.exec(select(Repository)).all()
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "github_repository.create"
+            )
+        ).one()
+
+    assert repositories == []
+    assert audit_log.resource_type == "repository"
+    assert audit_log.resource_id is None
+    assert audit_log.success is False
+    assert audit_log.status_code == 403
+    assert audit_log.error_code == "insufficient_workspace_role"
+
+
+def test_register_github_repository_records_workspace_audit(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    owner_headers = auth_headers(roles="owner")
+    developer_headers = auth_headers(user_id="developer_user", roles="developer")
+
+    with build_client(database_path) as client:
+        project = client.post(
+            "/projects",
+            json={"name": "GitHub project"},
+            headers=owner_headers,
+        ).json()
+        credential = client.post(
+            "/github-credentials",
+            json={"display_name": "Dev GitHub", "token": "ghp_example1234567890"},
+            headers=owner_headers,
+        ).json()
+        response = client.post(
+            f"/projects/{project['id']}/github-repositories",
+            json={
+                "name": "Audited remote",
+                "repo_url": "https://github.com/example/audited",
+                "github_owner": "example",
+                "github_repo": "audited",
+                "default_branch": "main",
+                "github_credential_id": credential["id"],
+            },
+            headers=developer_headers,
+        )
+
+    assert response.status_code == 201
+    repository = response.json()
+    with Session(build_engine(database_url)) as session:
+        audit_log = session.exec(
+            select(WorkspaceAuditLog).where(
+                WorkspaceAuditLog.operation == "github_repository.create"
+            )
+        ).one()
+
+    assert audit_log.resource_type == "repository"
+    assert audit_log.resource_id == repository["id"]
+    assert audit_log.access_level.value == "high_value_write"
+    assert audit_log.success is True
+    assert audit_log.status_code == 201
+    assert audit_log.metadata_json == {
+        "project_id": project["id"],
+        "github_credential_id": credential["id"],
+        "provider": "github",
+    }
+    assert "ghp_example" not in str(audit_log.model_dump())
 
 
 def test_repository_delete_marks_repository_inactive(tmp_path: Path) -> None:

@@ -57,6 +57,22 @@ class ModelRouteResolutionSource(str, Enum):
 
 class UsageType(str, Enum):
     MODEL_TOKENS = "model_tokens"
+    CLOUD_RUN_RUNTIME_SECONDS = "cloud_run_runtime_seconds"
+    WORKER_SUBMISSIONS = "worker_submissions"
+    OBJECT_STORAGE_BYTES = "object_storage_bytes"
+    OBJECT_STORAGE_READS = "object_storage_reads"
+    LOG_SYNC_CALLS = "log_sync_calls"
+    QUEUE_MESSAGES = "queue_messages"
+    PR_PUBLISH_ATTEMPTS = "pr_publish_attempts"
+
+
+class WorkspaceRole(str, Enum):
+    OWNER = "owner"
+    ADMIN = "admin"
+    DEVELOPER = "developer"
+    REVIEWER = "reviewer"
+    BILLING_MANAGER = "billing_manager"
+    VIEWER = "viewer"
 
 
 class RepositoryCreate(BaseModel):
@@ -335,8 +351,31 @@ class CloudRunRead(BaseModel):
     log_stream_uri: str | None
     external_status: str | None
     external_error: str | None
+    budget_reservation_id: str | None
+    estimated_cost_cents: int
+    actual_cost_cents: int
+    cost_summary_json: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+
+
+class CloudRunOperatorSnapshotRead(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    status: str
+    queue_provider: str
+    runtime_provider: str | None
+    external_status: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CloudRunProviderOperationRead(BaseModel):
+    status: Literal["skipped", "succeeded", "failed"]
+    reason: str
+    cloud_run: CloudRunOperatorSnapshotRead
 
 
 class CloudRunLogEntryRead(BaseModel):
@@ -749,11 +788,14 @@ class UsageLedgerCreate(BaseModel):
     project_id: str | None = None
     planner_run_id: str | None = None
     task_id: str | None = None
+    cloud_run_id: str | None = None
     usage_type: UsageType = UsageType.MODEL_TOKENS
     provider_name: str = Field(min_length=1)
     model_name: str = Field(min_length=1)
     prompt_tokens: NonNegativeInt = 0
     completion_tokens: NonNegativeInt = 0
+    quantity: NonNegativeInt = 0
+    unit_name: str = ""
     unit_price_cents: NonNegativeInt = 0
     amount_cents: NonNegativeInt = 0
     raw_usage_json: dict[str, Any] = Field(default_factory=dict)
@@ -767,19 +809,117 @@ class UsageLedgerRead(BaseModel):
     project_id: str | None
     planner_run_id: str | None
     task_id: str | None
+    cloud_run_id: str | None
     usage_type: str
     provider_name: str
     model_name: str
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    quantity: int
+    unit_name: str
     unit_price_cents: int
     amount_cents: int
     raw_usage_json: dict[str, Any]
     created_at: datetime
 
 
+class UsageLedgerCostSummaryRead(BaseModel):
+    id: str
+    workspace_id: str
+    organization_id: str
+    user_id: str
+    project_id: str | None
+    planner_run_id: str | None
+    task_id: str | None
+    cloud_run_id: str | None
+    usage_type: str
+    provider_name: str
+    model_name: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    quantity: int
+    unit_name: str
+    unit_price_cents: int
+    amount_cents: int
+    created_at: datetime
+
+
+class ManualCreditGrantCreate(BaseModel):
+    amount_cents: NonNegativeInt
+    reason: str = Field(min_length=1)
+
+
+class CreditWalletRead(BaseModel):
+    id: str
+    workspace_id: str
+    organization_id: str
+    balance_cents: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class SpendLimitUpdate(BaseModel):
+    monthly_limit_cents: NonNegativeInt = 0
+    per_run_limit_cents: NonNegativeInt = 0
+
+
+class SpendLimitRead(BaseModel):
+    id: str
+    workspace_id: str
+    monthly_limit_cents: int
+    per_run_limit_cents: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class UsageSummaryItemRead(BaseModel):
+    usage_type: str
+    quantity: int
+    amount_cents: int
+
+
+class UsageSummaryRead(BaseModel):
+    workspace_id: str
+    project_id: str | None
+    task_id: str | None
+    total_amount_cents: int
+    items: list[UsageSummaryItemRead]
+
+
+class BudgetReservationRead(BaseModel):
+    id: str
+    workspace_id: str
+    organization_id: str
+    project_id: str
+    task_id: str
+    cloud_run_id: str | None
+    reserved_cents: int
+    settled_cents: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    settled_at: datetime | None
+
+
+class CloudRunCostSummaryRead(BaseModel):
+    cloud_run_id: str
+    workspace_id: str
+    project_id: str
+    task_id: str
+    estimated_cost_cents: int
+    measured_cost_cents: int
+    billable_cost_cents: int
+    actual_cost_cents: int
+    reservation: BudgetReservationRead | None
+    usage_entries: list[UsageLedgerCostSummaryRead]
+
+
 class DevIdentity(BaseModel):
     user_id: str
     workspace_id: str
     organization_id: str
+    roles: list[str] = Field(default_factory=list)
+    auth_mode: str = "dev"

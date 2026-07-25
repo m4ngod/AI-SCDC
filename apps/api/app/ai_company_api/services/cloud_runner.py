@@ -36,6 +36,11 @@ from ai_company_api.services.aliyun_config import (
     AliyunConfigurationError,
     require_aliyun_settings,
 )
+from ai_company_api.services.budgeting import (
+    release_cloud_run_reservation,
+    reserve_cloud_run_budget,
+    settle_cloud_run_budget,
+)
 from ai_company_api.services.cloud_sandbox_executor import (
     CommandResult,
     SandboxCommandSelection,
@@ -68,8 +73,9 @@ from ai_company_api.services.remote_runtime import (
     get_remote_runtime_provider,
 )
 from ai_company_api.services.repository import create_task_event, get_repository, get_task
+from ai_company_api.services.auth_context import enforce_workspace_access, get_current_auth_context
 from ai_company_api.services.sandbox_profiles import validate_sandbox_profile_for_repo
-from ai_company_api.services.secret_vault import DevSecretVault
+from ai_company_api.services.secret_access_audit import open_secret
 from ai_company_api.services.task_state import (
     InvalidTaskTransition,
     TaskStatus,
@@ -80,6 +86,11 @@ from ai_company_api.services.worker_callback_auth import (
     generate_callback_token,
     hash_callback_token,
     verify_callback_token,
+)
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
+    require_audited_workspace_permission_if_authenticated,
 )
 
 SENSITIVE_PAYLOAD_KEYS = {
@@ -118,6 +129,26 @@ class CloudRunProviderOperationResult:
     status: CloudRunProviderOperationStatus
     reason: str
     cloud_run: CloudRunRead
+
+
+def _require_audited_permission_if_authenticated(
+    session: Session,
+    permission: str,
+    *,
+    operation: str,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> None:
+    if get_current_auth_context() is None:
+        return
+    require_audited_workspace_permission(
+        session,
+        permission,
+        operation=operation,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        access_level="high_value_write",
+    )
 
 
 def _is_sensitive_payload_key(key: str) -> bool:
@@ -252,6 +283,12 @@ def enqueue_cloud_run(
 ) -> CloudRunResultRead:
     task = get_task(session, task_id)
     repository = get_repository(session, data.repo_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "run.write",
+        operation="cloud_run.start",
+        resource_type="cloud_run",
+    )
     if repository.project_id != task.project_id:
         raise HTTPException(
             status_code=400,
@@ -306,7 +343,13 @@ def enqueue_cloud_run(
             patch_command_key = patch_command.key
             test_command_keys = [command.key for command in test_commands]
 
+    budget_reservation = reserve_cloud_run_budget(
+        session,
+        project_id=task.project_id,
+        task_id=task.id,
+    )
     cloud_run = CloudRun(
+        workspace_id=repository.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         repo_id=repository.id,
@@ -320,14 +363,23 @@ def enqueue_cloud_run(
         queue_provider=data.queue_provider,
         runtime_provider=data.runtime_provider,
         storage_provider=data.storage_provider,
+        budget_reservation_id=budget_reservation.id,
+        estimated_cost_cents=budget_reservation.reserved_cents,
+        cost_summary_json={
+            "reservation_id": budget_reservation.id,
+            "reserved_cents": budget_reservation.reserved_cents,
+        },
     )
     session.add(cloud_run)
     session.flush()
+    budget_reservation.cloud_run_id = cloud_run.id
+    budget_reservation.updated_at = utc_now()
 
     head_branch = f"ai-scdc/task-{task.id}-{cloud_run.id}"
     cloud_run.head_branch = head_branch
 
     local_run = LocalTaskRun(
+        workspace_id=repository.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         repo_id=repository.id,
@@ -428,6 +480,7 @@ def enqueue_cloud_run(
                     "failure_reason": "queue_enqueue_failed",
                 },
             )
+            release_cloud_run_reservation(session, cloud_run)
             session.add(local_run)
             session.add(cloud_run)
             session.commit()
@@ -504,6 +557,7 @@ def enqueue_cloud_run(
                     "failure_reason": "runtime_submission_failed",
                 },
             )
+            settle_cloud_run_budget(session, cloud_run)
             session.add(local_run)
             session.add(cloud_run)
             session.commit()
@@ -544,6 +598,15 @@ def enqueue_cloud_run(
         )
     session.add(local_run)
     session.add(cloud_run)
+    record_workspace_audit(
+        session,
+        operation="cloud_run.start",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=201,
+    )
     session.commit()
     session.refresh(cloud_run)
     return CloudRunResultRead(
@@ -833,6 +896,7 @@ def requeue_expired_cloud_run_leases(
                 level="error",
                 payload={"failure_reason": "lease_attempts_exhausted"},
             )
+            settle_cloud_run_budget(session, cloud_run)
         else:
             cloud_run.status = "queued"
             cloud_run.worker_id = None
@@ -894,6 +958,14 @@ def retry_retained_mns_queue_receipt_delete(
     cloud_run_id: str,
 ) -> CloudRunProviderOperationResult:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "operator.write",
+        operation="operator.mns_receipt_retry",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+        access_level="high_value_write",
+    )
     skip_reason = _mns_receipt_recovery_skip_reason(cloud_run)
     if skip_reason is not None:
         _append_cloud_run_log(
@@ -908,6 +980,20 @@ def retry_retained_mns_queue_receipt_delete(
         )
         cloud_run.updated_at = utc_now()
         session.add(cloud_run)
+        if should_audit:
+            record_workspace_audit(
+                session,
+                operation="operator.mns_receipt_retry",
+                resource_type="cloud_run",
+                resource_id=cloud_run.id,
+                access_level="high_value_write",
+                success=True,
+                status_code=200,
+                metadata={
+                    "operation_status": "skipped",
+                    "reason": skip_reason,
+                },
+            )
         session.commit()
         session.refresh(cloud_run)
         return CloudRunProviderOperationResult(
@@ -960,6 +1046,20 @@ def retry_retained_mns_queue_receipt_delete(
 
     cloud_run.updated_at = utc_now()
     session.add(cloud_run)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="operator.mns_receipt_retry",
+            resource_type="cloud_run",
+            resource_id=cloud_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+            metadata={
+                "operation_status": result_status,
+                "reason": result_reason,
+            },
+        )
     session.commit()
     session.refresh(cloud_run)
     return CloudRunProviderOperationResult(
@@ -993,6 +1093,14 @@ def cleanup_aliyun_eci_terminal_runtime_job(
     cloud_run_id: str,
 ) -> CloudRunProviderOperationResult:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "operator.write",
+        operation="operator.eci_runtime_cleanup",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+        access_level="high_value_write",
+    )
     skip_reason = _aliyun_eci_runtime_cleanup_skip_reason(cloud_run)
     if skip_reason is not None:
         _append_cloud_run_log(
@@ -1007,6 +1115,20 @@ def cleanup_aliyun_eci_terminal_runtime_job(
         )
         cloud_run.updated_at = utc_now()
         session.add(cloud_run)
+        if should_audit:
+            record_workspace_audit(
+                session,
+                operation="operator.eci_runtime_cleanup",
+                resource_type="cloud_run",
+                resource_id=cloud_run.id,
+                access_level="high_value_write",
+                success=True,
+                status_code=200,
+                metadata={
+                    "operation_status": "skipped",
+                    "reason": skip_reason,
+                },
+            )
         session.commit()
         session.refresh(cloud_run)
         return CloudRunProviderOperationResult(
@@ -1075,6 +1197,20 @@ def cleanup_aliyun_eci_terminal_runtime_job(
 
     cloud_run.updated_at = utc_now()
     session.add(cloud_run)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="operator.eci_runtime_cleanup",
+            resource_type="cloud_run",
+            resource_id=cloud_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+            metadata={
+                "operation_status": result_status,
+                "reason": result_reason,
+            },
+        )
     session.commit()
     session.refresh(cloud_run)
     return CloudRunProviderOperationResult(
@@ -1322,6 +1458,13 @@ def process_cloud_run(
     worker_id: str = "local-worker",
 ) -> CloudRunResultRead:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "run.write",
+        operation="cloud_run.process",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+    )
     if cloud_run.status != "queued":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1370,15 +1513,27 @@ def process_cloud_run(
     session.refresh(cloud_run)
     session.refresh(local_run)
     try:
-        return _execute_claimed_cloud_run(session, cloud_run=cloud_run)
+        result = _execute_claimed_cloud_run(session, cloud_run=cloud_run)
     except HTTPException as exc:
-        return _mark_claimed_cloud_run_failed(
+        result = _mark_claimed_cloud_run_failed(
             session,
             cloud_run=cloud_run,
             local_run=local_run,
             failure_reason="cloud_run_preflight_failed",
             message=str(exc.detail),
         )
+    record_workspace_audit(
+        session,
+        operation="cloud_run.process",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=200,
+        workspace_id=cloud_run.workspace_id,
+        commit=True,
+    )
+    return result
 
 
 def _claim_cloud_run(
@@ -1476,6 +1631,7 @@ def _mark_claimed_cloud_run_failed(
         message="Cloud run processing completed.",
         payload={"status": "failed"},
     )
+    settle_cloud_run_budget(session, cloud_run)
     session.add(local_run)
     session.add(cloud_run)
     session.commit()
@@ -1531,6 +1687,7 @@ def _mark_claimed_cloud_run_cancelled(
         payload={"status": "cancelled"},
         created_at=log_clock.next(),
     )
+    settle_cloud_run_budget(session, cloud_run)
     session.add(local_run)
     session.add(cloud_run)
     session.commit()
@@ -1541,8 +1698,26 @@ def _mark_claimed_cloud_run_cancelled(
 
 def cancel_cloud_run(session: Session, *, cloud_run_id: str) -> CloudRunRead:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    _require_audited_permission_if_authenticated(
+        session,
+        "run.write",
+        operation="cloud_run.cancel",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+    )
     if cloud_run.status in CLOUD_RUN_TERMINAL_STATUSES:
-        return _cloud_run_read(cloud_run)
+        result = _cloud_run_read(cloud_run)
+        record_workspace_audit(
+            session,
+            operation="cloud_run.cancel",
+            resource_type="cloud_run",
+            resource_id=cloud_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+            commit=True,
+        )
+        return result
 
     now = utc_now()
 
@@ -1551,13 +1726,35 @@ def cancel_cloud_run(session: Session, *, cloud_run_id: str) -> CloudRunRead:
             session.rollback()
             cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
             if cloud_run.status in CLOUD_RUN_TERMINAL_STATUSES:
-                return _cloud_run_read(cloud_run)
+                result = _cloud_run_read(cloud_run)
+                record_workspace_audit(
+                    session,
+                    operation="cloud_run.cancel",
+                    resource_type="cloud_run",
+                    resource_id=cloud_run.id,
+                    access_level="high_value_write",
+                    success=True,
+                    status_code=200,
+                    commit=True,
+                )
+                return result
             now = utc_now()
-            return _request_running_cloud_run_cancel_and_log(
+            result = _request_running_cloud_run_cancel_and_log(
                 session,
                 cloud_run_id=cloud_run.id,
                 now=now,
             )
+            record_workspace_audit(
+                session,
+                operation="cloud_run.cancel",
+                resource_type="cloud_run",
+                resource_id=cloud_run.id,
+                access_level="high_value_write",
+                success=True,
+                status_code=200,
+                commit=True,
+            )
+            return result
         session.refresh(cloud_run)
         if (
             cloud_run.callback_token_hash is not None
@@ -1574,17 +1771,40 @@ def cancel_cloud_run(session: Session, *, cloud_run_id: str) -> CloudRunRead:
             event="cancelled",
             message="Queued cloud run cancelled.",
         )
+        release_cloud_run_reservation(session, cloud_run)
     else:
-        return _request_running_cloud_run_cancel_and_log(
+        result = _request_running_cloud_run_cancel_and_log(
             session,
             cloud_run_id=cloud_run.id,
             now=now,
         )
+        record_workspace_audit(
+            session,
+            operation="cloud_run.cancel",
+            resource_type="cloud_run",
+            resource_id=cloud_run.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=200,
+            commit=True,
+        )
+        return result
 
     session.add(cloud_run)
     session.commit()
     session.refresh(cloud_run)
-    return _cloud_run_read(cloud_run)
+    result = _cloud_run_read(cloud_run)
+    record_workspace_audit(
+        session,
+        operation="cloud_run.cancel",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=200,
+        commit=True,
+    )
+    return result
 
 
 def _cancel_queued_cloud_run(
@@ -1659,13 +1879,34 @@ def list_cloud_run_logs(
     *,
     cloud_run_id: str,
 ) -> list[CloudRunLogEntryRead]:
-    _get_cloud_run_or_404(session, cloud_run_id)
+    cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "log.sensitive.read",
+        operation="cloud_log.list",
+        resource_type="cloud_run_log",
+        resource_id=cloud_run.id,
+        access_level="high_sensitive_read",
+    )
     entries = session.exec(
         select(CloudRunLogEntry)
         .where(CloudRunLogEntry.cloud_run_id == cloud_run_id)
         .order_by(CloudRunLogEntry.created_at, CloudRunLogEntry.id)
     ).all()
-    return [_cloud_run_log_entry_read(entry) for entry in entries]
+    result = [_cloud_run_log_entry_read(entry) for entry in entries]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="cloud_log.list",
+            resource_type="cloud_run_log",
+            resource_id=cloud_run.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"count": len(result)},
+            commit=True,
+        )
+    return result
 
 
 def _execute_claimed_cloud_run(
@@ -1715,7 +1956,14 @@ def _execute_claimed_cloud_run(
         sandbox_env = _sandbox_profile_env(profile.allowed_env_vars or [])
         network_enabled = profile.network_enabled
         credential = get_active_github_credential(session, repository.github_credential_id)
-        github_token = DevSecretVault().open(credential.encrypted_token)
+        github_token = open_secret(
+            session,
+            credential.encrypted_token,
+            secret_kind="github_credential",
+            secret_id=credential.id,
+            access_reason="docker_cloud_run_clone",
+            workspace_id=credential.workspace_id,
+        )
 
     try:
         execution_result = executor.run(
@@ -1884,6 +2132,7 @@ def _finalize_claimed_cloud_run_result(
             payload={"status": execution_result.status},
             created_at=log_clock.next(),
         )
+        settle_cloud_run_budget(session, cloud_run)
         session.add(local_run)
         session.add(cloud_run)
         session.add(task)
@@ -1896,6 +2145,7 @@ def _finalize_claimed_cloud_run_result(
         )
 
     artifact = PatchArtifact(
+        workspace_id=cloud_run.workspace_id,
         project_id=task.project_id,
         task_id=task.id,
         local_run_id=local_run.id,
@@ -1911,6 +2161,7 @@ def _finalize_claimed_cloud_run_result(
 
     if execution_result.test_command_results:
         test_run = LocalTestRun(
+            workspace_id=cloud_run.workspace_id,
             project_id=task.project_id,
             task_id=task.id,
             local_run_id=local_run.id,
@@ -1993,6 +2244,7 @@ def _finalize_claimed_cloud_run_result(
     task.worktree_ref = execution_result.worktree_ref
     _transition_task_to_patch_ready(session, event_clock, task)
 
+    settle_cloud_run_budget(session, cloud_run)
     session.add(local_run)
     session.add(cloud_run)
     session.add(task)
@@ -2061,19 +2313,39 @@ def _existing_cloud_run_result(
 
 
 def list_cloud_runs(session: Session, task_id: str) -> list[CloudRunRead]:
-    get_task(session, task_id)
+    task = get_task(session, task_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="cloud_run.list",
+        resource_type="cloud_run",
+        access_level="high_sensitive_read",
+    )
     statement = (
         select(CloudRun)
         .where(CloudRun.task_id == task_id)
         .order_by(CloudRun.created_at, CloudRun.id)
     )
-    return [_cloud_run_read(cloud_run) for cloud_run in session.exec(statement).all()]
+    runs = [_cloud_run_read(cloud_run) for cloud_run in session.exec(statement).all()]
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="cloud_run.list",
+            resource_type="cloud_run",
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"task_id": task.id, "count": len(runs)},
+            commit=True,
+        )
+    return runs
 
 
 def _get_cloud_run_or_404(session: Session, cloud_run_id: str) -> CloudRun:
     cloud_run = session.get(CloudRun, cloud_run_id)
     if cloud_run is None:
         raise HTTPException(status_code=404, detail="Cloud run not found")
+    enforce_workspace_access(cloud_run.workspace_id, detail="Cloud run not found")
     return cloud_run
 
 
@@ -2171,7 +2443,28 @@ def _get_cloud_run_local_run_or_404(
 
 def get_cloud_run_read(session: Session, cloud_run_id: str) -> CloudRunRead:
     cloud_run = _get_cloud_run_or_404(session, cloud_run_id)
-    return _cloud_run_read(cloud_run)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "execution.evidence.read",
+        operation="cloud_run.read",
+        resource_type="cloud_run",
+        resource_id=cloud_run.id,
+        access_level="high_sensitive_read",
+    )
+    result = _cloud_run_read(cloud_run)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="cloud_run.read",
+            resource_type="cloud_run",
+            resource_id=cloud_run.id,
+            access_level="high_sensitive_read",
+            success=True,
+            status_code=200,
+            metadata={"task_id": cloud_run.task_id, "project_id": cloud_run.project_id},
+            commit=True,
+        )
+    return result
 
 
 def _select_profile_commands(
@@ -2436,6 +2729,10 @@ def _cloud_run_read(cloud_run: CloudRun) -> CloudRunRead:
         log_stream_uri=_redact_external_uri(cloud_run.log_stream_uri),
         external_status=cloud_run.external_status,
         external_error=_redact_external_error(cloud_run.external_error),
+        budget_reservation_id=cloud_run.budget_reservation_id,
+        estimated_cost_cents=cloud_run.estimated_cost_cents,
+        actual_cost_cents=cloud_run.actual_cost_cents,
+        cost_summary_json=cloud_run.cost_summary_json or {},
         created_at=cloud_run.created_at,
         updated_at=cloud_run.updated_at,
     )

@@ -23,7 +23,14 @@ from ai_company_api.schemas.api import (
     ModelRouteUpdate,
     ResolvedModelRouteRead,
 )
-from ai_company_api.services.secret_vault import DevSecretVault, SecretVault
+from ai_company_api.services.auth_context import (
+    current_workspace_id,
+    enforce_workspace_access,
+    get_current_auth_context,
+)
+from ai_company_api.services.secret_access_audit import record_secret_access
+from ai_company_api.services.secret_vault import SecretVault, get_secret_vault
+from ai_company_api.services.workspace_audit import require_audited_workspace_permission
 
 
 SECRET_HEADER_NAMES = {
@@ -110,6 +117,7 @@ def get_model_provider(session: Session, provider_id: str) -> ModelProvider:
     provider = session.get(ModelProvider, provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail="Model provider not found")
+    enforce_workspace_access(provider.workspace_id, detail="Model provider not found")
     return provider
 
 
@@ -117,6 +125,7 @@ def get_model_credential(session: Session, credential_id: str) -> ModelCredentia
     credential = session.get(ModelCredential, credential_id)
     if credential is None:
         raise HTTPException(status_code=404, detail="Model credential not found")
+    enforce_workspace_access(credential.workspace_id, detail="Model credential not found")
     return credential
 
 
@@ -124,6 +133,7 @@ def get_model_route(session: Session, route_id: str) -> ModelRoute:
     route = session.get(ModelRoute, route_id)
     if route is None:
         raise HTTPException(status_code=404, detail="Model route not found")
+    enforce_workspace_access(route.workspace_id, detail="Model route not found")
     return route
 
 
@@ -134,7 +144,7 @@ def _active_route_for_role(
 ) -> ModelRoute | None:
     statement = (
         select(ModelRoute)
-        .where(ModelRoute.workspace_id == "dev_workspace")
+        .where(ModelRoute.workspace_id == current_workspace_id())
         .where(ModelRoute.agent_role == agent_role)
         .where(ModelRoute.status == ModelRouteStatus.ACTIVE)
     )
@@ -159,20 +169,32 @@ def _validate_route_references(
                 status_code=400,
                 detail="Credential does not belong to provider",
             )
+        if credential.workspace_id != provider.workspace_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Credential does not belong to provider workspace",
+            )
     return provider, credential
 
 
 def list_model_providers(session: Session) -> list[ModelProviderRead]:
-    statement = select(ModelProvider).order_by(ModelProvider.created_at, ModelProvider.id)
+    statement = select(ModelProvider)
+    context = get_current_auth_context()
+    if context is not None:
+        statement = statement.where(ModelProvider.workspace_id == context.workspace_id)
+    statement = statement.order_by(ModelProvider.created_at, ModelProvider.id)
     return [_provider_read(provider) for provider in session.exec(statement).all()]
 
 
 def create_model_provider(
     session: Session,
     data: ModelProviderCreate,
+    *,
+    commit: bool = True,
 ) -> ModelProviderRead:
     _reject_secret_headers(data.default_headers)
     provider = ModelProvider(
+        workspace_id=current_workspace_id(),
         name=data.name,
         provider_type=ModelProviderType(data.provider_type.value),
         base_url=data.base_url,
@@ -180,7 +202,10 @@ def create_model_provider(
     )
     session.add(provider)
     try:
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(
@@ -192,7 +217,11 @@ def create_model_provider(
 
 
 def list_model_credentials(session: Session) -> list[ModelCredentialRead]:
-    statement = select(ModelCredential).order_by(
+    statement = select(ModelCredential)
+    context = get_current_auth_context()
+    if context is not None:
+        statement = statement.where(ModelCredential.workspace_id == context.workspace_id)
+    statement = statement.order_by(
         ModelCredential.created_at,
         ModelCredential.id,
     )
@@ -203,36 +232,81 @@ def create_model_credential(
     session: Session,
     data: ModelCredentialCreate,
     vault: SecretVault | None = None,
+    *,
+    commit: bool = True,
 ) -> ModelCredentialRead:
     provider = get_model_provider(session, data.provider_id)
     if _enum_value(provider.status) != ModelProviderStatus.ACTIVE.value:
         raise HTTPException(status_code=400, detail="Model provider is disabled")
 
-    sealed = (vault or DevSecretVault()).seal(data.secret_value.get_secret_value())
+    sealed = (vault or get_secret_vault()).seal(data.secret_value.get_secret_value())
     credential = ModelCredential(
+        workspace_id=provider.workspace_id,
         provider_id=provider.id,
         display_name=data.display_name,
         secret_last4=sealed.secret_last4,
         encrypted_secret=sealed.encrypted_secret,
     )
     session.add(credential)
-    session.commit()
-    session.refresh(credential)
+    record_secret_access(
+        session,
+        secret_kind="model_credential",
+        secret_id=credential.id,
+        operation="create",
+        access_reason="model_credential_create",
+        workspace_id=credential.workspace_id,
+    )
+    if commit:
+        session.commit()
+        session.refresh(credential)
+    else:
+        session.flush()
+        session.refresh(credential)
     return _credential_read(credential)
 
 
-def delete_model_credential(session: Session, credential_id: str) -> ModelCredentialRead:
+def delete_model_credential(
+    session: Session,
+    credential_id: str,
+    *,
+    commit: bool = True,
+) -> ModelCredentialRead:
     credential = get_model_credential(session, credential_id)
+    require_audited_workspace_permission(
+        session,
+        "credential.write",
+        operation="model_credential.delete",
+        resource_type="model_credential",
+        resource_id=credential.id,
+        access_level="high_value_write",
+    )
+    get_secret_vault().delete(credential.encrypted_secret)
     credential.status = ModelCredentialStatus.DELETED
     credential.updated_at = utc_now()
     session.add(credential)
-    session.commit()
-    session.refresh(credential)
+    record_secret_access(
+        session,
+        secret_kind="model_credential",
+        secret_id=credential.id,
+        operation="delete",
+        access_reason="model_credential_delete",
+        workspace_id=credential.workspace_id,
+    )
+    if commit:
+        session.commit()
+        session.refresh(credential)
+    else:
+        session.flush()
+        session.refresh(credential)
     return _credential_read(credential)
 
 
 def list_model_routes(session: Session) -> list[ModelRouteRead]:
-    statement = select(ModelRoute).order_by(
+    statement = select(ModelRoute)
+    context = get_current_auth_context()
+    if context is not None:
+        statement = statement.where(ModelRoute.workspace_id == context.workspace_id)
+    statement = statement.order_by(
         ModelRoute.agent_role,
         ModelRoute.created_at,
         ModelRoute.id,
@@ -240,8 +314,17 @@ def list_model_routes(session: Session) -> list[ModelRouteRead]:
     return [_route_read(route) for route in session.exec(statement).all()]
 
 
-def create_model_route(session: Session, data: ModelRouteCreate) -> ModelRouteRead:
-    _validate_route_references(session, data.provider_id, data.credential_id)
+def create_model_route(
+    session: Session,
+    data: ModelRouteCreate,
+    *,
+    commit: bool = True,
+) -> ModelRouteRead:
+    provider, _credential = _validate_route_references(
+        session,
+        data.provider_id,
+        data.credential_id,
+    )
     if _active_route_for_role(session, data.agent_role.value) is not None:
         raise HTTPException(
             status_code=409,
@@ -249,6 +332,7 @@ def create_model_route(session: Session, data: ModelRouteCreate) -> ModelRouteRe
         )
 
     route = ModelRoute(
+        workspace_id=provider.workspace_id,
         agent_role=data.agent_role.value,
         provider_id=data.provider_id,
         credential_id=data.credential_id,
@@ -257,7 +341,10 @@ def create_model_route(session: Session, data: ModelRouteCreate) -> ModelRouteRe
     )
     session.add(route)
     try:
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(
@@ -272,8 +359,18 @@ def update_model_route(
     session: Session,
     route_id: str,
     data: ModelRouteUpdate,
+    *,
+    commit: bool = True,
 ) -> ModelRouteRead:
     route = get_model_route(session, route_id)
+    require_audited_workspace_permission(
+        session,
+        "model_config.write",
+        operation="model_route.update",
+        resource_type="model_route",
+        resource_id=route.id,
+        access_level="high_value_write",
+    )
     provider_id = data.provider_id if data.provider_id is not None else route.provider_id
     credential_id = route.credential_id
     if "credential_id" in data.model_fields_set:
@@ -301,7 +398,10 @@ def update_model_route(
     route.updated_at = utc_now()
     session.add(route)
     try:
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(

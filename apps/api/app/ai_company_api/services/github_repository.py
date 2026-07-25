@@ -15,8 +15,19 @@ from ai_company_api.schemas.api import (
     GitHubRepositoryCreate,
     RepositoryRead,
 )
+from ai_company_api.services.auth_context import (
+    current_workspace_id,
+    enforce_workspace_access,
+    get_current_auth_context,
+)
 from ai_company_api.services.repository import _repository_read, get_project
-from ai_company_api.services.secret_vault import DevSecretVault, SecretVault
+from ai_company_api.services.secret_access_audit import record_secret_access
+from ai_company_api.services.secret_vault import SecretVault, get_secret_vault
+from ai_company_api.services.workspace_audit import (
+    record_workspace_audit,
+    require_audited_workspace_permission,
+    require_audited_workspace_permission_if_authenticated,
+)
 
 
 def _enum_value(value) -> str:
@@ -36,7 +47,11 @@ def _github_credential_read(credential: GitHubCredential) -> GitHubCredentialRea
 
 
 def list_github_credentials(session: Session) -> list[GitHubCredentialRead]:
-    statement = select(GitHubCredential).order_by(
+    statement = select(GitHubCredential)
+    context = get_current_auth_context()
+    if context is not None:
+        statement = statement.where(GitHubCredential.workspace_id == context.workspace_id)
+    statement = statement.order_by(
         GitHubCredential.created_at,
         GitHubCredential.id,
     )
@@ -47,16 +62,30 @@ def create_github_credential(
     session: Session,
     data: GitHubCredentialCreate,
     vault: SecretVault | None = None,
+    commit: bool = True,
 ) -> GitHubCredentialRead:
-    sealed = (vault or DevSecretVault()).seal(data.token.get_secret_value())
+    sealed = (vault or get_secret_vault()).seal(data.token.get_secret_value())
     credential = GitHubCredential(
+        workspace_id=current_workspace_id(),
         display_name=data.display_name,
         token_last4=sealed.secret_last4,
         encrypted_token=sealed.encrypted_secret,
     )
     session.add(credential)
-    session.commit()
-    session.refresh(credential)
+    record_secret_access(
+        session,
+        secret_kind="github_credential",
+        secret_id=credential.id,
+        operation="create",
+        access_reason="github_credential_create",
+        workspace_id=credential.workspace_id,
+    )
+    if commit:
+        session.commit()
+        session.refresh(credential)
+    else:
+        session.flush()
+        session.refresh(credential)
     return _github_credential_read(credential)
 
 
@@ -70,22 +99,47 @@ def get_active_github_credential(
         or _enum_value(credential.status) != GitHubCredentialStatus.ACTIVE.value
     ):
         raise HTTPException(status_code=404, detail="GitHub credential not found")
+    enforce_workspace_access(credential.workspace_id, detail="GitHub credential not found")
     return credential
 
 
 def delete_github_credential(
     session: Session,
     credential_id: str,
+    *,
+    commit: bool = True,
 ) -> GitHubCredentialRead:
     credential = session.get(GitHubCredential, credential_id)
     if credential is None:
         raise HTTPException(status_code=404, detail="GitHub credential not found")
+    enforce_workspace_access(credential.workspace_id, detail="GitHub credential not found")
+    require_audited_workspace_permission(
+        session,
+        "credential.write",
+        operation="github_credential.delete",
+        resource_type="github_credential",
+        resource_id=credential.id,
+        access_level="high_value_write",
+    )
 
+    get_secret_vault().delete(credential.encrypted_token)
     credential.status = GitHubCredentialStatus.DELETED
     credential.updated_at = utc_now()
     session.add(credential)
-    session.commit()
-    session.refresh(credential)
+    record_secret_access(
+        session,
+        secret_kind="github_credential",
+        secret_id=credential.id,
+        operation="delete",
+        access_reason="github_credential_delete",
+        workspace_id=credential.workspace_id,
+    )
+    if commit:
+        session.commit()
+        session.refresh(credential)
+    else:
+        session.flush()
+        session.refresh(credential)
     return _github_credential_read(credential)
 
 
@@ -94,8 +148,17 @@ def create_github_repository(
     project_id: str,
     data: GitHubRepositoryCreate,
 ) -> RepositoryRead:
-    get_project(session, project_id)
-    get_active_github_credential(session, data.github_credential_id)
+    project = get_project(session, project_id)
+    should_audit = require_audited_workspace_permission_if_authenticated(
+        session,
+        "repository.write",
+        operation="github_repository.create",
+        resource_type="repository",
+        access_level="high_value_write",
+    )
+    credential = get_active_github_credential(session, data.github_credential_id)
+    if credential.workspace_id != project.workspace_id:
+        raise HTTPException(status_code=404, detail="GitHub credential not found")
     repo_url = validate_github_repository_url(
         data.repo_url,
         owner=data.github_owner,
@@ -103,6 +166,7 @@ def create_github_repository(
     )
 
     repository = Repository(
+        workspace_id=project.workspace_id,
         project_id=project_id,
         name=data.name,
         local_path="",
@@ -115,6 +179,21 @@ def create_github_repository(
         connection_status="active",
     )
     session.add(repository)
+    if should_audit:
+        record_workspace_audit(
+            session,
+            operation="github_repository.create",
+            resource_type="repository",
+            resource_id=repository.id,
+            access_level="high_value_write",
+            success=True,
+            status_code=201,
+            metadata={
+                "github_credential_id": credential.id,
+                "project_id": project.id,
+                "provider": "github",
+            },
+        )
     session.commit()
     session.refresh(repository)
     return _repository_read(repository)
