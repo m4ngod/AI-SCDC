@@ -276,6 +276,13 @@ describe("desktop API clients", () => {
           expires_at: "2026-07-27T14:00:00+00:00"
         })
       )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          csrf_token: "csrf-token-for-bulk-device-revocation",
+          expires_at: "2026-07-27T14:00:00+00:00"
+        })
+      )
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
     const client = createHttpApiClient({
@@ -294,6 +301,9 @@ describe("desktop API clients", () => {
     ]);
     await expect(
       client.revokeDeviceSession("device_session_other")
+    ).resolves.toBeUndefined();
+    await expect(
+      client.revokeOtherDeviceSessions()
     ).resolves.toBeUndefined();
 
     expect(fetchMock.mock.calls[0][0]).toBe(
@@ -317,6 +327,22 @@ describe("desktop API clients", () => {
     const headers = new Headers(fetchMock.mock.calls[2][1]?.headers);
     expect(headers.get("X-CSRF-Token")).toBe(
       "csrf-token-for-device-revocation"
+    );
+    expect(fetchMock.mock.calls[3][0]).toBe(
+      "https://app.example.test/auth/csrf"
+    );
+    expect(fetchMock.mock.calls[4][0]).toBe(
+      "https://app.example.test/auth/device-sessions/revoke-others"
+    );
+    expect(fetchMock.mock.calls[4][1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include"
+      })
+    );
+    const bulkHeaders = new Headers(fetchMock.mock.calls[4][1]?.headers);
+    expect(bulkHeaders.get("X-CSRF-Token")).toBe(
+      "csrf-token-for-bulk-device-revocation"
     );
   });
 

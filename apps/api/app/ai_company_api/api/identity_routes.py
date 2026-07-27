@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from ai_company_api.db.session import get_session_dependency
@@ -27,6 +28,7 @@ from ai_company_api.services.auth_context import (
     USER_SESSION_AUTH_MODE,
     get_auth_context_dependency,
     get_workspace_selection_auth_context_dependency,
+    hash_api_token,
 )
 from ai_company_api.services.browser_request_protection import issue_csrf_token
 from ai_company_api.services.identity_login import (
@@ -39,9 +41,14 @@ from ai_company_api.services.identity_login import (
 from ai_company_api.services.identity_logout import sign_out_current_device
 from ai_company_api.services.identity_audit import record_identity_audit_event
 from ai_company_api.services.identity_device_sessions import (
+    DeviceSessionRevocationOperationError,
     active_device_sessions,
     is_idle_expired,
     revoke_active_device_session,
+    revoke_other_active_device_sessions,
+)
+from ai_company_api.services.recent_authentication import (
+    require_recent_authentication,
 )
 
 
@@ -315,6 +322,115 @@ def delete_device_session(
     )
 
 
+@router.post(
+    "/device-sessions/revoke-others",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def post_revoke_other_device_sessions(
+    request: Request,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> Response:
+    current_device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(current_device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="device_session_revocation_requires_user_session",
+        )
+    correlation_id = secrets.token_hex(16)
+    record_identity_audit_event(
+        session,
+        event_type="other_device_sessions_revocation_requested",
+        outcome="success",
+        reason_code="customer_requested",
+        correlation_id=correlation_id,
+        user_id=auth.user_id,
+        device_session_id=current_device_session.id,
+        commit=False,
+    )
+    try:
+        require_recent_authentication(
+            request,
+            session,
+            reason_code="all_other_sessions_revocation",
+            correlation_id=correlation_id,
+        )
+    except HTTPException:
+        record_identity_audit_event(
+            session,
+            event_type="other_device_sessions_revocation_failed",
+            outcome="failure",
+            reason_code="recent_authentication_required",
+            correlation_id=correlation_id,
+            user_id=auth.user_id,
+            device_session_id=current_device_session.id,
+        )
+        raise
+    record_identity_audit_event(
+        session,
+        event_type="other_device_sessions_revocation_confirmed",
+        outcome="success",
+        reason_code="recent_authentication_confirmed",
+        correlation_id=correlation_id,
+        user_id=auth.user_id,
+        device_session_id=current_device_session.id,
+    )
+    now = request.app.state.identity_clock()
+    try:
+        revoke_other_active_device_sessions(
+            session,
+            user_id=auth.user_id,
+            current_device_session_id=current_device_session.id,
+            now=now,
+            failure_mode=(
+                request.app.state.device_session_revocation_failure
+            ),
+        )
+        record_identity_audit_event(
+            session,
+            event_type="other_device_sessions_revoked",
+            outcome="success",
+            reason_code="all_other_active_sessions_revoked",
+            correlation_id=correlation_id,
+            user_id=auth.user_id,
+            device_session_id=current_device_session.id,
+            commit=False,
+        )
+        session.commit()
+    except (SQLAlchemyError, DeviceSessionRevocationOperationError) as exc:
+        session.rollback()
+        reason_code = (
+            "persistence_failed"
+            if isinstance(exc, SQLAlchemyError)
+            else "operation_failed"
+        )
+        record_identity_audit_event(
+            session,
+            event_type="other_device_sessions_revocation_failed",
+            outcome="failure",
+            reason_code=reason_code,
+            correlation_id=correlation_id,
+            user_id=auth.user_id,
+            device_session_id=current_device_session.id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="device_session_revocation_failed",
+            headers={"X-Correlation-ID": correlation_id},
+        ) from None
+    return Response(
+        status_code=status.HTTP_204_NO_CONTENT,
+        headers={"X-Correlation-ID": correlation_id},
+    )
+
+
 @router.put("/workspace-selection", status_code=status.HTTP_204_NO_CONTENT)
 def put_workspace_selection(
     request: Request,
@@ -427,6 +543,47 @@ def get_identity_audit_events(
             item["operator_reason"] = event.operator_reason
         response.append(item)
     return response
+
+
+@router.post(
+    "/test/workspace-api-token",
+    status_code=status.HTTP_201_CREATED,
+)
+def post_test_workspace_api_token(
+    request: Request,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> dict[str, str]:
+    if not request.app.state.identity_test_support_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    current_device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(current_device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="test_token_setup_requires_user_session",
+        )
+    membership = session.exec(
+        select(OrganizationMember).where(
+            OrganizationMember.user_id == auth.user_id,
+            OrganizationMember.organization_id == auth.organization_id,
+            OrganizationMember.workspace_id == auth.workspace_id,
+            OrganizationMember.status == "active",
+        )
+    ).first()
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    token = f"scdc_test_{secrets.token_urlsafe(32)}"
+    membership.api_token_hash = hash_api_token(token)
+    session.add(membership)
+    session.commit()
+    return {"token": token}
 
 
 @router.get("/test/secret-access-audit-events")

@@ -128,6 +128,9 @@ def _start_authentication_transaction(
     current_time = _as_utc(now) if now is not None else utc_now()
     correlation_id = secrets.token_hex(16)
     is_recent_authentication = purpose == "recent_authentication"
+    requires_fresh_email_verification = (
+        is_recent_authentication or purpose == "login"
+    )
     failure_event_type = (
         "recent_authentication_failed"
         if is_recent_authentication
@@ -222,13 +225,16 @@ def _start_authentication_transaction(
         state=state_value,
         nonce=nonce_value,
         code_challenge=_pkce_s256(code_verifier),
-        prompt="login" if is_recent_authentication else None,
-        max_age_seconds=0 if is_recent_authentication else None,
+        prompt="login" if requires_fresh_email_verification else None,
+        max_age_seconds=(
+            0 if requires_fresh_email_verification else None
+        ),
         acr_values=(
             RECENT_AUTHENTICATION_EMAIL_ACR
-            if is_recent_authentication
+            if requires_fresh_email_verification
             else None
         ),
+        authentication_requested_at=current_time,
     )
     try:
         authorization_url = provider.authorization_url(authorization_request)
@@ -545,6 +551,20 @@ def complete_login_callback(
             ExternalIdentity.subject == identity_claims.subject,
         )
     ).first()
+    verified_email_authentication_time = (
+        _validated_recent_email_authentication_time(
+            identity_claims,
+            transaction=transaction,
+            now=current_time,
+        )
+    )
+    if verified_email_authentication_time is None:
+        return _reject_callback(
+            session,
+            transaction=transaction,
+            correlation_id=transaction.correlation_id,
+            reason_code="authentication_method_not_satisfied",
+        )
     onboarding_created = external_identity is None
     if external_identity is None:
         legacy_user = _legacy_user_matching_email(
@@ -611,11 +631,7 @@ def complete_login_callback(
 
     session_secret = secrets.token_urlsafe(32)
     now = current_time
-    recent_authenticated_at = _validated_recent_email_authentication_time(
-        identity_claims,
-        transaction=transaction,
-        now=now,
-    )
+    recent_authenticated_at = verified_email_authentication_time
     device_session = DeviceSession(
         user_id=user.id,
         active_workspace_id=workspace.id,

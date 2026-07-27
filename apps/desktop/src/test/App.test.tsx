@@ -381,6 +381,7 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
     signOut: vi.fn().mockResolvedValue({ redirect_to: null }),
     listDeviceSessions: vi.fn().mockResolvedValue([]),
     revokeDeviceSession: vi.fn().mockResolvedValue(undefined),
+    revokeOtherDeviceSessions: vi.fn().mockResolvedValue(undefined),
     listTasks: vi.fn().mockResolvedValue([]),
     createTask: vi.fn(),
     createPlannerRun: vi.fn().mockResolvedValue(plannerRunFixture()),
@@ -964,6 +965,293 @@ describe("App", () => {
     expect(within(panel).queryByText("Chrome on Windows")).not.toBeInTheDocument();
     expect(revokeDeviceSession).toHaveBeenCalledWith("device_session_other");
     expect(listDeviceSessions).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts Recent Authentication before signing out other devices", async () => {
+    const user = userEvent.setup();
+    const assign = vi.fn();
+    vi.stubGlobal("location", {
+      assign,
+      pathname: "/",
+      search: ""
+    });
+    const listDeviceSessions = vi
+      .fn<ConsoleApiClient["listDeviceSessions"]>()
+      .mockResolvedValue([
+        {
+          id: "device_session_current",
+          device_description: "Firefox on Windows",
+          created_at: "2026-07-27T12:01:00",
+          last_seen_at: "2026-07-27T13:01:00",
+          status: "active",
+          is_current: true
+        },
+        {
+          id: "device_session_other",
+          device_description: "Chrome on macOS",
+          created_at: "2026-07-26T10:00:00",
+          last_seen_at: "2026-07-27T12:30:00",
+          status: "active",
+          is_current: false
+        }
+      ]);
+    const revokeOtherDeviceSessions = vi
+      .fn<ConsoleApiClient["revokeOtherDeviceSessions"]>()
+      .mockRejectedValue(
+        new WebConsoleAuthenticationError(
+          "reauthentication_required",
+          403,
+          "reauthentication_required"
+        )
+      );
+    const getRecentAuthenticationUrl = vi
+      .fn()
+      .mockReturnValue(
+        "https://app.example.test/auth/reauthenticate?return_to=%2Freauthentication%2Frevoke-other-sessions"
+      );
+    const apiClient = createMockApiClient({
+      getCurrentIdentity: vi.fn().mockResolvedValue(
+        signedInIdentityFixture()
+      ),
+      listDeviceSessions,
+      revokeOtherDeviceSessions,
+      getRecentAuthenticationUrl
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const panel = await screen.findByRole("region", {
+      name: "Device sessions"
+    });
+    await user.click(
+      await within(panel).findByRole("button", {
+        name: "Sign out other devices"
+      })
+    );
+
+    await waitFor(() =>
+      expect(assign).toHaveBeenCalledWith(
+        "https://app.example.test/auth/reauthenticate?return_to=%2Freauthentication%2Frevoke-other-sessions"
+      )
+    );
+    expect(getRecentAuthenticationUrl).toHaveBeenCalledWith(
+      "/reauthentication/revoke-other-sessions"
+    );
+    expect(revokeOtherDeviceSessions).toHaveBeenCalledOnce();
+    expect(listDeviceSessions).toHaveBeenCalledOnce();
+    expect(within(panel).getByText("Chrome on macOS")).toBeInTheDocument();
+  });
+
+  it("requires explicit confirmation after Recent Authentication", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/reauthentication/revoke-other-sessions?reauthentication=confirmed"
+    );
+    const user = userEvent.setup();
+    const listDeviceSessions = vi
+      .fn<ConsoleApiClient["listDeviceSessions"]>()
+      .mockResolvedValueOnce([
+        {
+          id: "device_session_current",
+          device_description: "Firefox on Windows",
+          created_at: "2026-07-27T12:01:00",
+          last_seen_at: "2026-07-27T13:01:00",
+          status: "active",
+          is_current: true
+        },
+        {
+          id: "device_session_other",
+          device_description: "Chrome on macOS",
+          created_at: "2026-07-26T10:00:00",
+          last_seen_at: "2026-07-27T12:30:00",
+          status: "active",
+          is_current: false
+        }
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "device_session_current",
+          device_description: "Firefox on Windows",
+          created_at: "2026-07-27T12:01:00",
+          last_seen_at: "2026-07-27T13:01:00",
+          status: "active",
+          is_current: true
+        }
+      ]);
+    const revokeOtherDeviceSessions = vi
+      .fn<ConsoleApiClient["revokeOtherDeviceSessions"]>()
+      .mockResolvedValue(undefined);
+    const apiClient = createMockApiClient({
+      getCurrentIdentity: vi.fn().mockResolvedValue(
+        signedInIdentityFixture()
+      ),
+      listDeviceSessions,
+      revokeOtherDeviceSessions
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const panel = await screen.findByRole("region", {
+      name: "Device sessions"
+    });
+    expect(
+      await within(panel).findByRole("heading", {
+        name: "Sign out other devices?"
+      })
+    ).toBeInTheDocument();
+    expect(revokeOtherDeviceSessions).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("heading", { name: "GitHub setup" })
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(panel).getByRole("button", {
+        name: "Confirm sign out other devices"
+      })
+    );
+
+    await waitFor(() =>
+      expect(revokeOtherDeviceSessions).toHaveBeenCalledOnce()
+    );
+    expect(listDeviceSessions).toHaveBeenCalledTimes(2);
+    expect(within(panel).queryByText("Chrome on macOS")).not.toBeInTheDocument();
+    expect(within(panel).getByText("Firefox on Windows")).toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "cancelled",
+      "Email verification was cancelled. No other device was signed out."
+    ],
+    [
+      "provider_unavailable",
+      "Email verification is temporarily unavailable. No other device was signed out."
+    ],
+    [
+      "failed",
+      "Email verification could not be completed. No other device was signed out."
+    ]
+  ])(
+    "keeps every session and offers recovery when bulk sign-out is %s",
+    async (result, message) => {
+      window.history.replaceState(
+        {},
+        "",
+        `/reauthentication/revoke-other-sessions?reauthentication=${result}`
+      );
+      const listDeviceSessions = vi
+        .fn<ConsoleApiClient["listDeviceSessions"]>()
+        .mockResolvedValue([
+          {
+            id: "device_session_current",
+            device_description: "Firefox on Windows",
+            created_at: "2026-07-27T12:01:00",
+            last_seen_at: "2026-07-27T13:01:00",
+            status: "active",
+            is_current: true
+          },
+          {
+            id: "device_session_other",
+            device_description: "Chrome on macOS",
+            created_at: "2026-07-26T10:00:00",
+            last_seen_at: "2026-07-27T12:30:00",
+            status: "active",
+            is_current: false
+          }
+        ]);
+      const revokeOtherDeviceSessions = vi
+        .fn<ConsoleApiClient["revokeOtherDeviceSessions"]>();
+      const getRecentAuthenticationUrl = vi
+        .fn()
+        .mockReturnValue(
+          "https://app.example.test/auth/reauthenticate?return_to=%2Freauthentication%2Frevoke-other-sessions"
+        );
+      const apiClient = createMockApiClient({
+        getCurrentIdentity: vi.fn().mockResolvedValue(
+          signedInIdentityFixture()
+        ),
+        listDeviceSessions,
+        revokeOtherDeviceSessions,
+        getRecentAuthenticationUrl
+      });
+
+      render(<App apiClient={apiClient} />);
+
+      const panel = await screen.findByRole("region", {
+        name: "Device sessions"
+      });
+      expect(await within(panel).findByRole("alert")).toHaveTextContent(
+        message
+      );
+      expect(
+        within(panel).getByRole("link", {
+          name: "Try email verification again"
+        })
+      ).toHaveAttribute(
+        "href",
+        "https://app.example.test/auth/reauthenticate?return_to=%2Freauthentication%2Frevoke-other-sessions"
+      );
+      expect(within(panel).getByText("Chrome on macOS")).toBeInTheDocument();
+      expect(revokeOtherDeviceSessions).not.toHaveBeenCalled();
+      expect(listDeviceSessions).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("keeps every session visible when bulk sign-out fails", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/reauthentication/revoke-other-sessions?reauthentication=confirmed"
+    );
+    const user = userEvent.setup();
+    const listDeviceSessions = vi
+      .fn<ConsoleApiClient["listDeviceSessions"]>()
+      .mockResolvedValue([
+        {
+          id: "device_session_current",
+          device_description: "Firefox on Windows",
+          created_at: "2026-07-27T12:01:00",
+          last_seen_at: "2026-07-27T13:01:00",
+          status: "active",
+          is_current: true
+        },
+        {
+          id: "device_session_other",
+          device_description: "Chrome on macOS",
+          created_at: "2026-07-26T10:00:00",
+          last_seen_at: "2026-07-27T12:30:00",
+          status: "active",
+          is_current: false
+        }
+      ]);
+    const revokeOtherDeviceSessions = vi
+      .fn<ConsoleApiClient["revokeOtherDeviceSessions"]>()
+      .mockRejectedValue(new Error("device_session_revocation_failed"));
+    const apiClient = createMockApiClient({
+      getCurrentIdentity: vi.fn().mockResolvedValue(
+        signedInIdentityFixture()
+      ),
+      listDeviceSessions,
+      revokeOtherDeviceSessions
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const panel = await screen.findByRole("region", {
+      name: "Device sessions"
+    });
+    await user.click(
+      await within(panel).findByRole("button", {
+        name: "Confirm sign out other devices"
+      })
+    );
+
+    expect(await within(panel).findByRole("alert")).toHaveTextContent(
+      "device_session_revocation_failed"
+    );
+    expect(within(panel).getByText("Chrome on macOS")).toBeInTheDocument();
+    expect(listDeviceSessions).toHaveBeenCalledOnce();
   });
 
   it("signs out locally before a best-effort provider redirect", async () => {

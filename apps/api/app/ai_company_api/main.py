@@ -168,16 +168,23 @@ def create_app(
     customer_identity_provider: CustomerIdentityProvider | None = None,
     allowed_login_return_destinations: frozenset[str] = frozenset({"/"}),
     allowed_recent_authentication_return_destinations: frozenset[str] = (
-        frozenset({"/reauthentication/confirm"})
+        frozenset(
+            {
+                "/reauthentication/confirm",
+                "/reauthentication/revoke-other-sessions",
+            }
+        )
     ),
     public_origin: str = "https://localhost",
     identity_audit_observer_enabled: bool = False,
+    identity_test_support_enabled: bool = False,
     secret_access_audit_observer_enabled: bool = False,
     login_transaction_ttl_seconds: int = 600,
     personal_onboarding_failure_step: str | None = None,
     identity_operator_user_ids: frozenset[str] = frozenset(),
     identity_clock: Callable[[], datetime] = utc_now,
     user_session_database_failure: bool = False,
+    device_session_revocation_failure: str | None = None,
 ) -> FastAPI:
     resolved_authentication_policy = (
         authentication_policy
@@ -201,6 +208,14 @@ def create_app(
     ):
         raise ValueError(
             "Identity Audit observer is allowed only in the test environment"
+        )
+    if (
+        identity_test_support_enabled
+        and resolved_authentication_policy.environment
+        != AuthenticationEnvironment.TEST
+    ):
+        raise ValueError(
+            "Identity test support is allowed only in the test environment"
         )
     if (
         secret_access_audit_observer_enabled
@@ -233,6 +248,22 @@ def create_app(
             "User Session database failure injection is allowed only "
             "in the test environment"
         )
+    if device_session_revocation_failure is not None:
+        if (
+            resolved_authentication_policy.environment
+            != AuthenticationEnvironment.TEST
+        ):
+            raise ValueError(
+                "Device Session revocation failure injection is allowed "
+                "only in the test environment"
+            )
+        if device_session_revocation_failure not in {
+            "database",
+            "operation",
+        }:
+            raise ValueError(
+                "Unsupported Device Session revocation failure mode"
+            )
     engine = build_engine(database_url)
 
     @asynccontextmanager
@@ -255,6 +286,7 @@ def create_app(
     )
     app.state.public_origin = public_origin.rstrip("/")
     app.state.identity_audit_observer_enabled = identity_audit_observer_enabled
+    app.state.identity_test_support_enabled = identity_test_support_enabled
     app.state.secret_access_audit_observer_enabled = (
         secret_access_audit_observer_enabled
     )
@@ -265,6 +297,9 @@ def create_app(
     app.state.identity_operator_user_ids = identity_operator_user_ids
     app.state.identity_clock = identity_clock
     app.state.user_session_database_failure = user_session_database_failure
+    app.state.device_session_revocation_failure = (
+        device_session_revocation_failure
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),

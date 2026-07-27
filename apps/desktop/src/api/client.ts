@@ -465,6 +465,7 @@ export type ConsoleApiClient = {
   signOut: () => Promise<SignOutResult>;
   listDeviceSessions: () => Promise<DeviceSessionCard[]>;
   revokeDeviceSession: (deviceSessionId: string) => Promise<void>;
+  revokeOtherDeviceSessions: () => Promise<void>;
   listTasks: () => Promise<TaskCard[]>;
   createTask: (goal: string) => Promise<TaskCard>;
   createPlannerRun: (goal: string) => Promise<PlannerRunDraft>;
@@ -909,6 +910,7 @@ export const fakeApiClient: ConsoleApiClient = {
     ];
   },
   async revokeDeviceSession() {},
+  async revokeOtherDeviceSessions() {},
   async listTasks() {
     return [...demoTasks];
   },
@@ -1920,6 +1922,20 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         await readJsonResponse<never>(
           response,
           "DELETE /auth/device-sessions/{device_session_id}"
+        );
+      }
+    },
+    async revokeOtherDeviceSessions() {
+      const response = await fetch(
+        apiUrl(authBaseUrl, "/auth/device-sessions/revoke-others"),
+        {
+          method: "POST"
+        }
+      );
+      if (!response.ok) {
+        await readJsonResponse<never>(
+          response,
+          "POST /auth/device-sessions/revoke-others"
         );
       }
     },
