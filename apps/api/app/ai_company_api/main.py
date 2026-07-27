@@ -92,6 +92,7 @@ def create_app(
     identity_audit_observer_enabled: bool = False,
     login_transaction_ttl_seconds: int = 600,
     personal_onboarding_failure_step: str | None = None,
+    identity_operator_user_ids: frozenset[str] = frozenset(),
 ) -> FastAPI:
     resolved_authentication_policy = (
         authentication_policy
@@ -152,6 +153,7 @@ def create_app(
     app.state.personal_onboarding_failure_step = (
         personal_onboarding_failure_step
     )
+    app.state.identity_operator_user_ids = identity_operator_user_ids
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),

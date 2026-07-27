@@ -241,8 +241,37 @@ class ExternalIdentity(SQLModel, table=True):
     email: str | None = Field(default=None, index=True)
     status: str = Field(default="active", index=True)
     last_confirmed_status: str = Field(default="active", index=True)
+    account_link_correlation_id: str | None = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AccountLinkRecovery(SQLModel, table=True):
+    __tablename__ = "account_link_recovery"
+    __table_args__ = (
+        UniqueConstraint(
+            "issuer",
+            "subject",
+            name="uq_account_link_recovery_issuer_subject",
+        ),
+    )
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("account_link_recovery"),
+        primary_key=True,
+    )
+    issuer: str = Field(index=True)
+    subject: str = Field(index=True)
+    verified_email: str = Field(index=True)
+    correlation_id: str = Field(unique=True, index=True)
+    status: str = Field(default="pending", index=True)
+    target_user_id: str | None = Field(
+        default=None,
+        index=True,
+        foreign_key="user_account.id",
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
 
 
 class DeviceSession(SQLModel, table=True):
@@ -296,6 +325,9 @@ class IdentityAuditEvent(SQLModel, table=True):
     outcome: str = Field(index=True)
     reason_code: str = Field(index=True)
     correlation_id: str = Field(index=True)
+    related_correlation_id: str | None = Field(default=None, index=True)
+    actor_user_id: str | None = Field(default=None, index=True)
+    operator_reason: str | None = None
     user_id: str | None = Field(default=None, index=True)
     external_identity_id: str | None = Field(default=None, index=True)
     device_session_id: str | None = Field(default=None, index=True)

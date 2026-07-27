@@ -22,6 +22,7 @@ from ai_company_api.services.auth_policy import (
     AuthenticationPolicy,
     HumanCredentialType,
 )
+from ai_company_api.services.auth_context import hash_api_token
 from ai_company_api.services.customer_identity_provider import (
     CustomerIdentityProviderUnavailable,
     DeterministicFakeCustomerIdentityProvider,
@@ -32,6 +33,15 @@ from ai_company_api.services.customer_identity_provider import (
 USER_SESSION_TEST_POLICY = AuthenticationPolicy(
     environment=AuthenticationEnvironment.TEST,
     accepted_human_credentials=frozenset({HumanCredentialType.USER_SESSION}),
+)
+ACCOUNT_LINK_OPERATOR_TEST_POLICY = AuthenticationPolicy(
+    environment=AuthenticationEnvironment.TEST,
+    accepted_human_credentials=frozenset(
+        {
+            HumanCredentialType.USER_SESSION,
+            HumanCredentialType.WORKSPACE_API_TOKEN,
+        }
+    ),
 )
 
 
@@ -73,6 +83,103 @@ def _seed_linked_identity(
         session.add(workspace)
         session.add(membership)
         session.add(identity)
+        session.commit()
+
+
+def _seed_legacy_user(
+    database_url: str,
+    *,
+    api_token: str | None = None,
+    role: WorkspaceRole = WorkspaceRole.OWNER,
+) -> None:
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        user = User(
+            id="user_legacy",
+            email="legacy@example.test",
+            display_name="Legacy user",
+        )
+        account = Organization(
+            id="account_legacy",
+            name="Legacy account",
+        )
+        workspace = Workspace(
+            id="workspace_legacy",
+            organization_id=account.id,
+            name="Legacy workspace",
+        )
+        membership = OrganizationMember(
+            organization_id=account.id,
+            workspace_id=workspace.id,
+            user_id=user.id,
+            role=role,
+            api_token_hash=(
+                hash_api_token(api_token)
+                if api_token is not None
+                else None
+            ),
+        )
+        session.add(user)
+        session.add(account)
+        session.add(workspace)
+        session.add(membership)
+        session.commit()
+
+
+def _seed_additional_legacy_user(database_url: str) -> None:
+    engine = build_engine(database_url)
+    with Session(engine) as session:
+        user = User(
+            id="user_other",
+            email="other@example.test",
+            display_name="Other user",
+        )
+        membership = OrganizationMember(
+            organization_id="account_legacy",
+            workspace_id="workspace_legacy",
+            user_id=user.id,
+            role=WorkspaceRole.VIEWER,
+        )
+        session.add(user)
+        session.add(membership)
+        session.commit()
+
+
+def _seed_platform_operator(
+    database_url: str,
+    *,
+    api_token: str,
+    role: WorkspaceRole = WorkspaceRole.OWNER,
+) -> None:
+    engine = build_engine(database_url)
+    init_db(engine)
+    with Session(engine) as session:
+        user = User(
+            id="user_identity_operator",
+            email="identity-operator@example.test",
+            display_name="Identity operator",
+        )
+        account = Organization(
+            id="account_identity_operator",
+            name="Identity operations",
+        )
+        workspace = Workspace(
+            id="workspace_identity_operator",
+            organization_id=account.id,
+            name="Identity operations",
+        )
+        membership = OrganizationMember(
+            organization_id=account.id,
+            workspace_id=workspace.id,
+            user_id=user.id,
+            role=role,
+            api_token_hash=hash_api_token(api_token),
+        )
+        session.add(user)
+        session.add(account)
+        session.add(workspace)
+        session.add(membership)
         session.commit()
 
 
@@ -260,6 +367,656 @@ def test_first_login_atomically_onboards_a_personal_account(tmp_path) -> None:
             "id_token",
             "access_token",
             "otp",
+            provider.issuer,
+        )
+    )
+
+
+def test_legacy_email_collision_requires_an_explicit_account_link(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'account-link-required.db').as_posix()}"
+    provider = DeterministicFakeCustomerIdentityProvider()
+    _seed_legacy_user(database_url)
+
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=USER_SESSION_TEST_POLICY,
+            customer_identity_provider=provider,
+            allowed_login_return_destinations=frozenset({"/console"}),
+            public_origin="https://testserver",
+            identity_audit_observer_enabled=True,
+        ),
+        base_url="https://testserver",
+    ) as client:
+        login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        authorization_url = login.headers["location"]
+        state = parse_qs(urlparse(authorization_url).query)["state"][0]
+        code = provider.issue_authorization_code(
+            authorization_url,
+            subject="subject-legacy-unlinked",
+            email="Legacy@Example.Test",
+        )
+        callback = client.get(
+            "/auth/callback",
+            params={"state": state, "code": code},
+            follow_redirects=False,
+        )
+        signed_out = client.get("/me")
+        audit = client.get(
+            "/auth/test/audit-events",
+            params={"correlation_id": callback.headers["x-correlation-id"]},
+        )
+
+    assert callback.status_code == 409
+    assert callback.json() == {
+        "error": "account_link_required",
+        "correlation_id": callback.headers["x-correlation-id"],
+    }
+    assert "__Host-ai_scdc_session=" not in callback.headers.get(
+        "set-cookie",
+        "",
+    )
+    assert signed_out.status_code == 401
+    assert audit.json() == [
+        {
+            "event_type": "account_link_required",
+            "outcome": "failure",
+            "reason_code": "legacy_email_collision",
+            "correlation_id": callback.headers["x-correlation-id"],
+            "user_id": None,
+            "external_identity_id": None,
+            "device_session_id": None,
+        }
+    ]
+    assert all(
+        forbidden not in f"{callback.text}{audit.text}"
+        for forbidden in (
+            code,
+            "id_token",
+            "access_token",
+            "otp",
+            provider.issuer,
+        )
+    )
+
+
+def test_operator_links_the_collision_and_new_login_restores_legacy_scope(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'account-link-recovery.db').as_posix()}"
+    provider = DeterministicFakeCustomerIdentityProvider()
+    operator_token = "scdc_legacy_operator"
+    _seed_legacy_user(database_url)
+    _seed_platform_operator(database_url, api_token=operator_token)
+
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=ACCOUNT_LINK_OPERATOR_TEST_POLICY,
+            customer_identity_provider=provider,
+            allowed_login_return_destinations=frozenset({"/console"}),
+            public_origin="https://testserver",
+            identity_audit_observer_enabled=True,
+            identity_operator_user_ids=frozenset({"user_identity_operator"}),
+        ),
+        base_url="https://testserver",
+    ) as client:
+        collision_login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        collision_authorization_url = collision_login.headers["location"]
+        collision_state = parse_qs(
+            urlparse(collision_authorization_url).query
+        )["state"][0]
+        collision_code = provider.issue_authorization_code(
+            collision_authorization_url,
+            subject="subject-legacy-recovery",
+            email="legacy@example.test",
+        )
+        collision = client.get(
+            "/auth/callback",
+            params={"state": collision_state, "code": collision_code},
+            follow_redirects=False,
+        )
+        recovery_correlation_id = collision.headers["x-correlation-id"]
+
+        mapping = client.post(
+            "/auth/operator/account-links",
+            headers={"Authorization": f"Bearer {operator_token}"},
+            json={
+                "correlation_id": recovery_correlation_id,
+                "issuer": provider.issuer,
+                "subject": "subject-legacy-recovery",
+                "user_id": "user_legacy",
+                "reason": "legacy_account_migration",
+            },
+        )
+        repeated_mapping = client.post(
+            "/auth/operator/account-links",
+            headers={"Authorization": f"Bearer {operator_token}"},
+            json={
+                "correlation_id": recovery_correlation_id,
+                "issuer": provider.issuer,
+                "subject": "subject-legacy-recovery",
+                "user_id": "user_legacy",
+                "reason": "legacy_account_migration",
+            },
+        )
+
+        restored_login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        restored_authorization_url = restored_login.headers["location"]
+        restored_state = parse_qs(
+            urlparse(restored_authorization_url).query
+        )["state"][0]
+        restored_code = provider.issue_authorization_code(
+            restored_authorization_url,
+            subject="subject-legacy-recovery",
+            email="legacy@example.test",
+        )
+        restored_callback = client.get(
+            "/auth/callback",
+            params={"state": restored_state, "code": restored_code},
+            follow_redirects=False,
+        )
+        restored_me = client.get("/me")
+        recovery_timeline = client.get(
+            "/auth/test/audit-events",
+            params={"correlation_id": recovery_correlation_id},
+        )
+
+    assert collision.status_code == 409
+    assert mapping.status_code == 201
+    assert mapping.json() == {
+        "status": "linked",
+        "correlation_id": recovery_correlation_id,
+        "user_id": "user_legacy",
+        "external_identity_id": mapping.json()["external_identity_id"],
+    }
+    assert repeated_mapping.status_code == 409
+    assert repeated_mapping.json()["detail"] == (
+        "Account link recovery is no longer pending"
+    )
+    assert restored_callback.status_code == 303
+    assert restored_me.status_code == 200
+    assert restored_me.json()["user_id"] == "user_legacy"
+    assert restored_me.json()["current_account"] == {
+        "id": "account_legacy",
+        "name": "Legacy account",
+        "kind": "legacy",
+    }
+    assert restored_me.json()["current_workspace"] == {
+        "id": "workspace_legacy",
+        "name": "Legacy workspace",
+    }
+
+    events = {
+        event["event_type"]: event
+        for event in recovery_timeline.json()
+    }
+    assert events["account_link_required"]["reason_code"] == (
+        "legacy_email_collision"
+    )
+    assert events["account_link_created"] == {
+        "event_type": "account_link_created",
+        "outcome": "success",
+        "reason_code": "operator_mapping",
+        "correlation_id": recovery_correlation_id,
+        "user_id": "user_legacy",
+        "external_identity_id": mapping.json()["external_identity_id"],
+        "device_session_id": None,
+        "actor_user_id": "user_identity_operator",
+        "operator_reason": "legacy_account_migration",
+    }
+    assert events["login_success"]["reason_code"] == "linked_external_identity"
+    assert events["login_success"]["correlation_id"] == (
+        restored_callback.headers["x-correlation-id"]
+    )
+    assert events["login_success"]["related_correlation_id"] == (
+        recovery_correlation_id
+    )
+    rejected_events = [
+        event
+        for event in recovery_timeline.json()
+        if event["event_type"] == "account_link_rejected"
+    ]
+    assert rejected_events[-1]["reason_code"] == "recovery_already_used"
+    assert all(
+        forbidden not in f"{mapping.text}{recovery_timeline.text}"
+        for forbidden in (
+            operator_token,
+            collision_code,
+            restored_code,
+            "id_token",
+            "access_token",
+            "otp",
+            provider.issuer,
+        )
+    )
+
+
+def test_account_link_preserves_an_oidc_issuer_with_a_trailing_slash(
+    tmp_path,
+) -> None:
+    database_url = (
+        f"sqlite:///{(tmp_path / 'account-link-issuer-slash.db').as_posix()}"
+    )
+    provider = DeterministicFakeCustomerIdentityProvider()
+    provider.issuer = f"{provider.issuer}/"
+    operator_token = "scdc_issuer_operator"
+    _seed_legacy_user(database_url)
+    _seed_platform_operator(database_url, api_token=operator_token)
+
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=ACCOUNT_LINK_OPERATOR_TEST_POLICY,
+            customer_identity_provider=provider,
+            allowed_login_return_destinations=frozenset({"/console"}),
+            public_origin="https://testserver",
+            identity_audit_observer_enabled=True,
+            identity_operator_user_ids=frozenset({"user_identity_operator"}),
+        ),
+        base_url="https://testserver",
+    ) as client:
+        login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        authorization_url = login.headers["location"]
+        state = parse_qs(urlparse(authorization_url).query)["state"][0]
+        code = provider.issue_authorization_code(
+            authorization_url,
+            subject="subject-issuer-slash",
+            email="legacy@example.test",
+        )
+        collision = client.get(
+            "/auth/callback",
+            params={"state": state, "code": code},
+            follow_redirects=False,
+        )
+        mapping = client.post(
+            "/auth/operator/account-links",
+            headers={"Authorization": f"Bearer {operator_token}"},
+            json={
+                "correlation_id": collision.headers["x-correlation-id"],
+                "issuer": provider.issuer,
+                "subject": "subject-issuer-slash",
+                "user_id": "user_legacy",
+                "reason": "legacy_account_migration",
+            },
+        )
+
+    assert collision.status_code == 409
+    assert mapping.status_code == 201
+    assert mapping.json()["user_id"] == "user_legacy"
+
+
+def test_account_link_openapi_contract_declares_string_inputs() -> None:
+    with TestClient(
+        create_app(database_url="sqlite://"),
+        base_url="https://testserver",
+    ) as client:
+        openapi = client.get("/openapi.json").json()
+
+    request_schema = openapi["components"]["schemas"]["AccountLinkCreate"]
+    assert {
+        name: definition["type"]
+        for name, definition in request_schema["properties"].items()
+    } == {
+        "correlation_id": "string",
+        "issuer": "string",
+        "subject": "string",
+        "user_id": "string",
+        "reason": "string",
+    }
+
+
+def test_concurrent_legacy_collisions_share_one_stable_recovery(
+    tmp_path,
+) -> None:
+    database_url = (
+        f"sqlite:///{(tmp_path / 'concurrent-account-link-required.db').as_posix()}"
+    )
+    provider = DeterministicFakeCustomerIdentityProvider()
+    provider.set_exchange_delays(initial=0.1)
+    _seed_legacy_user(database_url)
+    app = create_app(
+        database_url=database_url,
+        authentication_policy=USER_SESSION_TEST_POLICY,
+        customer_identity_provider=provider,
+        allowed_login_return_destinations=frozenset({"/console"}),
+        public_origin="https://testserver",
+        identity_audit_observer_enabled=True,
+    )
+
+    with (
+        TestClient(app, base_url="https://testserver") as first_client,
+        TestClient(app, base_url="https://testserver") as second_client,
+    ):
+        callback_requests = []
+        for client in (first_client, second_client):
+            login = client.get(
+                "/auth/login",
+                params={"return_to": "/console"},
+                follow_redirects=False,
+            )
+            authorization_url = login.headers["location"]
+            callback_requests.append(
+                (
+                    client,
+                    parse_qs(urlparse(authorization_url).query)["state"][0],
+                    provider.issue_authorization_code(
+                        authorization_url,
+                        subject="subject-concurrent-legacy",
+                        email="legacy@example.test",
+                    ),
+                )
+            )
+
+        def invoke_callback(callback_request):
+            client, state, code = callback_request
+            return client.get(
+                "/auth/callback",
+                params={"state": state, "code": code},
+                follow_redirects=False,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(executor.map(invoke_callback, callback_requests))
+
+        correlation_ids = {
+            response.headers["x-correlation-id"] for response in responses
+        }
+        audit = first_client.get(
+            "/auth/test/audit-events",
+            params={"correlation_id": next(iter(correlation_ids))},
+        )
+
+    assert [response.status_code for response in responses] == [409, 409]
+    assert len(correlation_ids) == 1
+    assert all(
+        response.json()["error"] == "account_link_required"
+        for response in responses
+    )
+    assert sum(
+        event["event_type"] == "account_link_required"
+        for event in audit.json()
+    ) == 2
+
+
+def test_concurrent_operator_retries_create_exactly_one_account_link(
+    tmp_path,
+) -> None:
+    database_url = (
+        f"sqlite:///{(tmp_path / 'concurrent-account-link-mapping.db').as_posix()}"
+    )
+    provider = DeterministicFakeCustomerIdentityProvider()
+    operator_token = "scdc_concurrent_operator"
+    _seed_legacy_user(database_url)
+    _seed_platform_operator(database_url, api_token=operator_token)
+    app = create_app(
+        database_url=database_url,
+        authentication_policy=ACCOUNT_LINK_OPERATOR_TEST_POLICY,
+        customer_identity_provider=provider,
+        allowed_login_return_destinations=frozenset({"/console"}),
+        public_origin="https://testserver",
+        identity_audit_observer_enabled=True,
+        identity_operator_user_ids=frozenset({"user_identity_operator"}),
+    )
+
+    with (
+        TestClient(app, base_url="https://testserver") as login_client,
+        TestClient(app, base_url="https://testserver") as first_operator,
+        TestClient(app, base_url="https://testserver") as second_operator,
+    ):
+        login = login_client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        authorization_url = login.headers["location"]
+        state = parse_qs(urlparse(authorization_url).query)["state"][0]
+        code = provider.issue_authorization_code(
+            authorization_url,
+            subject="subject-concurrent-mapping",
+            email="legacy@example.test",
+        )
+        collision = login_client.get(
+            "/auth/callback",
+            params={"state": state, "code": code},
+            follow_redirects=False,
+        )
+        correlation_id = collision.headers["x-correlation-id"]
+        request = {
+            "headers": {"Authorization": f"Bearer {operator_token}"},
+            "json": {
+                "correlation_id": correlation_id,
+                "issuer": provider.issuer,
+                "subject": "subject-concurrent-mapping",
+                "user_id": "user_legacy",
+                "reason": "legacy_account_migration",
+            },
+        }
+
+        def invoke_mapping(client: TestClient):
+            return client.post(
+                "/auth/operator/account-links",
+                **request,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(
+                executor.map(
+                    invoke_mapping,
+                    [first_operator, second_operator],
+                )
+            )
+
+        audit = login_client.get(
+            "/auth/test/audit-events",
+            params={"correlation_id": correlation_id},
+        )
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    assert sum(
+        event["event_type"] == "account_link_created"
+        for event in audit.json()
+    ) == 1
+    assert sum(
+        event["event_type"] == "account_link_rejected"
+        for event in audit.json()
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    ("case", "role", "expected_status", "expected_reason"),
+    (
+        (
+            "unauthorized",
+            WorkspaceRole.REVIEWER,
+            403,
+            "operator_not_authorized",
+        ),
+        (
+            "not_allowlisted",
+            WorkspaceRole.OWNER,
+            403,
+            "operator_not_authorized",
+        ),
+        (
+            "malformed",
+            WorkspaceRole.OWNER,
+            400,
+            "invalid_request",
+        ),
+        (
+            "malformed_type",
+            WorkspaceRole.OWNER,
+            400,
+            "invalid_request",
+        ),
+        (
+            "identity_mismatch",
+            WorkspaceRole.OWNER,
+            409,
+            "identity_mismatch",
+        ),
+        (
+            "recovery_not_found",
+            WorkspaceRole.OWNER,
+            404,
+            "recovery_not_found",
+        ),
+        (
+            "target_not_found",
+            WorkspaceRole.OWNER,
+            404,
+            "target_not_in_operator_scope",
+        ),
+        (
+            "target_email_mismatch",
+            WorkspaceRole.OWNER,
+            409,
+            "target_email_mismatch",
+        ),
+    ),
+)
+def test_account_link_rejects_invalid_or_unauthorized_operations_without_linking(
+    tmp_path,
+    case: str,
+    role: WorkspaceRole,
+    expected_status: int,
+    expected_reason: str,
+) -> None:
+    database_url = (
+        f"sqlite:///{(tmp_path / f'account-link-rejected-{case}.db').as_posix()}"
+    )
+    provider = DeterministicFakeCustomerIdentityProvider()
+    operator_token = f"scdc_operator_{case}"
+    _seed_legacy_user(database_url)
+    _seed_platform_operator(
+        database_url,
+        api_token=operator_token,
+        role=role,
+    )
+    if case == "target_email_mismatch":
+        _seed_additional_legacy_user(database_url)
+    subject = f"subject-rejected-{case}"
+
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=ACCOUNT_LINK_OPERATOR_TEST_POLICY,
+            customer_identity_provider=provider,
+            allowed_login_return_destinations=frozenset({"/console"}),
+            public_origin="https://testserver",
+            identity_audit_observer_enabled=True,
+            identity_operator_user_ids=(
+                frozenset()
+                if case == "not_allowlisted"
+                else frozenset({"user_identity_operator"})
+            ),
+        ),
+        base_url="https://testserver",
+    ) as client:
+        login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        authorization_url = login.headers["location"]
+        state = parse_qs(urlparse(authorization_url).query)["state"][0]
+        code = provider.issue_authorization_code(
+            authorization_url,
+            subject=subject,
+            email="legacy@example.test",
+        )
+        collision = client.get(
+            "/auth/callback",
+            params={"state": state, "code": code},
+            follow_redirects=False,
+        )
+        recovery_correlation_id = collision.headers["x-correlation-id"]
+        mapping_request = {
+            "correlation_id": recovery_correlation_id,
+            "issuer": provider.issuer,
+            "subject": subject,
+            "user_id": "user_legacy",
+            "reason": "legacy_account_migration",
+        }
+        if case == "malformed":
+            mapping_request["reason"] = "paste_a_token_here"
+        elif case == "malformed_type":
+            mapping_request["subject"] = ["not", "a", "subject"]
+        elif case == "identity_mismatch":
+            mapping_request["subject"] = "different-subject"
+        elif case == "recovery_not_found":
+            mapping_request["correlation_id"] = "missing-recovery"
+        elif case == "target_not_found":
+            mapping_request["user_id"] = "user_missing"
+        elif case == "target_email_mismatch":
+            mapping_request["user_id"] = "user_other"
+
+        rejected = client.post(
+            "/auth/operator/account-links",
+            headers={"Authorization": f"Bearer {operator_token}"},
+            json=mapping_request,
+        )
+        audit_correlation_id = mapping_request["correlation_id"]
+        rejected_audit = client.get(
+            "/auth/test/audit-events",
+            params={"correlation_id": audit_correlation_id},
+        )
+
+        retry_login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        retry_authorization_url = retry_login.headers["location"]
+        retry_state = parse_qs(urlparse(retry_authorization_url).query)["state"][0]
+        retry_code = provider.issue_authorization_code(
+            retry_authorization_url,
+            subject=subject,
+            email="legacy@example.test",
+        )
+        retry_callback = client.get(
+            "/auth/callback",
+            params={"state": retry_state, "code": retry_code},
+            follow_redirects=False,
+        )
+
+    assert collision.status_code == 409
+    assert rejected.status_code == expected_status
+    rejected_events = [
+        event
+        for event in rejected_audit.json()
+        if event["event_type"] == "account_link_rejected"
+    ]
+    assert rejected_events[-1]["reason_code"] == expected_reason
+    assert rejected_events[-1]["actor_user_id"] == "user_identity_operator"
+    assert retry_callback.status_code == 409
+    assert retry_callback.json()["error"] == "account_link_required"
+    assert all(
+        forbidden not in f"{rejected.text}{rejected_audit.text}"
+        for forbidden in (
+            operator_token,
+            code,
+            retry_code,
+            "paste_a_token_here",
             provider.issuer,
         )
     )

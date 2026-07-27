@@ -20,6 +20,7 @@ def build_engine(database_url: str):
 
 def init_db(engine) -> None:
     _upgrade_sqlite_account_classification(engine)
+    _upgrade_sqlite_identity_recovery_columns(engine)
     _upgrade_sqlite_cloud_run_phase_9_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10a_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10b_columns(engine)
@@ -36,6 +37,62 @@ def init_db(engine) -> None:
     _upgrade_sqlite_planner_run_metadata(engine)
     _upgrade_sqlite_task_execution_constraints(engine)
     _upgrade_sqlite_patch_review_uniqueness(engine)
+
+
+def _upgrade_sqlite_identity_recovery_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    table_columns = {
+        "external_identity": {
+            "account_link_correlation_id": "VARCHAR",
+        },
+        "identity_audit_event": {
+            "related_correlation_id": "VARCHAR",
+            "actor_user_id": "VARCHAR",
+            "operator_reason": "VARCHAR",
+        },
+    }
+    indexed_columns = {
+        "external_identity": ("account_link_correlation_id",),
+        "identity_audit_event": (
+            "related_correlation_id",
+            "actor_user_id",
+        ),
+    }
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        for table_name, columns in table_columns.items():
+            if table_name not in existing_tables:
+                continue
+            existing_columns = {
+                row["name"]
+                for row in connection.execute(
+                    text(f"PRAGMA table_info({table_name})")
+                ).mappings()
+            }
+            for column_name, column_type in columns.items():
+                if column_name not in existing_columns:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE {table_name} "
+                            f"ADD COLUMN {column_name} {column_type}"
+                        )
+                    )
+            for column_name in indexed_columns[table_name]:
+                connection.execute(
+                    text(
+                        f"CREATE INDEX IF NOT EXISTS "
+                        f"ix_{table_name}_{column_name} "
+                        f"ON {table_name} ({column_name})"
+                    )
+                )
 
 
 def _upgrade_sqlite_account_classification(engine) -> None:
