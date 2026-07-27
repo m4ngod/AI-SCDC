@@ -5,11 +5,12 @@ import secrets
 
 from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
-from sqlalchemy import update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import Session, select
 
 from ai_company_api.models.entities import (
+    AccountLinkRecovery,
     AccountKind,
     DeviceSession,
     ExternalIdentity,
@@ -377,6 +378,16 @@ def complete_login_callback(
     ).first()
     onboarding_created = external_identity is None
     if external_identity is None:
+        legacy_user = _legacy_user_matching_email(
+            session,
+            identity_claims.email,
+        )
+        if legacy_user is not None:
+            return _require_explicit_account_link(
+                session,
+                transaction=transaction,
+                identity_claims=identity_claims,
+            )
         try:
             user, membership, external_identity = _create_personal_onboarding(
                 session,
@@ -469,6 +480,9 @@ def complete_login_callback(
             outcome="success",
             reason_code="oidc_callback",
             correlation_id=transaction.correlation_id,
+            related_correlation_id=(
+                external_identity.account_link_correlation_id
+            ),
             user_id=user.id,
             external_identity_id=external_identity.id,
             device_session_id=device_session.id,
@@ -484,6 +498,9 @@ def complete_login_callback(
                 else "linked_external_identity"
             ),
             correlation_id=transaction.correlation_id,
+            related_correlation_id=(
+                external_identity.account_link_correlation_id
+            ),
             user_id=user.id,
             external_identity_id=external_identity.id,
             device_session_id=device_session.id,
@@ -580,6 +597,108 @@ def _create_personal_onboarding(
     session.flush()
     _inject_personal_onboarding_failure(failure_step, "external_identity")
     return user, membership, external_identity
+
+
+def _legacy_user_matching_email(
+    session: Session,
+    email: str | None,
+) -> User | None:
+    normalized_email = (email or "").strip().lower()
+    if normalized_email == "":
+        return None
+    return session.exec(
+        select(User)
+        .join(
+            OrganizationMember,
+            OrganizationMember.user_id == User.id,
+        )
+        .join(
+            Organization,
+            Organization.id == OrganizationMember.organization_id,
+        )
+        .where(
+            func.lower(User.email) == normalized_email,
+            Organization.account_kind == AccountKind.LEGACY,
+        )
+        .order_by(User.created_at, User.id)
+    ).first()
+
+
+def _require_explicit_account_link(
+    session: Session,
+    *,
+    transaction: LoginTransaction,
+    identity_claims: ValidatedExternalIdentity,
+) -> JSONResponse:
+    transaction_id = transaction.id
+    transaction_correlation_id = transaction.correlation_id
+    recovery = session.exec(
+        select(AccountLinkRecovery).where(
+            AccountLinkRecovery.issuer == identity_claims.issuer,
+            AccountLinkRecovery.subject == identity_claims.subject,
+        )
+    ).first()
+    if recovery is None:
+        recovery = AccountLinkRecovery(
+            issuer=identity_claims.issuer,
+            subject=identity_claims.subject,
+            verified_email=(identity_claims.email or "").strip().lower(),
+            correlation_id=transaction.correlation_id,
+        )
+        session.add(recovery)
+    try:
+        return _commit_account_link_required(
+            session,
+            transaction=transaction,
+            recovery=recovery,
+        )
+    except IntegrityError:
+        session.rollback()
+        recovery = session.exec(
+            select(AccountLinkRecovery).where(
+                AccountLinkRecovery.issuer == identity_claims.issuer,
+                AccountLinkRecovery.subject == identity_claims.subject,
+            )
+        ).first()
+        transaction = session.get(LoginTransaction, transaction_id)
+        if recovery is None or transaction is None:
+            return _reject_callback(
+                session,
+                transaction=transaction,
+                correlation_id=transaction_correlation_id,
+                reason_code="account_link_recovery_persistence_failed",
+                error="login_failed",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return _commit_account_link_required(
+            session,
+            transaction=transaction,
+            recovery=recovery,
+        )
+
+
+def _commit_account_link_required(
+    session: Session,
+    *,
+    transaction: LoginTransaction,
+    recovery: AccountLinkRecovery,
+) -> JSONResponse:
+    transaction.status = "rejected"
+    session.add(transaction)
+    record_identity_audit_event(
+        session,
+        event_type="account_link_required",
+        outcome="failure",
+        reason_code="legacy_email_collision",
+        correlation_id=recovery.correlation_id,
+        commit=False,
+    )
+    session.commit()
+    return _safe_failure_response(
+        error="account_link_required",
+        correlation_id=recovery.correlation_id,
+        status_code=status.HTTP_409_CONFLICT,
+    )
 
 
 def _inject_personal_onboarding_failure(

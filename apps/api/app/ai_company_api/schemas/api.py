@@ -1,8 +1,15 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, SecretStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeInt,
+    SecretStr,
+    WithJsonSchema,
+)
 
 from ai_company_api.services.task_state import TaskStatus
 
@@ -926,6 +933,24 @@ class CurrentAccount(BaseModel):
 class CurrentWorkspace(BaseModel):
     id: str
     name: str
+
+
+AuditedStringInput = Annotated[object, WithJsonSchema({"type": "string"})]
+
+
+class AccountLinkCreate(BaseModel):
+    correlation_id: AuditedStringInput = ""
+    issuer: AuditedStringInput = ""
+    subject: AuditedStringInput = ""
+    user_id: AuditedStringInput = ""
+    reason: AuditedStringInput = ""
+
+
+class AccountLinkRead(BaseModel):
+    status: Literal["linked"]
+    correlation_id: str
+    user_id: str
+    external_identity_id: str
 
 
 class DevIdentity(BaseModel):
