@@ -90,9 +90,21 @@ function mergeWorkflowTask(currentTask: TaskCard, resultTask: TaskCard): TaskCar
 }
 
 export function App({ apiClient = defaultApiClient }: AppProps) {
-  const recentAuthenticationResult = new URLSearchParams(
+  const currentPath = globalThis.location?.pathname ?? "/";
+  const queryRecentAuthenticationResult = new URLSearchParams(
     globalThis.location?.search ?? ""
   ).get("reauthentication");
+  const isCredentialAuthenticationReturn =
+    currentPath === "/reauthentication/confirm";
+  const isOtherSessionsAuthenticationReturn =
+    currentPath === "/reauthentication/revoke-other-sessions";
+  const recentAuthenticationResult = isCredentialAuthenticationReturn
+    ? queryRecentAuthenticationResult
+    : null;
+  const otherSessionsAuthenticationResult =
+    isOtherSessionsAuthenticationReturn
+      ? queryRecentAuthenticationResult
+      : null;
   const isCredentialConfirmation =
     recentAuthenticationResult === "confirmed";
   const recentAuthenticationRecoveryMessage =
@@ -1068,7 +1080,10 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   ) : null;
   const deviceSessionsPanel =
     currentIdentity?.auth_mode === "user_session" ? (
-      <DeviceSessionsPanel apiClient={apiClient} />
+      <DeviceSessionsPanel
+        apiClient={apiClient}
+        recentAuthenticationResult={otherSessionsAuthenticationResult}
+      />
     ) : null;
 
   if (

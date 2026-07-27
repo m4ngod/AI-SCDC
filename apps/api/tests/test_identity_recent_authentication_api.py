@@ -129,7 +129,9 @@ def _sign_in(
                 "authentication_context": EMAIL_VERIFICATION_ACR,
             }
             if recent_authentication_proof
-            else {}
+            else {
+                "satisfy_requested_authentication": False,
+            }
         ),
     )
     callback = client.get(
@@ -177,7 +179,7 @@ def test_stale_user_session_cannot_create_github_credential(tmp_path) -> None:
     assert credentials.json() == []
 
 
-def test_login_without_fresh_email_proof_requires_recent_authentication_for_credentials(
+def test_login_without_fresh_email_proof_cannot_create_a_user_session(
     tmp_path,
 ) -> None:
     database_url = (
@@ -188,26 +190,35 @@ def test_login_without_fresh_email_proof_requires_recent_authentication_for_cred
     app = _build_app(database_url, provider, clock)
 
     with TestClient(app, base_url=WEB_ORIGIN) as client:
-        _sign_in(
-            client,
-            provider,
-            recent_authentication_proof=False,
+        login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        authorization_url = login.headers["location"]
+        authorization_query = parse_qs(
+            urlparse(authorization_url).query
+        )
+        code = provider.issue_authorization_code(
+            authorization_url,
+            subject="subject-recent-authentication",
+            email="recent-authentication@example.test",
+            satisfy_requested_authentication=False,
+        )
+        callback = client.get(
+            "/auth/callback",
+            params={
+                "state": authorization_query["state"][0],
+                "code": code,
+            },
+            follow_redirects=False,
         )
         identity = client.get("/me")
-        denied = client.post(
-            "/github-credentials",
-            headers=_csrf_headers(client),
-            json={
-                "display_name": "Must require email verification",
-                "token": "ghp_login_without_email_proof",
-            },
-        )
-        credentials = client.get("/github-credentials")
 
-    assert identity.status_code == 200
-    assert denied.status_code == 403
-    assert denied.json() == {"detail": "reauthentication_required"}
-    assert credentials.json() == []
+    assert callback.status_code == 400
+    assert callback.json()["error"] == "login_callback_rejected"
+    assert identity.status_code == 401
+    assert client.cookies.get(USER_SESSION_COOKIE) is None
 
 
 def test_recent_authentication_rotates_session_and_requires_explicit_confirmation(

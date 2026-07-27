@@ -34,6 +34,7 @@ class OidcAuthorizationRequest:
     prompt: str | None = None
     max_age_seconds: int | None = None
     acr_values: str | None = None
+    authentication_requested_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,10 @@ class DeterministicFakeCustomerIdentityProvider:
         self._codes: dict[str, dict[str, object]] = {}
         self._id_tokens: dict[str, dict[str, object]] = {}
         self._identity_statuses: dict[tuple[str, str], str] = {}
+        self._authentication_requests: dict[
+            str,
+            tuple[datetime, str],
+        ] = {}
         self._unavailable = False
         self._unavailable_operations: set[str] = set()
         self._failed_operations: set[str] = set()
@@ -128,6 +133,14 @@ class DeterministicFakeCustomerIdentityProvider:
             query_parameters["max_age"] = request.max_age_seconds
         if request.acr_values is not None:
             query_parameters["acr_values"] = request.acr_values
+        if (
+            request.authentication_requested_at is not None
+            and request.acr_values is not None
+        ):
+            self._authentication_requests[request.state] = (
+                request.authentication_requested_at,
+                request.acr_values,
+            )
         query = urlencode(query_parameters)
         return f"{self.discover().authorization_endpoint}?{query}"
 
@@ -230,6 +243,7 @@ class DeterministicFakeCustomerIdentityProvider:
         token_valid: bool = True,
         authenticated_at: datetime | None = None,
         authentication_context: str | None = None,
+        satisfy_requested_authentication: bool = True,
     ) -> str:
         parsed = urlparse(authorization_url)
         expected = urlparse(self.discover().authorization_endpoint)
@@ -240,6 +254,17 @@ class DeterministicFakeCustomerIdentityProvider:
         ):
             raise ValueError("Authorization URL does not target the fake provider")
         query = parse_qs(parsed.query)
+        requested_authentication = self._authentication_requests.get(
+            query["state"][0]
+        )
+        if (
+            satisfy_requested_authentication
+            and requested_authentication is not None
+        ):
+            if authenticated_at is None:
+                authenticated_at = requested_authentication[0]
+            if authentication_context is None:
+                authentication_context = requested_authentication[1]
         self._code_sequence += 1
         code = f"fake-code-{self._code_sequence}"
         record: dict[str, object] = {

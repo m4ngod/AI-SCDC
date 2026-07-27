@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from ai_company_api.models.entities import DeviceSession
@@ -8,6 +9,10 @@ from ai_company_api.schemas.api import DeviceSessionRead
 
 
 UNKNOWN_DEVICE_DESCRIPTION = "Unknown browser on Unknown device"
+
+
+class DeviceSessionRevocationOperationError(RuntimeError):
+    pass
 
 
 def coarse_device_description(user_agent: str | None) -> str:
@@ -92,6 +97,40 @@ def revoke_active_device_session(
         .execution_options(synchronize_session=False)
     )
     return result.rowcount == 1
+
+
+def revoke_other_active_device_sessions(
+    session: Session,
+    *,
+    user_id: str,
+    current_device_session_id: str,
+    now: datetime,
+    failure_mode: str | None = None,
+) -> int:
+    result = session.execute(
+        update(DeviceSession)
+        .where(
+            DeviceSession.user_id == user_id,
+            DeviceSession.id != current_device_session_id,
+            DeviceSession.status == "active",
+            DeviceSession.idle_expires_at > now,
+        )
+        .values(
+            status="revoked",
+            revoked_at=now,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if failure_mode == "database":
+        raise SQLAlchemyError(
+            "injected_device_session_revocation_failure"
+        )
+    if failure_mode == "operation":
+        raise DeviceSessionRevocationOperationError(
+            "injected_device_session_revocation_failure"
+        )
+    return result.rowcount
 
 
 def is_idle_expired(

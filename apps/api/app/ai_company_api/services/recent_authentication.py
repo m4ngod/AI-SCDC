@@ -18,6 +18,9 @@ RECENT_AUTHENTICATION_TTL_SECONDS = 15 * 60
 def require_recent_authentication(
     request: Request,
     session: Session,
+    *,
+    reason_code: str = "sensitive_credential_change",
+    correlation_id: str | None = None,
 ) -> None:
     auth = get_current_auth_context()
     if auth is None or auth.auth_mode != USER_SESSION_AUTH_MODE:
@@ -37,13 +40,13 @@ def require_recent_authentication(
     ):
         return
 
-    correlation_id = secrets.token_hex(16)
+    resolved_correlation_id = correlation_id or secrets.token_hex(16)
     record_identity_audit_event(
         session,
         event_type="recent_authentication_required",
         outcome="failure",
-        reason_code="sensitive_credential_change",
-        correlation_id=correlation_id,
+        reason_code=reason_code,
+        correlation_id=resolved_correlation_id,
         user_id=auth.user_id,
         device_session_id=(
             device_session.id
@@ -54,7 +57,7 @@ def require_recent_authentication(
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="reauthentication_required",
-        headers={"X-Correlation-ID": correlation_id},
+        headers={"X-Correlation-ID": resolved_correlation_id},
     )
 
 
