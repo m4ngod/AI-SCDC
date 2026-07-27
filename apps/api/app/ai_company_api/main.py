@@ -1,5 +1,6 @@
 from collections.abc import Generator
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import Depends, FastAPI
 from fastapi.encoders import jsonable_encoder
@@ -16,10 +17,19 @@ from ai_company_api.db.session import (
     session_generator,
 )
 from ai_company_api.schemas.api import DevIdentity
+from ai_company_api.models.entities import Organization, User, Workspace
 from ai_company_api.services.auth_context import (
-    DEV_AUTH_MODE,
+    DEV_ORGANIZATION_ID,
+    DEV_USER_ID,
+    DEV_WORKSPACE_ID,
     AuthContext,
     get_auth_context_dependency,
+)
+from ai_company_api.services.auth_policy import (
+    AUTHENTICATION_ENVIRONMENT_ENV,
+    AuthenticationPolicy,
+    HumanCredentialType,
+    authentication_policy_for_environment,
 )
 
 
@@ -69,17 +79,29 @@ def redact_validation_errors(
 def create_app(
     database_url: str = "sqlite:///./dev.db",
     cors_origins: tuple[str, ...] = DEV_CORS_ORIGINS,
-    auth_mode: str = DEV_AUTH_MODE,
+    authentication_policy: AuthenticationPolicy | None = None,
 ) -> FastAPI:
+    resolved_authentication_policy = (
+        authentication_policy
+        if authentication_policy is not None
+        else authentication_policy_for_environment(
+            os.getenv(AUTHENTICATION_ENVIRONMENT_ENV)
+        )
+    )
     engine = build_engine(database_url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         init_db(engine)
+        if (
+            HumanCredentialType.DEV_AUTH
+            in resolved_authentication_policy.accepted_human_credentials
+        ):
+            _ensure_dev_auth_scope(engine)
         yield
 
     app = FastAPI(title="AI Company API", lifespan=lifespan)
-    app.state.auth_mode = auth_mode
+    app.state.authentication_policy = resolved_authentication_policy
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),
@@ -118,6 +140,34 @@ def create_app(
 
     app.include_router(router, dependencies=[Depends(get_auth_context_dependency)])
     return app
+
+
+def _ensure_dev_auth_scope(engine) -> None:
+    with Session(engine) as session:
+        if session.get(User, DEV_USER_ID) is None:
+            session.add(
+                User(
+                    id=DEV_USER_ID,
+                    email="dev@localhost",
+                    display_name="Local developer",
+                )
+            )
+        if session.get(Organization, DEV_ORGANIZATION_ID) is None:
+            session.add(
+                Organization(
+                    id=DEV_ORGANIZATION_ID,
+                    name="Local development account",
+                )
+            )
+        if session.get(Workspace, DEV_WORKSPACE_ID) is None:
+            session.add(
+                Workspace(
+                    id=DEV_WORKSPACE_ID,
+                    organization_id=DEV_ORGANIZATION_ID,
+                    name="Local development workspace",
+                )
+            )
+        session.commit()
 
 
 app = create_app()

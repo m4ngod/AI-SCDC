@@ -30,6 +30,8 @@ from ai_company_api.services.github_pull_request import (
 from ai_company_api.services.secret_vault import DevSecretVault
 from ai_company_api.services.task_state import TaskStatus
 
+pytestmark = pytest.mark.usefixtures("explicit_dev_auth_context")
+
 
 def build_client(database_path: Path) -> TestClient:
     database_url = f"sqlite:///{database_path.as_posix()}"

@@ -22,12 +22,15 @@ from ai_company_api.models.entities import (
     GitHubCredential,
     LocalTaskRun,
     LocalTestRun,
+    Organization,
     PatchArtifact,
     Project,
     Repository,
     SandboxProfile,
     Task,
     UsageLedgerEntry,
+    User,
+    Workspace,
     WorkspaceAuditLog,
     utc_now,
 )
@@ -65,6 +68,29 @@ def build_client(database_path: Path) -> TestClient:
     engine = build_engine(database_url)
     init_db(engine)
     with Session(engine) as session:
+        if session.get(User, "dev_user") is None:
+            session.add(
+                User(
+                    id="dev_user",
+                    email="dev@localhost",
+                    display_name="Local developer",
+                )
+            )
+        if session.get(Organization, "dev_organization") is None:
+            session.add(
+                Organization(
+                    id="dev_organization",
+                    name="Local development account",
+                )
+            )
+        if session.get(Workspace, "dev_workspace") is None:
+            session.add(
+                Workspace(
+                    id="dev_workspace",
+                    organization_id="dev_organization",
+                    name="Local development workspace",
+                )
+            )
         wallet = session.exec(
             select(CreditWallet).where(CreditWallet.workspace_id == "dev_workspace")
         ).first()
@@ -75,7 +101,7 @@ def build_client(database_path: Path) -> TestClient:
                 balance_cents=1_000_000,
             )
             session.add(wallet)
-            session.commit()
+        session.commit()
     return TestClient(create_app(database_url=database_url))
 
 
@@ -2055,6 +2081,16 @@ def test_protected_aliyun_worker_claim_requires_callback_token(
     assert "callback_token_hash" not in str(runtime_environment)
     assert callback_token not in str(response.json())
 
+    human_endpoint_with_callback_token = client.get(
+        "/me",
+        headers={"Authorization": f"Bearer {callback_token}"},
+    )
+    assert human_endpoint_with_callback_token.status_code == 401
+    assert (
+        human_endpoint_with_callback_token.json()["detail"]
+        == "Workspace API token authentication is not allowed"
+    )
+
     claim_without_token = client.post(
         "/cloud-run-worker/leases",
         json={
@@ -2064,8 +2100,21 @@ def test_protected_aliyun_worker_claim_requires_callback_token(
             "cloud_run_id": cloud_run["id"],
             "lease_seconds": 60,
         },
+        headers={
+            **auth_headers(
+                user_id="human_user",
+                workspace_id=cloud_run["workspace_id"],
+                organization_id="human_account",
+                roles="owner",
+            ),
+            "Authorization": "Bearer scdc_human_api_token",
+        },
     )
     assert claim_without_token.status_code == 401
+    assert (
+        claim_without_token.json()["detail"]
+        == "Worker callback token is required"
+    )
 
     claim_wrong_token = client.post(
         "/cloud-run-worker/leases",

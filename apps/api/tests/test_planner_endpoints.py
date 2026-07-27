@@ -26,6 +26,8 @@ from ai_company_api.services.repository import (
 from ai_company_api.services.secret_vault import DevSecretVault
 from ai_company_llm_gateway.models import ChatProviderResponse, UsageRecord
 
+pytestmark = pytest.mark.usefixtures("explicit_dev_auth_context")
+
 
 class PlannerEndpointAdapter:
     def __init__(self, response: ChatProviderResponse) -> None:
