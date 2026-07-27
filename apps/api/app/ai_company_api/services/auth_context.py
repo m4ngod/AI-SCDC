@@ -142,13 +142,27 @@ def _resolve_auth_context(
     authentication_policy = request.app.state.authentication_policy
     accepted_credentials = authentication_policy.accepted_human_credentials
 
+    if (
+        USER_SESSION_COOKIE in request.cookies
+        and _has_bearer_credential(request)
+    ):
+        correlation_id = _record_authentication_failure(
+            session,
+            reason_code="ambiguous_credentials",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ambiguous_credentials",
+            headers={"X-Correlation-ID": correlation_id},
+        )
+
     if "authorization" in request.headers:
         if HumanCredentialType.WORKSPACE_API_TOKEN not in accepted_credentials:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Workspace API token authentication is not allowed",
             )
-        return _api_token_auth_context(request, session)
+        return _api_token_auth_context_or_audit(request, session)
 
     if _has_dev_auth_headers(request):
         if HumanCredentialType.DEV_AUTH not in accepted_credentials:
@@ -186,11 +200,19 @@ def _resolve_auth_context(
         HumanCredentialType.WORKSPACE_API_TOKEN
         in accepted_credentials
     ):
-        return _api_token_auth_context(request, session)
+        return _api_token_auth_context_or_audit(request, session)
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="Authentication policy cannot resolve human credentials",
     )
+
+
+def _has_bearer_credential(request: Request) -> bool:
+    authorization = request.headers.get("authorization")
+    if authorization is None:
+        return False
+    scheme, _separator, _credential = authorization.strip().partition(" ")
+    return scheme.casefold() == "bearer"
 
 
 def _has_dev_auth_headers(request: Request) -> bool:
@@ -262,6 +284,31 @@ def _api_token_auth_context(request: Request, session: Session) -> AuthContext:
     )
 
 
+def _api_token_auth_context_or_audit(
+    request: Request,
+    session: Session,
+) -> AuthContext:
+    try:
+        return _api_token_auth_context(request, session)
+    except HTTPException as exc:
+        reason_code = (
+            "workspace_api_token_required"
+            if exc.detail == "Bearer API token is required"
+            else "invalid_workspace_api_token"
+        )
+        correlation_id = _record_authentication_failure(
+            session,
+            reason_code=reason_code,
+        )
+        headers = dict(exc.headers or {})
+        headers["X-Correlation-ID"] = correlation_id
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+            headers=headers,
+        ) from None
+
+
 def _user_session_auth_context(
     request: Request,
     session: Session,
@@ -275,7 +322,13 @@ def _user_session_auth_context(
             now=now,
         )
     except UserSessionCredentialRejected as exc:
-        _invalid_user_session(correlation_id=exc.correlation_id)
+        correlation_id = exc.correlation_id
+        if correlation_id is None:
+            correlation_id = _record_authentication_failure(
+                session,
+                reason_code=exc.reason_code,
+            )
+        _invalid_user_session(correlation_id=correlation_id)
     device_session = resolved_credential.device_session
     if (
         resolved_credential.uses_current_secret
@@ -317,7 +370,13 @@ def _user_session_auth_context(
         or organization.status != "active"
         or workspace.organization_id != organization.id
     ):
-        _invalid_user_session()
+        correlation_id = _record_authentication_failure(
+            session,
+            reason_code="user_session_authority_inactive",
+            user_id=device_session.user_id,
+            device_session_id=device_session.id,
+        )
+        _invalid_user_session(correlation_id=correlation_id)
     context = AuthContext(
         user_id=user.id,
         workspace_id=workspace.id,
@@ -370,6 +429,26 @@ def _invalid_user_session(*, correlation_id: str | None = None) -> None:
         detail="User Session is not valid",
         headers=headers,
     )
+
+
+def _record_authentication_failure(
+    session: Session,
+    *,
+    reason_code: str,
+    user_id: str | None = None,
+    device_session_id: str | None = None,
+) -> str:
+    correlation_id = secrets.token_hex(16)
+    record_identity_audit_event(
+        session,
+        event_type="authentication_failure",
+        outcome="failure",
+        reason_code=reason_code,
+        correlation_id=correlation_id,
+        user_id=user_id,
+        device_session_id=device_session_id,
+    )
+    return correlation_id
 
 
 def _user_session_auth_context_or_fail_closed(

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlmodel import Session
 
 from ai_company_api.db.session import get_session_dependency
@@ -184,6 +184,10 @@ from ai_company_api.services.auth_context import current_user_id
 from ai_company_api.services.workspace_audit import (
     record_workspace_audit,
     require_audited_workspace_permission,
+)
+from ai_company_api.services.worker_route_auth import (
+    require_local_worker_harness,
+    worker_callback_token_required,
 )
 
 router = APIRouter()
@@ -927,6 +931,7 @@ def get_cloud_run_cost_summary(
     response_model=CloudRunLeaseRead,
 )
 def post_cloud_run_worker_lease(
+    request: Request,
     data: CloudRunLeaseCreate,
     session: SessionDep,
 ) -> CloudRunLeaseRead | Response:
@@ -940,6 +945,7 @@ def post_cloud_run_worker_lease(
         queue_message_id=data.queue_message_id,
         queue_receipt=data.queue_receipt,
         lease_seconds=data.lease_seconds,
+        require_callback_token=worker_callback_token_required(request),
     )
     if lease is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -951,9 +957,11 @@ def post_cloud_run_worker_lease(
     response_model=list[CloudRunRead],
 )
 def post_cloud_run_worker_requeue_expired_leases(
+    request: Request,
     data: CloudRunLeaseRequeueExpired,
     session: SessionDep,
 ) -> list[CloudRunRead]:
+    require_local_worker_harness(request, session)
     return requeue_expired_cloud_run_leases(
         session,
         queue_provider=data.queue_provider,
@@ -966,6 +974,7 @@ def post_cloud_run_worker_requeue_expired_leases(
     response_model=CloudRunLeaseRead,
 )
 def post_cloud_run_worker_lease_heartbeat(
+    request: Request,
     lease_id: str,
     data: CloudRunLeaseHeartbeat,
     session: SessionDep,
@@ -976,6 +985,7 @@ def post_cloud_run_worker_lease_heartbeat(
         worker_id=data.worker_id,
         callback_token=data.callback_token,
         lease_seconds=data.lease_seconds,
+        require_callback_token=worker_callback_token_required(request),
     )
 
 
@@ -997,11 +1007,17 @@ def post_cloud_run_worker_payload(
     response_model=CloudRunArtifactRefCreate,
 )
 def post_cloud_run_worker_artifact(
+    request: Request,
     lease_id: str,
     data: CloudRunArtifactUploadCreate,
     session: SessionDep,
 ) -> CloudRunArtifactRefCreate:
-    return upload_cloud_run_lease_artifact(session, lease_id=lease_id, data=data)
+    return upload_cloud_run_lease_artifact(
+        session,
+        lease_id=lease_id,
+        data=data,
+        require_callback_token=worker_callback_token_required(request),
+    )
 
 
 @router.post(
@@ -1009,6 +1025,7 @@ def post_cloud_run_worker_artifact(
     response_model=CloudRunResultRead,
 )
 def post_cloud_run_worker_lease_complete(
+    request: Request,
     lease_id: str,
     data: CloudRunLeaseComplete,
     session: SessionDep,
@@ -1019,6 +1036,7 @@ def post_cloud_run_worker_lease_complete(
         worker_id=data.worker_id,
         callback_token=data.callback_token,
         result=data.result,
+        require_callback_token=worker_callback_token_required(request),
     )
 
 
@@ -1028,9 +1046,11 @@ def post_cloud_run_worker_lease_complete(
     responses={status.HTTP_204_NO_CONTENT: {"description": "No queued cloud runs"}},
 )
 def post_cloud_run_worker_process_next(
+    request: Request,
     session: SessionDep,
     worker_id: str = "local-worker",
 ) -> CloudRunResultRead | Response:
+    require_local_worker_harness(request, session)
     result = process_next_cloud_run(session, worker_id=worker_id)
     if result is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)

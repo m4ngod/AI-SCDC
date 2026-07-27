@@ -484,7 +484,7 @@ def test_api_token_policy_rejects_revoked_membership(tmp_path: Path) -> None:
     assert response.json()["detail"] == "Invalid API token"
 
 
-def test_worker_route_does_not_resolve_human_credentials_under_strict_policy(
+def test_worker_harness_rejects_human_credentials_under_strict_policy(
     tmp_path: Path,
 ) -> None:
     with build_client(
@@ -496,7 +496,8 @@ def test_worker_route_does_not_resolve_human_credentials_under_strict_policy(
             headers=auth_headers(),
         )
 
-    assert response.status_code == 204
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Worker route is not available"
 
 
 def test_money_moving_workspace_endpoints_require_billing_role() -> None:
