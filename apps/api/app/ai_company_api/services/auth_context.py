@@ -22,6 +22,9 @@ from ai_company_api.models.entities import (
     WorkspaceRole,
 )
 from ai_company_api.services.auth_policy import HumanCredentialType
+from ai_company_api.services.browser_request_protection import (
+    enforce_cookie_request_protection,
+)
 from ai_company_api.services.user_session_credentials import (
     USER_SESSION_COOKIE,
     USER_SESSION_PREVIOUS_SECRET_SECONDS,
@@ -131,6 +134,12 @@ async def get_auth_context_dependency(
         return
 
     context = _resolve_auth_context(request, session)
+    if context.auth_mode == USER_SESSION_AUTH_MODE:
+        enforce_cookie_request_protection(
+            request,
+            session,
+            now=request.app.state.identity_clock(),
+        )
     with auth_context_scope(context):
         yield context
 
@@ -384,6 +393,7 @@ def _user_session_auth_context(
         roles=frozenset({_role_value(member.role)}),
         auth_mode=USER_SESSION_AUTH_MODE,
     )
+    request.state.authenticated_device_session = device_session
     if _as_utc(device_session.last_seen_at) + timedelta(hours=1) <= now:
         correlation_id = secrets.token_hex(16)
         result = session.execute(

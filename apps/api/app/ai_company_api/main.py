@@ -243,6 +243,7 @@ def create_app(
         allow_origins=list(cors_origins),
         allow_methods=["*"],
         allow_headers=["*"],
+        allow_credentials=False,
     )
 
     @app.exception_handler(RequestValidationError)

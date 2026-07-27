@@ -8,6 +8,22 @@ function jsonResponse(body: unknown, init: ResponseInit = {}) {
   });
 }
 
+function withCsrf(fetchMock: ReturnType<typeof vi.fn>) {
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof input === "string" && input.endsWith("/auth/csrf")) {
+      return Promise.resolve(
+        jsonResponse({
+          csrf_token: "csrf-token-from-test-boundary",
+          expires_at: "2099-01-01T00:00:00+00:00"
+        })
+      );
+    }
+    return fetchMock(input, init);
+  });
+}
+
+const SESSION_REQUEST = { credentials: "include" } as const;
+
 describe("desktop API clients", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -95,6 +111,138 @@ describe("desktop API clients", () => {
 
     await expect(client.getCurrentIdentity?.()).resolves.toBeNull();
   });
+
+  it("protects unsafe Web Console calls through one session-aware request boundary", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          csrf_token: "csrf-token-from-current-device-session",
+          expires_at: "2026-07-27T13:00:00+00:00"
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: "github_credential_csrf",
+          workspace_id: "workspace_csrf",
+          display_name: "Protected GitHub",
+          token_last4: "7890",
+          status: "active"
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const localStorageSet = vi.spyOn(window.localStorage, "setItem");
+    const sessionStorageSet = vi.spyOn(window.sessionStorage, "setItem");
+    const client = createHttpApiClient({
+      baseUrl: "https://app.example.test"
+    });
+
+    await expect(
+      client.createGitHubCredential({
+        display_name: "Protected GitHub",
+        token: "ghp_example1234567890"
+      })
+    ).resolves.toMatchObject({
+      id: "github_credential_csrf",
+      token_last4: "7890"
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://app.example.test/auth/csrf",
+      {
+        credentials: "include"
+      }
+    );
+    const protectedRequest = fetchMock.mock.calls[1];
+    expect(protectedRequest[0]).toBe(
+      "https://app.example.test/github-credentials"
+    );
+    expect(protectedRequest[1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include"
+      })
+    );
+    const protectedHeaders = new Headers(protectedRequest[1]?.headers);
+    expect(protectedHeaders.get("Content-Type")).toBe("application/json");
+    expect(protectedHeaders.get("X-CSRF-Token")).toBe(
+      "csrf-token-from-current-device-session"
+    );
+    expect(localStorageSet).not.toHaveBeenCalled();
+    expect(sessionStorageSet).not.toHaveBeenCalled();
+  });
+
+  it("keeps API and authentication routes on one origin with distinct path mounts", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          csrf_token: "csrf-token-same-origin",
+          expires_at: "2099-01-01T00:00:00+00:00"
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: "github_credential_same_origin",
+          workspace_id: "workspace_same_origin",
+          display_name: "Same origin GitHub",
+          token_last4: "7890",
+          status: "active"
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = createHttpApiClient({
+      baseUrl: "https://app.example.test/api"
+    });
+
+    await client.createGitHubCredential({
+      display_name: "Same origin GitHub",
+      token: "ghp_example1234567890"
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://app.example.test/auth/csrf"
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://app.example.test/api/github-credentials"
+    );
+    expect(client.getLoginUrl?.("/")).toBe(
+      "https://app.example.test/auth/login?return_to=%2F"
+    );
+  });
+
+  it.each([
+    [401, "User Session is not valid", "logged_out"],
+    [503, "identity_provider_unavailable", "provider_unavailable"],
+    [409, "account_link_required", "account_link_required"],
+    [403, "workspace_access_lost", "workspace_access_lost"],
+    [403, "reauthentication_required", "reauthentication_required"]
+  ])(
+    "surfaces stable Web Console authentication state %s %s as %s",
+    async (status, detail, state) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          jsonResponse(
+            { detail },
+            {
+              status
+            }
+          )
+        )
+      );
+      const client = createHttpApiClient({
+        baseUrl: "https://app.example.test"
+      });
+
+      await expect(client.listGitHubCredentials()).rejects.toMatchObject({
+        name: "WebConsoleAuthenticationError",
+        state,
+        status
+      });
+    }
+  );
 
   it("fake client runs tests for a demo patch", async () => {
     await expect(fakeApiClient.runPatchTests("patch_demo")).resolves.toMatchObject({
@@ -471,15 +619,20 @@ describe("desktop API clients", () => {
           }
         ])
       );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({ baseUrl: "http://127.0.0.1:8000/" });
     const tasks = await client.listTasks();
 
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8000/projects");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:8000/projects",
+      SESSION_REQUEST
+    );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "http://127.0.0.1:8000/projects/project_demo/tasks"
+      "http://127.0.0.1:8000/projects/project_demo/tasks",
+      SESSION_REQUEST
     );
     expect(tasks).toEqual([
       {
@@ -707,7 +860,7 @@ describe("desktop API clients", () => {
           }
         ])
       );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -716,25 +869,32 @@ describe("desktop API clients", () => {
     const tasks = await client.listTasks();
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/tasks/task_api/local-runs"
+      "http://127.0.0.1:8000/tasks/task_api/local-runs",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/tasks/task_api/cloud-runs"
+      "http://127.0.0.1:8000/tasks/task_api/cloud-runs",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/patch-artifacts/patch_cloud_api"
+      "http://127.0.0.1:8000/patch-artifacts/patch_cloud_api",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/patch-artifacts/patch_cloud_api/test-runs"
+      "http://127.0.0.1:8000/patch-artifacts/patch_cloud_api/test-runs",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/patch-artifacts/patch_cloud_api/reviews"
+      "http://127.0.0.1:8000/patch-artifacts/patch_cloud_api/reviews",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/patch-artifacts/patch_cloud_api/approvals"
+      "http://127.0.0.1:8000/patch-artifacts/patch_cloud_api/approvals",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/patch-artifacts/patch_cloud_api/pull-requests"
+      "http://127.0.0.1:8000/patch-artifacts/patch_cloud_api/pull-requests",
+      SESSION_REQUEST
     );
     expect(tasks[0]).toMatchObject({
       id: "task_api",
@@ -830,7 +990,7 @@ describe("desktop API clients", () => {
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse([]));
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -839,16 +999,20 @@ describe("desktop API clients", () => {
     const tasks = await client.listTasks();
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/tasks/task_local_api/local-runs"
+      "http://127.0.0.1:8000/tasks/task_local_api/local-runs",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/tasks/task_local_api/cloud-runs"
+      "http://127.0.0.1:8000/tasks/task_local_api/cloud-runs",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/patch-artifacts/patch_local_api"
+      "http://127.0.0.1:8000/patch-artifacts/patch_local_api",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/patch-artifacts/patch_local_api/pull-requests"
+      "http://127.0.0.1:8000/patch-artifacts/patch_local_api/pull-requests",
+      SESSION_REQUEST
     );
     expect(tasks[0]).toMatchObject({
       id: "task_local_api",
@@ -913,7 +1077,7 @@ describe("desktop API clients", () => {
           connection_status: "inactive"
         })
       );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1094,7 +1258,7 @@ describe("desktop API clients", () => {
           { status: 201 }
         )
       );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1168,7 +1332,8 @@ describe("desktop API clients", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "http://127.0.0.1:8000/projects/project_demo/sandbox-profiles"
+      "http://127.0.0.1:8000/projects/project_demo/sandbox-profiles",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
@@ -1310,7 +1475,7 @@ describe("desktop API clients", () => {
           }
         ])
       );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1332,7 +1497,8 @@ describe("desktop API clients", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
-      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/logs"
+      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/logs",
+      SESSION_REQUEST
     );
     expect(processed).toMatchObject({
       cloud_run: {
@@ -1424,7 +1590,7 @@ describe("desktop API clients", () => {
           content: "diff --git a/file b/file\n+api"
         })
       );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1435,11 +1601,13 @@ describe("desktop API clients", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "http://127.0.0.1:8000/cloud-runs/cloud%2Frun%20api/artifacts/manifest"
+      "http://127.0.0.1:8000/cloud-runs/cloud%2Frun%20api/artifacts/manifest",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "http://127.0.0.1:8000/cloud-runs/cloud%2Frun%20api/artifacts/diff%2Fabc%20%3Fx/content"
+      "http://127.0.0.1:8000/cloud-runs/cloud%2Frun%20api/artifacts/diff%2Fabc%20%3Fx/content",
+      SESSION_REQUEST
     );
     expect(manifest.artifacts[0].id).toBe("diff/abc ?x");
     expect(content.content).toContain("diff --git");
@@ -1465,7 +1633,7 @@ describe("desktop API clients", () => {
         has_more: true
       })
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1480,7 +1648,8 @@ describe("desktop API clients", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/logs/window?after=cursor_0&limit=25&include_stream=true&sync_stream=true"
+      "http://127.0.0.1:8000/cloud-runs/cloud_run_api/logs/window?after=cursor_0&limit=25&include_stream=true&sync_stream=true",
+      SESSION_REQUEST
     );
     expect(window).toEqual({
       entries: [
@@ -1536,7 +1705,7 @@ describe("desktop API clients", () => {
         patch_artifact: null,
       })
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1604,7 +1773,7 @@ describe("desktop API clients", () => {
         patch_artifact: null,
       })
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1688,7 +1857,7 @@ describe("desktop API clients", () => {
           { status: 201 }
         )
       );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1698,7 +1867,8 @@ describe("desktop API clients", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "http://127.0.0.1:8000/projects/project_demo/repositories"
+      "http://127.0.0.1:8000/projects/project_demo/repositories",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
@@ -1740,7 +1910,7 @@ describe("desktop API clients", () => {
         { status: 404, statusText: "Not Found" }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1787,12 +1957,16 @@ describe("desktop API clients", () => {
           { status: 201 }
         )
       );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({ baseUrl: "http://127.0.0.1:8000/" });
     const task = await client.createTask("Connect the desktop");
 
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8000/projects");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:8000/projects",
+      SESSION_REQUEST
+    );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "http://127.0.0.1:8000/projects",
@@ -1858,12 +2032,16 @@ describe("desktop API clients", () => {
           { status: 201 }
         )
       );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({ baseUrl: "http://127.0.0.1:8000/" });
     const plannerRun = await client.createPlannerRun("Build model route settings");
 
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8000/projects");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:8000/projects",
+      SESSION_REQUEST
+    );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "http://127.0.0.1:8000/projects/project_demo/planner-runs",
@@ -1892,7 +2070,7 @@ describe("desktop API clients", () => {
         ]
       })
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1919,7 +2097,7 @@ describe("desktop API clients", () => {
         created_tasks: []
       })
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1982,7 +2160,7 @@ describe("desktop API clients", () => {
           diff_text: "diff --git a/README.md b/README.md"
         })
       );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -1992,7 +2170,8 @@ describe("desktop API clients", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "http://127.0.0.1:8000/projects/project_demo/repositories"
+      "http://127.0.0.1:8000/projects/project_demo/repositories",
+      SESSION_REQUEST
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
@@ -2004,7 +2183,8 @@ describe("desktop API clients", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
-      "http://127.0.0.1:8000/patch-artifacts/patch_api"
+      "http://127.0.0.1:8000/patch-artifacts/patch_api",
+      SESSION_REQUEST
     );
     expect(result.patch_artifact?.files_changed).toEqual(["README.md"]);
   });
@@ -2062,7 +2242,7 @@ describe("desktop API clients", () => {
         { status: 201 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -2154,7 +2334,7 @@ describe("desktop API clients", () => {
         { status: 201 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -2241,7 +2421,7 @@ describe("desktop API clients", () => {
         { status: 201 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
@@ -2329,7 +2509,7 @@ describe("desktop API clients", () => {
         }
       })
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withCsrf(fetchMock));
 
     const client = createHttpApiClient({
       baseUrl: "http://127.0.0.1:8000/",
