@@ -5,13 +5,19 @@ type ShellProps = {
   contextPanel: ReactNode;
   accountName?: string;
   workspaceName?: string;
+  onSignOut?: () => void;
+  isSigningOut?: boolean;
+  signOutError?: string | null;
 };
 
 export function Shell({
   children,
   contextPanel,
   accountName,
-  workspaceName
+  workspaceName,
+  onSignOut,
+  isSigningOut = false,
+  signOutError
 }: ShellProps) {
   return (
     <div className="console-shell">
@@ -25,6 +31,16 @@ export function Shell({
           <span>Local Runner: Mock</span>
           <span>Cost: $0.00</span>
           <button type="button">Settings</button>
+          {onSignOut ? (
+            <button
+              type="button"
+              disabled={isSigningOut}
+              onClick={onSignOut}
+            >
+              {isSigningOut ? "Signing out" : "Sign out"}
+            </button>
+          ) : null}
+          {signOutError ? <span role="alert">{signOutError}</span> : null}
         </div>
       </header>
       <nav className="sidebar" aria-label="Primary">

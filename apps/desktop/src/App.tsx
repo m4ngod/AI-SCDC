@@ -90,6 +90,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
   const [workspaceSelectionError, setWorkspaceSelectionError] =
     useState<string | null>(null);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<TaskCard[]>([]);
   const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
   const [plannerRun, setPlannerRun] = useState<PlannerRunDraft | null>(null);
@@ -236,6 +238,49 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     }
     await workspaceAccessRecoveryRef.current;
     return true;
+  }
+
+  async function handleSignOut() {
+    if (isSigningOut) {
+      return;
+    }
+    setIsSigningOut(true);
+    setSignOutError(null);
+    try {
+      const result = await apiClient.signOut();
+      setCurrentIdentity(null);
+      setIdentityState("signed_out");
+      setTasks([]);
+      setTaskLoadError(null);
+      setWorkspaceSelectionError(null);
+      setPlannerRun(null);
+      setPlannerDecisionStatus(null);
+      setPlannerDecisionError(null);
+      setGithubSetupStatus(null);
+      setGithubSetupError(null);
+      setGithubSetupInput((currentInput) => ({
+        ...currentInput,
+        token: ""
+      }));
+      setSandboxProfileId(null);
+      setSandboxProfileRepoId(null);
+      setSandboxProfileStatus(null);
+      setLocalRunErrors({});
+      setWorkflowErrors({});
+      workspaceAccessRecoveryRef.current = null;
+      cloudArtifactPreviewRequestsRef.current = {};
+      if (result.redirect_to) {
+        try {
+          globalThis.location.assign(result.redirect_to);
+        } catch {
+          // Local Sign Out is complete even when browser navigation fails.
+        }
+      }
+    } catch (error) {
+      setSignOutError(errorMessage(error, "Failed to sign out"));
+    } finally {
+      setIsSigningOut(false);
+    }
   }
 
   async function refreshCloudRunLogs(
@@ -999,6 +1044,15 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
           </section>
         }
         workspaceName="Choose a workspace"
+        onSignOut={
+          currentIdentity.auth_mode === "user_session"
+            ? () => {
+                void handleSignOut();
+              }
+            : undefined
+        }
+        isSigningOut={isSigningOut}
+        signOutError={signOutError}
       >
         <section className="thread-panel" aria-labelledby="workspace-selection-title">
           <p className="eyebrow">Workspace access</p>
@@ -1186,6 +1240,15 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       contextPanel={contextPanel}
       accountName={currentIdentity?.current_account?.name}
       workspaceName={currentIdentity?.current_workspace?.name}
+      onSignOut={
+        currentIdentity?.auth_mode === "user_session"
+          ? () => {
+              void handleSignOut();
+            }
+          : undefined
+      }
+      isSigningOut={isSigningOut}
+      signOutError={signOutError}
     >
       <section className="thread-panel" aria-labelledby="thread-title">
         <div className="section-heading">
