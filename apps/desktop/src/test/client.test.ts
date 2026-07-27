@@ -173,6 +173,104 @@ describe("desktop API clients", () => {
     expect(sessionStorageSet).not.toHaveBeenCalled();
   });
 
+  it("switches the current DeviceSession workspace through the CSRF boundary", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          csrf_token: "csrf-token-for-workspace-switch",
+          expires_at: "2026-07-27T13:00:00+00:00"
+        })
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = createHttpApiClient({
+      baseUrl: "https://app.example.test/api"
+    });
+
+    await expect(
+      client.selectWorkspace?.("workspace_beta_build")
+    ).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://app.example.test/auth/csrf"
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://app.example.test/auth/workspace-selection"
+    );
+    expect(fetchMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        method: "PUT",
+        credentials: "include",
+        body: JSON.stringify({ workspace_id: "workspace_beta_build" })
+      })
+    );
+    const headers = new Headers(fetchMock.mock.calls[1][1]?.headers);
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("X-CSRF-Token")).toBe(
+      "csrf-token-for-workspace-switch"
+    );
+  });
+
+  it("re-resolves workspace-derived project state after a workspace switch", async () => {
+    let selectedWorkspace = "workspace_alpha";
+    const fetchMock = vi.fn(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/auth/csrf")) {
+          return Promise.resolve(
+            jsonResponse({
+              csrf_token: "csrf-token-for-cache-reset",
+              expires_at: "2099-01-01T00:00:00+00:00"
+            })
+          );
+        }
+        if (url.endsWith("/auth/workspace-selection")) {
+          selectedWorkspace = "workspace_beta";
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        if (url.endsWith("/projects")) {
+          const projectId =
+            selectedWorkspace === "workspace_alpha"
+              ? "project_alpha"
+              : "project_beta";
+          return Promise.resolve(jsonResponse([{ id: projectId }]));
+        }
+        if (url.endsWith("/projects/project_alpha/tasks")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/projects/project_beta/tasks")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        return Promise.resolve(
+          jsonResponse({ detail: "unexpected_test_request" }, { status: 500 })
+        );
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = createHttpApiClient({
+      baseUrl: "https://app.example.test/api"
+    });
+
+    await client.listTasks();
+    await client.selectWorkspace?.("workspace_beta");
+    await client.listTasks();
+
+    const requestedUrls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(
+      requestedUrls.filter((url) => url.endsWith("/api/projects"))
+    ).toEqual([
+      "https://app.example.test/api/projects",
+      "https://app.example.test/api/projects"
+    ]);
+    expect(requestedUrls).toContain(
+      "https://app.example.test/api/projects/project_alpha/tasks"
+    );
+    expect(requestedUrls).toContain(
+      "https://app.example.test/api/projects/project_beta/tasks"
+    );
+  });
+
   it("keeps API and authentication routes on one origin with distinct path mounts", async () => {
     const fetchMock = vi
       .fn()

@@ -1,3 +1,4 @@
+import secrets
 from typing import Any
 
 from fastapi import HTTPException
@@ -8,8 +9,10 @@ from ai_company_api.services.auth_context import (
     DEV_ORGANIZATION_ID,
     DEV_USER_ID,
     DEV_WORKSPACE_ID,
+    USER_SESSION_AUTH_MODE,
     get_current_auth_context,
 )
+from ai_company_api.services.identity_audit import record_identity_audit_event
 from ai_company_api.services.workspace_permissions import require_workspace_permission
 
 
@@ -117,6 +120,7 @@ def require_audited_workspace_permission(
     except HTTPException as exc:
         if exc.status_code == 403:
             session.rollback()
+            correlation_id = secrets.token_hex(16)
             record_workspace_audit(
                 session,
                 operation=operation,
@@ -126,8 +130,32 @@ def require_audited_workspace_permission(
                 success=False,
                 status_code=403,
                 error_code="insufficient_workspace_role",
-                commit=True,
+                metadata={"correlation_id": correlation_id},
+                commit=False,
             )
+            context = get_current_auth_context()
+            if (
+                context is not None
+                and context.auth_mode == USER_SESSION_AUTH_MODE
+            ):
+                record_identity_audit_event(
+                    session,
+                    event_type="workspace_authorization_denied",
+                    outcome="failure",
+                    reason_code="insufficient_workspace_role",
+                    correlation_id=correlation_id,
+                    user_id=context.user_id,
+                    device_session_id=context.device_session_id,
+                    commit=False,
+                )
+            session.commit()
+            headers = dict(exc.headers or {})
+            headers["X-Correlation-ID"] = correlation_id
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=exc.detail,
+                headers=headers,
+            ) from None
         raise
 
 

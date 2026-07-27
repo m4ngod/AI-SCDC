@@ -348,9 +348,12 @@ def test_human_credentials_resolve_live_authority_and_token_status(
         ):
             set_scope_state(**state)
             rejected_states.append(
-                request_with_each_credential(
-                    session_client,
-                    token_client,
+                (
+                    state,
+                    request_with_each_credential(
+                        session_client,
+                        token_client,
+                    ),
                 )
             )
             set_scope_state(role=WorkspaceRole.VIEWER)
@@ -367,8 +370,16 @@ def test_human_credentials_resolve_live_authority_and_token_status(
     for response in changed_role:
         assert response.status_code == 200
         assert response.json()["roles"] == ["viewer"]
-    for session_response, token_response in rejected_states:
-        assert session_response.status_code == 401
+    for state, (session_response, token_response) in rejected_states:
+        if state == {"user_status": "disabled"}:
+            assert session_response.status_code == 401
+        else:
+            assert session_response.status_code == 200
+            assert (
+                session_response.json()["selection_state"]
+                == "selection_required"
+            )
+            assert session_response.json()["workspace_id"] is None
         assert token_response.status_code == 401
     assert revoked_token[0].status_code == 200
     assert revoked_token[0].json()["roles"] == ["viewer"]

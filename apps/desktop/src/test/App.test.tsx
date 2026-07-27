@@ -10,7 +10,10 @@ import type {
   PlannerRunDraft,
   TaskCard
 } from "../api/client";
-import { fakeApiClient } from "../api/client";
+import {
+  WebConsoleAuthenticationError,
+  fakeApiClient
+} from "../api/client";
 
 function plannerRunFixture(goal = "Build model route settings"): PlannerRunDraft {
   return {
@@ -339,6 +342,7 @@ function secondPatchReadyTaskFixture(): TaskCard {
 
 function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): ConsoleApiClient {
   return {
+    selectWorkspace: vi.fn().mockResolvedValue(undefined),
     listTasks: vi.fn().mockResolvedValue([]),
     createTask: vi.fn(),
     createPlannerRun: vi.fn().mockResolvedValue(plannerRunFixture()),
@@ -692,6 +696,21 @@ describe("App", () => {
         organization_id: "account_personal",
         roles: ["owner"],
         auth_mode: "user_session",
+        selection_state: "selected",
+        accounts: [
+          {
+            id: "account_personal",
+            name: "Personal Account",
+            kind: "personal",
+            workspaces: [
+              {
+                id: "workspace_personal",
+                name: "Default Workspace",
+                role: "owner"
+              }
+            ]
+          }
+        ],
         current_account: {
           id: "account_personal",
           name: "Personal Account",
@@ -716,6 +735,266 @@ describe("App", () => {
     expect(topbar).toHaveTextContent("Personal Account");
     expect(topbar).toHaveTextContent("Default Workspace");
     expect(topbar).not.toHaveTextContent("Demo Workspace");
+  });
+
+  it("requires an explicit workspace selection before loading workspace data", async () => {
+    const user = userEvent.setup();
+    const selectionRequired = {
+      user_id: "user_multi",
+      workspace_id: null,
+      organization_id: null,
+      roles: [],
+      auth_mode: "user_session",
+      selection_state: "selection_required" as const,
+      accounts: [
+        {
+          id: "account_alpha",
+          name: "Alpha Account",
+          kind: "legacy" as const,
+          workspaces: [
+            {
+              id: "workspace_alpha_review",
+              name: "Review",
+              role: "reviewer"
+            }
+          ]
+        },
+        {
+          id: "account_beta",
+          name: "Beta Account",
+          kind: "legacy" as const,
+          workspaces: [
+            {
+              id: "workspace_beta_build",
+              name: "Build",
+              role: "developer"
+            }
+          ]
+        }
+      ],
+      current_account: null,
+      current_workspace: null
+    };
+    const selectedIdentity = {
+      ...selectionRequired,
+      workspace_id: "workspace_beta_build",
+      organization_id: "account_beta",
+      roles: ["developer"],
+      selection_state: "selected" as const,
+      current_account: {
+        id: "account_beta",
+        name: "Beta Account",
+        kind: "legacy" as const
+      },
+      current_workspace: {
+        id: "workspace_beta_build",
+        name: "Build"
+      }
+    };
+    const getCurrentIdentity = vi
+      .fn<NonNullable<ConsoleApiClient["getCurrentIdentity"]>>()
+      .mockResolvedValueOnce(selectionRequired)
+      .mockResolvedValueOnce(selectedIdentity);
+    const selectWorkspace = vi
+      .fn<NonNullable<ConsoleApiClient["selectWorkspace"]>>()
+      .mockResolvedValue(undefined);
+    const listTasks = vi.fn().mockResolvedValue([]);
+    const apiClient = createMockApiClient({
+      getCurrentIdentity,
+      selectWorkspace,
+      listTasks
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const workspaceSelect = await screen.findByRole("combobox", {
+      name: "Workspace"
+    });
+    expect(
+      screen.getByRole("heading", {
+        level: 1,
+        name: "Choose a workspace to continue"
+      })
+    ).toBeInTheDocument();
+    expect(listTasks).not.toHaveBeenCalled();
+
+    await user.selectOptions(workspaceSelect, "workspace_beta_build");
+
+    await waitFor(() => {
+      expect(selectWorkspace).toHaveBeenCalledWith("workspace_beta_build");
+      expect(getCurrentIdentity).toHaveBeenCalledTimes(2);
+      expect(listTasks).toHaveBeenCalledOnce();
+    });
+    expect(screen.getByRole("banner")).toHaveTextContent("Beta Account");
+    expect(screen.getByRole("banner")).toHaveTextContent("Build");
+  });
+
+  it("returns to safe selection when access is lost during the first load after a switch", async () => {
+    const user = userEvent.setup();
+    const selectionRequired = {
+      user_id: "user_switch_loss",
+      workspace_id: null,
+      organization_id: null,
+      roles: [],
+      auth_mode: "user_session",
+      selection_state: "selection_required" as const,
+      accounts: [
+        {
+          id: "account_alpha",
+          name: "Alpha Account",
+          kind: "legacy" as const,
+          workspaces: [
+            {
+              id: "workspace_alpha",
+              name: "Alpha",
+              role: "developer"
+            }
+          ]
+        }
+      ],
+      current_account: null,
+      current_workspace: null
+    };
+    const selectedIdentity = {
+      ...selectionRequired,
+      workspace_id: "workspace_alpha",
+      organization_id: "account_alpha",
+      roles: ["developer"],
+      selection_state: "selected" as const,
+      current_account: {
+        id: "account_alpha",
+        name: "Alpha Account",
+        kind: "legacy" as const
+      },
+      current_workspace: {
+        id: "workspace_alpha",
+        name: "Alpha"
+      }
+    };
+    const getCurrentIdentity = vi
+      .fn<NonNullable<ConsoleApiClient["getCurrentIdentity"]>>()
+      .mockResolvedValueOnce(selectionRequired)
+      .mockResolvedValueOnce(selectedIdentity)
+      .mockResolvedValueOnce(selectionRequired);
+    const selectWorkspace = vi
+      .fn<NonNullable<ConsoleApiClient["selectWorkspace"]>>()
+      .mockResolvedValue(undefined);
+    const listTasks = vi
+      .fn<ConsoleApiClient["listTasks"]>()
+      .mockRejectedValue(
+        new WebConsoleAuthenticationError(
+          "workspace_access_lost",
+          409,
+          "workspace_access_lost"
+        )
+      );
+    const apiClient = createMockApiClient({
+      getCurrentIdentity,
+      selectWorkspace,
+      listTasks
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const workspaceSelect = await screen.findByRole("combobox", {
+      name: "Workspace"
+    });
+    await user.selectOptions(workspaceSelect, "workspace_alpha");
+
+    expect(
+      await screen.findByRole("heading", {
+        level: 1,
+        name: "Choose a workspace to continue"
+      })
+    ).toBeInTheDocument();
+    expect(selectWorkspace).toHaveBeenCalledOnce();
+    expect(listTasks).toHaveBeenCalledOnce();
+    expect(getCurrentIdentity).toHaveBeenCalledTimes(3);
+  });
+
+  it("enters safe selection state without retrying a failed workspace write", async () => {
+    const user = userEvent.setup();
+    const accounts = [
+      {
+        id: "account_alpha",
+        name: "Alpha Account",
+        kind: "legacy" as const,
+        workspaces: [
+          {
+            id: "workspace_alpha",
+            name: "Alpha",
+            role: "developer"
+          },
+          {
+            id: "workspace_review",
+            name: "Review",
+            role: "reviewer"
+          }
+        ]
+      }
+    ];
+    const selectedIdentity = {
+      user_id: "user_runtime_loss",
+      workspace_id: "workspace_alpha",
+      organization_id: "account_alpha",
+      roles: ["developer"],
+      auth_mode: "user_session",
+      selection_state: "selected" as const,
+      accounts,
+      current_account: {
+        id: "account_alpha",
+        name: "Alpha Account",
+        kind: "legacy" as const
+      },
+      current_workspace: {
+        id: "workspace_alpha",
+        name: "Alpha"
+      }
+    };
+    const selectionRequired = {
+      ...selectedIdentity,
+      workspace_id: null,
+      organization_id: null,
+      roles: [],
+      selection_state: "selection_required" as const,
+      current_account: null,
+      current_workspace: null
+    };
+    const getCurrentIdentity = vi
+      .fn<NonNullable<ConsoleApiClient["getCurrentIdentity"]>>()
+      .mockResolvedValueOnce(selectedIdentity)
+      .mockResolvedValueOnce(selectionRequired);
+    const createPlannerRun = vi
+      .fn<ConsoleApiClient["createPlannerRun"]>()
+      .mockRejectedValue(
+        new WebConsoleAuthenticationError(
+          "workspace_access_lost",
+          409,
+          "workspace_access_lost"
+        )
+      );
+    const listTasks = vi.fn().mockResolvedValue([]);
+    const apiClient = createMockApiClient({
+      getCurrentIdentity,
+      createPlannerRun,
+      listTasks
+    });
+
+    render(<App apiClient={apiClient} />);
+    await waitFor(() => expect(listTasks).toHaveBeenCalledOnce());
+
+    await user.type(screen.getByLabelText("Goal"), "Do not replay this write");
+    await user.click(screen.getByRole("button", { name: "Plan tasks" }));
+
+    expect(
+      await screen.findByRole("heading", {
+        level: 1,
+        name: "Choose a workspace to continue"
+      })
+    ).toBeInTheDocument();
+    expect(createPlannerRun).toHaveBeenCalledOnce();
+    expect(getCurrentIdentity).toHaveBeenCalledTimes(2);
+    expect(listTasks).toHaveBeenCalledOnce();
   });
 
   it("shows initial task loading errors in the context panel", async () => {
@@ -1423,6 +1702,91 @@ describe("App", () => {
     expect(deleteRepository.mock.invocationCallOrder[0]).toBeLessThan(
       deleteGitHubCredential.mock.invocationCallOrder[0]
     );
+  });
+
+  it("returns to safe selection when access is lost during setup cleanup", async () => {
+    const user = userEvent.setup();
+    const selectedIdentity = {
+      user_id: "user_cleanup_loss",
+      workspace_id: "workspace_test",
+      organization_id: "account_test",
+      roles: ["developer"],
+      auth_mode: "user_session",
+      selection_state: "selected" as const,
+      accounts: [
+        {
+          id: "account_test",
+          name: "Test Account",
+          kind: "legacy" as const,
+          workspaces: [
+            {
+              id: "workspace_test",
+              name: "Test Workspace",
+              role: "developer"
+            }
+          ]
+        }
+      ],
+      current_account: {
+        id: "account_test",
+        name: "Test Account",
+        kind: "legacy" as const
+      },
+      current_workspace: {
+        id: "workspace_test",
+        name: "Test Workspace"
+      }
+    };
+    const selectionRequired = {
+      ...selectedIdentity,
+      workspace_id: null,
+      organization_id: null,
+      roles: [],
+      selection_state: "selection_required" as const,
+      current_account: null,
+      current_workspace: null
+    };
+    const getCurrentIdentity = vi
+      .fn<NonNullable<ConsoleApiClient["getCurrentIdentity"]>>()
+      .mockResolvedValueOnce(selectedIdentity)
+      .mockResolvedValueOnce(selectionRequired);
+    const createSandboxProfile = vi
+      .fn<ConsoleApiClient["createSandboxProfile"]>()
+      .mockRejectedValue(new Error("Invalid sandbox profile"));
+    const deleteRepository = vi
+      .fn<ConsoleApiClient["deleteRepository"]>()
+      .mockRejectedValue(
+        new WebConsoleAuthenticationError(
+          "workspace_access_lost",
+          409,
+          "workspace_access_lost"
+        )
+      );
+    const deleteGitHubCredential =
+      vi.fn<ConsoleApiClient["deleteGitHubCredential"]>();
+    const apiClient = createMockApiClient({
+      getCurrentIdentity,
+      createSandboxProfile,
+      deleteRepository,
+      deleteGitHubCredential
+    });
+
+    render(<App apiClient={apiClient} />);
+    await waitFor(() => expect(apiClient.listTasks).toHaveBeenCalledOnce());
+
+    await user.type(screen.getByLabelText("GitHub token"), "ghp_test_token_1234");
+    await user.click(screen.getByRole("button", { name: "Connect GitHub repo" }));
+
+    expect(
+      await screen.findByRole("heading", {
+        level: 1,
+        name: "Choose a workspace to continue"
+      })
+    ).toBeInTheDocument();
+    expect(createSandboxProfile).toHaveBeenCalledOnce();
+    expect(deleteRepository).toHaveBeenCalledOnce();
+    expect(deleteGitHubCredential).not.toHaveBeenCalled();
+    expect(getCurrentIdentity).toHaveBeenCalledTimes(2);
   });
 
   it("runs a cloud task and renders cloud branch metadata", async () => {

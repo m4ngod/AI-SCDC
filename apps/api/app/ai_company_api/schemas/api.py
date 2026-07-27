@@ -935,6 +935,18 @@ class CurrentWorkspace(BaseModel):
     name: str
 
 
+class AccessibleWorkspace(CurrentWorkspace):
+    role: str
+
+
+class AccessibleAccount(CurrentAccount):
+    workspaces: list[AccessibleWorkspace] = Field(default_factory=list)
+
+
+class WorkspaceSelectionUpdate(BaseModel):
+    workspace_id: str = Field(min_length=1)
+
+
 AuditedStringInput = Annotated[object, WithJsonSchema({"type": "string"})]
 
 
@@ -955,9 +967,11 @@ class AccountLinkRead(BaseModel):
 
 class DevIdentity(BaseModel):
     user_id: str
-    workspace_id: str
-    organization_id: str
+    workspace_id: str | None
+    organization_id: str | None
     roles: list[str] = Field(default_factory=list)
     auth_mode: str = "dev"
-    current_account: CurrentAccount
-    current_workspace: CurrentWorkspace
+    selection_state: Literal["selected", "selection_required"] = "selected"
+    accounts: list[AccessibleAccount] = Field(default_factory=list)
+    current_account: CurrentAccount | None
+    current_workspace: CurrentWorkspace | None
