@@ -2,11 +2,14 @@ from collections.abc import AsyncGenerator, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import hmac
+import secrets
 
 from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy import update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from ai_company_api.db.session import get_session_dependency
@@ -19,7 +22,15 @@ from ai_company_api.models.entities import (
     WorkspaceRole,
 )
 from ai_company_api.services.auth_policy import HumanCredentialType
-from ai_company_api.services.identity_login import USER_SESSION_COOKIE
+from ai_company_api.services.user_session_credentials import (
+    USER_SESSION_COOKIE,
+    USER_SESSION_PREVIOUS_SECRET_SECONDS,
+    USER_SESSION_ROTATION_SECONDS,
+    UserSessionCredentialRejected,
+    hash_session_secret,
+    resolve_user_session_credential,
+)
+from ai_company_api.services.identity_audit import record_identity_audit_event
 
 
 DEV_USER_ID = "dev_user"
@@ -124,7 +135,10 @@ async def get_auth_context_dependency(
         yield context
 
 
-def _resolve_auth_context(request: Request, session: Session) -> AuthContext:
+def _resolve_auth_context(
+    request: Request,
+    session: Session,
+) -> AuthContext:
     authentication_policy = request.app.state.authentication_policy
     accepted_credentials = authentication_policy.accepted_human_credentials
 
@@ -150,7 +164,10 @@ def _resolve_auth_context(request: Request, session: Session) -> AuthContext:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User Session authentication is not allowed",
             )
-        return _user_session_auth_context(request, session)
+        return _user_session_auth_context_or_fail_closed(
+            request,
+            session,
+        )
 
     if (
         HumanCredentialType.DEV_AUTH
@@ -161,7 +178,10 @@ def _resolve_auth_context(request: Request, session: Session) -> AuthContext:
         HumanCredentialType.USER_SESSION
         in accepted_credentials
     ):
-        return _user_session_auth_context(request, session)
+        return _user_session_auth_context_or_fail_closed(
+            request,
+            session,
+        )
     if (
         HumanCredentialType.WORKSPACE_API_TOKEN
         in accepted_credentials
@@ -242,22 +262,36 @@ def _api_token_auth_context(request: Request, session: Session) -> AuthContext:
     )
 
 
-def _user_session_auth_context(request: Request, session: Session) -> AuthContext:
+def _user_session_auth_context(
+    request: Request,
+    session: Session,
+) -> AuthContext:
+    now = _as_utc(request.app.state.identity_clock())
     cookie_value = request.cookies.get(USER_SESSION_COOKIE, "")
-    session_id, separator, session_secret = cookie_value.partition(".")
-    if separator == "" or session_id == "" or session_secret == "":
-        _invalid_user_session()
-    device_session = session.get(DeviceSession, session_id)
-    if (
-        device_session is None
-        or device_session.status != "active"
-        or _as_utc(device_session.idle_expires_at) <= datetime.now(timezone.utc)
-        or not hmac.compare_digest(
-            device_session.secret_hash,
-            hash_api_token(session_secret),
+    try:
+        resolved_credential = resolve_user_session_credential(
+            session,
+            cookie_value=cookie_value,
+            now=now,
         )
+    except UserSessionCredentialRejected as exc:
+        _invalid_user_session(correlation_id=exc.correlation_id)
+    device_session = resolved_credential.device_session
+    if (
+        resolved_credential.uses_current_secret
+        and _as_utc(device_session.secret_rotated_at)
+        + timedelta(seconds=USER_SESSION_ROTATION_SECONDS)
+        <= now
     ):
-        _invalid_user_session()
+        device_session = _rotate_user_session_credential(
+            session,
+            request=request,
+            device_session=device_session,
+            presented_secret_hash=(
+                resolved_credential.presented_secret_hash
+            ),
+            now=now,
+        )
     user = session.get(User, device_session.user_id)
     workspace = session.get(Workspace, device_session.active_workspace_id)
     organization = session.get(
@@ -284,20 +318,148 @@ def _user_session_auth_context(request: Request, session: Session) -> AuthContex
         or workspace.organization_id != organization.id
     ):
         _invalid_user_session()
-    return AuthContext(
+    context = AuthContext(
         user_id=user.id,
         workspace_id=workspace.id,
         organization_id=organization.id,
         roles=frozenset({_role_value(member.role)}),
         auth_mode=USER_SESSION_AUTH_MODE,
     )
+    if _as_utc(device_session.last_seen_at) + timedelta(hours=1) <= now:
+        correlation_id = secrets.token_hex(16)
+        result = session.execute(
+            update(DeviceSession)
+            .where(
+                DeviceSession.id == device_session.id,
+                DeviceSession.status == "active",
+                DeviceSession.last_seen_at == device_session.last_seen_at,
+            )
+            .values(
+                last_seen_at=now,
+                idle_expires_at=now + timedelta(days=30),
+                updated_at=now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount == 1:
+            record_identity_audit_event(
+                session,
+                event_type="session_activity_renewed",
+                outcome="success",
+                reason_code="hourly_activity_checkpoint",
+                correlation_id=correlation_id,
+                user_id=device_session.user_id,
+                device_session_id=device_session.id,
+                commit=False,
+            )
+            session.commit()
+            request.state.identity_correlation_id = correlation_id
+        else:
+            session.rollback()
+    return context
 
 
-def _invalid_user_session() -> None:
+def _invalid_user_session(*, correlation_id: str | None = None) -> None:
+    headers = (
+        {"X-Correlation-ID": correlation_id}
+        if correlation_id is not None
+        else None
+    )
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="User Session is not valid",
+        headers=headers,
     )
+
+
+def _user_session_auth_context_or_fail_closed(
+    request: Request,
+    session: Session,
+) -> AuthContext:
+    try:
+        if request.app.state.user_session_database_failure:
+            raise SQLAlchemyError("Injected User Session database failure")
+        return _user_session_auth_context(request, session)
+    except SQLAlchemyError:
+        correlation_id = secrets.token_hex(16)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User Session database is unavailable",
+            headers={"X-Correlation-ID": correlation_id},
+        ) from None
+
+
+def _rotate_user_session_credential(
+    session: Session,
+    *,
+    request: Request,
+    device_session: DeviceSession,
+    presented_secret_hash: str,
+    now: datetime,
+) -> DeviceSession:
+    new_secret = secrets.token_urlsafe(32)
+    new_secret_hash = hash_session_secret(new_secret)
+    correlation_id = secrets.token_hex(16)
+    update_values: dict[str, object] = {
+        "secret_hash": new_secret_hash,
+        "previous_secret_hash": presented_secret_hash,
+        "previous_secret_valid_until": now
+        + timedelta(seconds=USER_SESSION_PREVIOUS_SECRET_SECONDS),
+        "secret_rotated_at": now,
+        "updated_at": now,
+    }
+    if _as_utc(device_session.last_seen_at) + timedelta(hours=1) <= now:
+        update_values["last_seen_at"] = now
+        update_values["idle_expires_at"] = now + timedelta(days=30)
+    result = session.execute(
+        update(DeviceSession)
+        .where(
+            DeviceSession.id == device_session.id,
+            DeviceSession.status == "active",
+            DeviceSession.secret_hash == presented_secret_hash,
+            DeviceSession.secret_rotated_at == device_session.secret_rotated_at,
+        )
+        .values(**update_values)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        session.expire_all()
+        current = session.get(DeviceSession, device_session.id)
+        if (
+            current is not None
+            and current.status == "active"
+            and current.previous_secret_hash is not None
+            and hmac.compare_digest(
+                current.previous_secret_hash,
+                presented_secret_hash,
+            )
+            and current.previous_secret_valid_until is not None
+            and _as_utc(current.previous_secret_valid_until) >= now
+        ):
+            return current
+        _invalid_user_session()
+    record_identity_audit_event(
+        session,
+        event_type="session_credential_rotated",
+        outcome="success",
+        reason_code="scheduled_rotation",
+        correlation_id=correlation_id,
+        user_id=device_session.user_id,
+        device_session_id=device_session.id,
+        commit=False,
+    )
+    session.commit()
+    request.state.user_session_cookie_rotation = (
+        device_session.id,
+        new_secret,
+    )
+    request.state.identity_correlation_id = correlation_id
+    session.expire_all()
+    current = session.get(DeviceSession, device_session.id)
+    if current is None:
+        _invalid_user_session()
+    return current
 
 
 def _as_utc(value: datetime) -> datetime:

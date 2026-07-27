@@ -21,6 +21,7 @@ def build_engine(database_url: str):
 def init_db(engine) -> None:
     _upgrade_sqlite_account_classification(engine)
     _upgrade_sqlite_identity_recovery_columns(engine)
+    _upgrade_sqlite_user_session_columns(engine)
     _upgrade_sqlite_cloud_run_phase_9_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10a_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10b_columns(engine)
@@ -37,6 +38,61 @@ def init_db(engine) -> None:
     _upgrade_sqlite_planner_run_metadata(engine)
     _upgrade_sqlite_task_execution_constraints(engine)
     _upgrade_sqlite_patch_review_uniqueness(engine)
+
+
+def _upgrade_sqlite_user_session_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "device_session" not in existing_tables:
+            return
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(
+                text("PRAGMA table_info(device_session)")
+            ).mappings()
+        }
+        columns = {
+            "previous_secret_hash": "VARCHAR",
+            "previous_secret_valid_until": "DATETIME",
+            "secret_rotated_at": "DATETIME",
+        }
+        for column_name, column_type in columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE device_session "
+                        f"ADD COLUMN {column_name} {column_type}"
+                    )
+                )
+        connection.execute(
+            text(
+                "UPDATE device_session "
+                "SET secret_rotated_at = created_at "
+                "WHERE secret_rotated_at IS NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_device_session_previous_secret_valid_until "
+                "ON device_session (previous_secret_valid_until)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_device_session_secret_rotated_at "
+                "ON device_session (secret_rotated_at)"
+            )
+        )
 
 
 def _upgrade_sqlite_identity_recovery_columns(engine) -> None:

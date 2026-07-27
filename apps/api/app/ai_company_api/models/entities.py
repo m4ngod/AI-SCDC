@@ -285,6 +285,9 @@ class DeviceSession(SQLModel, table=True):
     active_workspace_id: str = Field(index=True, foreign_key="workspace.id")
     active_organization_id: str = Field(index=True, foreign_key="organization.id")
     secret_hash: str
+    previous_secret_hash: str | None = None
+    previous_secret_valid_until: datetime | None = Field(default=None, index=True)
+    secret_rotated_at: datetime = Field(default_factory=utc_now, index=True)
     status: str = Field(default="active", index=True)
     idle_expires_at: datetime = Field(index=True)
     last_seen_at: datetime = Field(default_factory=utc_now, index=True)

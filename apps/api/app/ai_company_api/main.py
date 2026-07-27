@@ -1,13 +1,17 @@
 from collections.abc import Generator
 from contextlib import asynccontextmanager
+from datetime import datetime
 import os
+from typing import Callable
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlmodel import Session
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ai_company_api.api.identity_routes import router as identity_router
 from ai_company_api.api.routes import router
@@ -18,7 +22,13 @@ from ai_company_api.db.session import (
     session_generator,
 )
 from ai_company_api.schemas.api import CurrentAccount, CurrentWorkspace, DevIdentity
-from ai_company_api.models.entities import AccountKind, Organization, User, Workspace
+from ai_company_api.models.entities import (
+    AccountKind,
+    Organization,
+    User,
+    Workspace,
+    utc_now,
+)
 from ai_company_api.services.auth_context import (
     DEV_ORGANIZATION_ID,
     DEV_USER_ID,
@@ -37,6 +47,10 @@ from ai_company_api.services.customer_identity_provider import CustomerIdentityP
 from ai_company_api.services.identity_login import (
     PERSONAL_ONBOARDING_FAILURE_STEPS,
 )
+from ai_company_api.services.user_session_credentials import (
+    USER_SESSION_COOKIE,
+    USER_SESSION_IDLE_SECONDS,
+)
 
 
 DEV_CORS_ORIGINS = (
@@ -45,6 +59,62 @@ DEV_CORS_ORIGINS = (
 )
 SECRET_REQUEST_FIELDS = {"secret_value", "token"}
 REDACTED_SECRET_INPUT = "[redacted]"
+
+
+class UserSessionResponseStateMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def apply_response_state(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                state = scope.get("state", {})
+                rotation = state.get("user_session_cookie_rotation")
+                if rotation is not None:
+                    device_session_id, session_secret = rotation
+                    cookie_response = Response()
+                    cookie_response.set_cookie(
+                        key=USER_SESSION_COOKIE,
+                        value=f"{device_session_id}.{session_secret}",
+                        max_age=USER_SESSION_IDLE_SECONDS,
+                        secure=True,
+                        httponly=True,
+                        samesite="lax",
+                        path="/",
+                    )
+                    headers = MutableHeaders(scope=message)
+                    for name, value in cookie_response.raw_headers:
+                        if name == b"set-cookie":
+                            headers.append(
+                                "set-cookie",
+                                value.decode("latin-1"),
+                            )
+                correlation_id = state.get("identity_correlation_id")
+                headers = MutableHeaders(scope=message)
+                if (
+                    correlation_id is not None
+                    and "x-correlation-id" not in headers
+                ):
+                    headers["x-correlation-id"] = correlation_id
+            await send(message)
+
+        await self.app(scope, receive, apply_response_state)
+
+
+class AICompanyFastAPI(FastAPI):
+    def build_middleware_stack(self) -> ASGIApp:
+        return UserSessionResponseStateMiddleware(
+            super().build_middleware_stack(),
+        )
 
 
 def redact_secret_validation_input(value: object) -> object:
@@ -93,6 +163,8 @@ def create_app(
     login_transaction_ttl_seconds: int = 600,
     personal_onboarding_failure_step: str | None = None,
     identity_operator_user_ids: frozenset[str] = frozenset(),
+    identity_clock: Callable[[], datetime] = utc_now,
+    user_session_database_failure: bool = False,
 ) -> FastAPI:
     resolved_authentication_policy = (
         authentication_policy
@@ -131,6 +203,15 @@ def create_app(
             not in PERSONAL_ONBOARDING_FAILURE_STEPS
         ):
             raise ValueError("Unsupported Personal onboarding failure step")
+    if (
+        user_session_database_failure
+        and resolved_authentication_policy.environment
+        != AuthenticationEnvironment.TEST
+    ):
+        raise ValueError(
+            "User Session database failure injection is allowed only "
+            "in the test environment"
+        )
     engine = build_engine(database_url)
 
     @asynccontextmanager
@@ -143,7 +224,8 @@ def create_app(
             _ensure_dev_auth_scope(engine)
         yield
 
-    app = FastAPI(title="AI Company API", lifespan=lifespan)
+    app = AICompanyFastAPI(title="AI Company API", lifespan=lifespan)
+
     app.state.authentication_policy = resolved_authentication_policy
     app.state.customer_identity_provider = customer_identity_provider
     app.state.allowed_login_return_destinations = allowed_login_return_destinations
@@ -154,6 +236,8 @@ def create_app(
         personal_onboarding_failure_step
     )
     app.state.identity_operator_user_ids = identity_operator_user_ids
+    app.state.identity_clock = identity_clock
+    app.state.user_session_database_failure = user_session_database_failure
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),
