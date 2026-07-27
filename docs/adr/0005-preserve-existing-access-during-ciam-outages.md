@@ -1,0 +1,3 @@
+# Preserve existing access during CIAM outages
+
+When CIAM status cannot be retrieved because of timeout, network failure, or service error, AI-SCDC will indefinitely retain the External Identity's Last Confirmed Identity Status and allow otherwise-valid User Sessions and Workspace API Tokens to continue operating. New login and Recent Authentication still require CIAM, and an explicit verified locked, disabled, or missing status revokes all human credentials. This deliberately prioritizes availability for already authenticated customers over immediate propagation of CIAM-side account changes during an outage; local User disablement and credential revocation remain immediately authoritative.
