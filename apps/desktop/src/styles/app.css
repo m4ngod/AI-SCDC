@@ -132,6 +132,53 @@ dd {
   background: #f8f9fa;
 }
 
+.device-session-list {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 12px 0 0;
+  list-style: none;
+}
+
+.device-session-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #d7dee2;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.device-session-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.device-session-row dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.device-session-row dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.device-session-row dt,
+.device-session-row dd {
+  margin: 0;
+  font-size: 11px;
+}
+
+.device-session-row button {
+  justify-self: start;
+}
+
 .thread-panel {
   display: flex;
   flex-direction: column;

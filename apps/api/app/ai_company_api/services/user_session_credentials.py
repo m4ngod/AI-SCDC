@@ -46,7 +46,38 @@ def resolve_user_session_credential(
         _reject_credential("invalid_session_credential")
 
     device_session = session.get(DeviceSession, session_id)
-    if device_session is None or device_session.status != "active":
+    if device_session is None:
+        _reject_credential("invalid_session_credential")
+    presented_secret_hash = hash_session_secret(session_secret)
+    uses_current_secret = hmac.compare_digest(
+        device_session.secret_hash,
+        presented_secret_hash,
+    )
+    uses_previous_secret = bool(
+        device_session.previous_secret_hash is not None
+        and hmac.compare_digest(
+            device_session.previous_secret_hash,
+            presented_secret_hash,
+        )
+    )
+    if device_session.status == "revoked":
+        if not uses_current_secret and not uses_previous_secret:
+            _reject_credential("invalid_session_credential")
+        correlation_id = secrets.token_hex(16)
+        record_identity_audit_event(
+            session,
+            event_type="session_credential_replay",
+            outcome="failure",
+            reason_code="revoked_session_reuse",
+            correlation_id=correlation_id,
+            user_id=device_session.user_id,
+            device_session_id=device_session.id,
+        )
+        _reject_credential(
+            "invalid_session_credential",
+            correlation_id=correlation_id,
+        )
+    if device_session.status != "active":
         _reject_credential("invalid_session_credential")
     if _as_utc(device_session.idle_expires_at) <= now:
         correlation_id = secrets.token_hex(16)
@@ -67,18 +98,6 @@ def resolve_user_session_credential(
             correlation_id=correlation_id,
         )
 
-    presented_secret_hash = hash_session_secret(session_secret)
-    uses_current_secret = hmac.compare_digest(
-        device_session.secret_hash,
-        presented_secret_hash,
-    )
-    uses_previous_secret = bool(
-        device_session.previous_secret_hash is not None
-        and hmac.compare_digest(
-            device_session.previous_secret_hash,
-            presented_secret_hash,
-        )
-    )
     if (
         uses_previous_secret
         and (

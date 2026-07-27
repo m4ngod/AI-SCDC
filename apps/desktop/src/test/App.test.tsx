@@ -379,6 +379,8 @@ function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): Console
   return {
     selectWorkspace: vi.fn().mockResolvedValue(undefined),
     signOut: vi.fn().mockResolvedValue({ redirect_to: null }),
+    listDeviceSessions: vi.fn().mockResolvedValue([]),
+    revokeDeviceSession: vi.fn().mockResolvedValue(undefined),
     listTasks: vi.fn().mockResolvedValue([]),
     createTask: vi.fn(),
     createPlannerRun: vi.fn().mockResolvedValue(plannerRunFixture()),
@@ -775,6 +777,192 @@ describe("App", () => {
     expect(topbar).toHaveTextContent("Personal Account");
     expect(topbar).toHaveTextContent("Default Workspace");
     expect(topbar).not.toHaveTextContent("Demo Workspace");
+  });
+
+  it("shows active Device Sessions and refreshes after revoking another device", async () => {
+    const user = userEvent.setup();
+    const listDeviceSessions = vi
+      .fn<ConsoleApiClient["listDeviceSessions"]>()
+      .mockResolvedValueOnce([
+        {
+          id: "device_session_current",
+          device_description: "Firefox on macOS",
+          created_at: "2026-07-27T12:01:00",
+          last_seen_at: "2026-07-27T13:01:00",
+          status: "active",
+          is_current: true
+        },
+        {
+          id: "device_session_other",
+          device_description: "Chrome on Windows",
+          created_at: "2026-07-26T10:00:00",
+          last_seen_at: "2026-07-27T12:30:00",
+          status: "active",
+          is_current: false
+        }
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "device_session_current",
+          device_description: "Firefox on macOS",
+          created_at: "2026-07-27T12:01:00",
+          last_seen_at: "2026-07-27T13:01:00",
+          status: "active",
+          is_current: true
+        }
+      ]);
+    const revokeDeviceSession = vi
+      .fn<ConsoleApiClient["revokeDeviceSession"]>()
+      .mockResolvedValue(undefined);
+    const apiClient = createMockApiClient({
+      getCurrentIdentity: vi.fn().mockResolvedValue(signedInIdentityFixture()),
+      listDeviceSessions,
+      revokeDeviceSession
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const panel = await screen.findByRole("region", {
+      name: "Device sessions"
+    });
+    expect(
+      await within(panel).findByText("Firefox on macOS")
+    ).toBeInTheDocument();
+    expect(within(panel).getByText("Chrome on Windows")).toBeInTheDocument();
+    expect(within(panel).getByText("This device")).toBeInTheDocument();
+    expect(within(panel).getAllByText("Active")).toHaveLength(2);
+    expect(
+      within(panel).getAllByText("Created", { selector: "dt" })
+    ).toHaveLength(2);
+    expect(
+      within(panel).getAllByText("Recent activity", { selector: "dt" })
+    ).toHaveLength(2);
+    expect(
+      within(panel).queryByRole("button", {
+        name: "Revoke Firefox on macOS"
+      })
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      within(panel).getByRole("button", {
+        name: "Revoke Chrome on Windows"
+      })
+    );
+
+    expect(revokeDeviceSession).toHaveBeenCalledWith("device_session_other");
+    expect(listDeviceSessions).toHaveBeenCalledTimes(2);
+    expect(
+      await within(panel).findByText("Firefox on macOS")
+    ).toBeInTheDocument();
+    expect(within(panel).queryByText("Chrome on Windows")).not.toBeInTheDocument();
+  });
+
+  it("does not report zero active Device Sessions when the list cannot be loaded", async () => {
+    const listDeviceSessions = vi
+      .fn<ConsoleApiClient["listDeviceSessions"]>()
+      .mockRejectedValue(new Error("session_list_unavailable"));
+    const apiClient = createMockApiClient({
+      getCurrentIdentity: vi.fn().mockResolvedValue(signedInIdentityFixture()),
+      listDeviceSessions
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const panel = await screen.findByRole("region", {
+      name: "Device sessions"
+    });
+    expect(await within(panel).findByRole("alert")).toHaveTextContent(
+      "session_list_unavailable"
+    );
+    expect(within(panel).queryByText("0 active")).not.toBeInTheDocument();
+    expect(
+      within(panel).queryByText("No active Device Sessions.")
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the Device Session visible when revocation is rejected", async () => {
+    const user = userEvent.setup();
+    const listDeviceSessions = vi
+      .fn<ConsoleApiClient["listDeviceSessions"]>()
+      .mockResolvedValue([
+        {
+          id: "device_session_other",
+          device_description: "Chrome on Windows",
+          created_at: "2026-07-26T10:00:00",
+          last_seen_at: "2026-07-27T12:30:00",
+          status: "active",
+          is_current: false
+        }
+      ]);
+    const revokeDeviceSession = vi
+      .fn<ConsoleApiClient["revokeDeviceSession"]>()
+      .mockRejectedValue(new Error("csrf_token_mismatch"));
+    const apiClient = createMockApiClient({
+      getCurrentIdentity: vi.fn().mockResolvedValue(signedInIdentityFixture()),
+      listDeviceSessions,
+      revokeDeviceSession
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const panel = await screen.findByRole("region", {
+      name: "Device sessions"
+    });
+    await user.click(
+      await within(panel).findByRole("button", {
+        name: "Revoke Chrome on Windows"
+      })
+    );
+
+    expect(await within(panel).findByRole("alert")).toHaveTextContent(
+      "csrf_token_mismatch"
+    );
+    expect(within(panel).getByText("Chrome on Windows")).toBeInTheDocument();
+    expect(listDeviceSessions).toHaveBeenCalledOnce();
+    expect(revokeDeviceSession).toHaveBeenCalledWith("device_session_other");
+  });
+
+  it("does not restore a revoked Device Session when list refresh fails", async () => {
+    const user = userEvent.setup();
+    const listDeviceSessions = vi
+      .fn<ConsoleApiClient["listDeviceSessions"]>()
+      .mockResolvedValueOnce([
+        {
+          id: "device_session_other",
+          device_description: "Chrome on Windows",
+          created_at: "2026-07-26T10:00:00",
+          last_seen_at: "2026-07-27T12:30:00",
+          status: "active",
+          is_current: false
+        }
+      ])
+      .mockRejectedValueOnce(new Error("session_list_unavailable"));
+    const revokeDeviceSession = vi
+      .fn<ConsoleApiClient["revokeDeviceSession"]>()
+      .mockResolvedValue(undefined);
+    const apiClient = createMockApiClient({
+      getCurrentIdentity: vi.fn().mockResolvedValue(signedInIdentityFixture()),
+      listDeviceSessions,
+      revokeDeviceSession
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const panel = await screen.findByRole("region", {
+      name: "Device sessions"
+    });
+    await user.click(
+      await within(panel).findByRole("button", {
+        name: "Revoke Chrome on Windows"
+      })
+    );
+
+    expect(await within(panel).findByRole("alert")).toHaveTextContent(
+      "Device Session was revoked, but the list could not be refreshed"
+    );
+    expect(within(panel).queryByText("Chrome on Windows")).not.toBeInTheDocument();
+    expect(revokeDeviceSession).toHaveBeenCalledWith("device_session_other");
+    expect(listDeviceSessions).toHaveBeenCalledTimes(2);
   });
 
   it("signs out locally before a best-effort provider redirect", async () => {

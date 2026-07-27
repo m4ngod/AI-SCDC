@@ -30,6 +30,9 @@ from ai_company_api.services.customer_identity_provider import (
     ValidatedExternalIdentity,
 )
 from ai_company_api.services.identity_audit import record_identity_audit_event
+from ai_company_api.services.identity_device_sessions import (
+    coarse_device_description,
+)
 from ai_company_api.services.user_session_credentials import (
     USER_SESSION_COOKIE,
     USER_SESSION_IDLE_SECONDS,
@@ -459,8 +462,13 @@ def complete_login_callback(
         active_organization_id=organization.id,
         secret_hash=_secret_hash(session_secret),
         secret_rotated_at=now,
+        device_description=coarse_device_description(
+            request.headers.get("user-agent")
+        ),
         idle_expires_at=now + timedelta(seconds=USER_SESSION_IDLE_SECONDS),
         last_seen_at=now,
+        created_at=now,
+        updated_at=now,
     )
     try:
         session.add(device_session)

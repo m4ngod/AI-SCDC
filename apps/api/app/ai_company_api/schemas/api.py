@@ -951,6 +951,19 @@ class SignOutRead(BaseModel):
     redirect_to: str | None
 
 
+class DeviceSessionRead(BaseModel):
+    id: str
+    device_description: str
+    created_at: datetime
+    last_seen_at: datetime
+    status: str
+    is_current: bool
+
+
+class DeviceSessionListRead(BaseModel):
+    sessions: list[DeviceSessionRead]
+
+
 AuditedStringInput = Annotated[object, WithJsonSchema({"type": "string"})]
 
 

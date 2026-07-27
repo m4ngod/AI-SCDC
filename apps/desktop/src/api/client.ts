@@ -425,6 +425,15 @@ export type SignOutResult = {
   redirect_to: string | null;
 };
 
+export type DeviceSessionCard = {
+  id: string;
+  device_description: string;
+  created_at: string;
+  last_seen_at: string;
+  status: string;
+  is_current: boolean;
+};
+
 export type WebConsoleAuthenticationState =
   | "logged_out"
   | "provider_unavailable"
@@ -453,6 +462,8 @@ export type ConsoleApiClient = {
   selectWorkspace?: (workspaceId: string) => Promise<void>;
   getLoginUrl?: (returnTo: string) => string;
   signOut: () => Promise<SignOutResult>;
+  listDeviceSessions: () => Promise<DeviceSessionCard[]>;
+  revokeDeviceSession: (deviceSessionId: string) => Promise<void>;
   listTasks: () => Promise<TaskCard[]>;
   createTask: (goal: string) => Promise<TaskCard>;
   createPlannerRun: (goal: string) => Promise<PlannerRunDraft>;
@@ -881,6 +892,19 @@ export const fakeApiClient: ConsoleApiClient = {
   async signOut() {
     return { redirect_to: null };
   },
+  async listDeviceSessions() {
+    return [
+      {
+        id: "device_session_demo",
+        device_description: "Chrome on Windows",
+        created_at: "2026-05-29T00:00:00",
+        last_seen_at: "2026-05-29T00:00:00",
+        status: "active",
+        is_current: true
+      }
+    ];
+  },
+  async revokeDeviceSession() {},
   async listTasks() {
     return [...demoTasks];
   },
@@ -1868,6 +1892,32 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         response,
         "POST /auth/logout"
       );
+    },
+    async listDeviceSessions() {
+      const response = await fetch(
+        apiUrl(authBaseUrl, "/auth/device-sessions")
+      );
+      const result = await readJsonResponse<{
+        sessions: DeviceSessionCard[];
+      }>(response, "GET /auth/device-sessions");
+      return result.sessions;
+    },
+    async revokeDeviceSession(deviceSessionId: string) {
+      const response = await fetch(
+        apiUrl(
+          authBaseUrl,
+          `/auth/device-sessions/${encodeURIComponent(deviceSessionId)}`
+        ),
+        {
+          method: "DELETE"
+        }
+      );
+      if (!response.ok) {
+        await readJsonResponse<never>(
+          response,
+          "DELETE /auth/device-sessions/{device_session_id}"
+        );
+      }
     },
     async getCurrentIdentity() {
       const response = await fetch(apiUrl(options.baseUrl, "/me"), {
