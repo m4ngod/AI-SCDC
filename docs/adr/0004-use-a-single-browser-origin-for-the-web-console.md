@@ -1,0 +1,3 @@
+# Use a single browser origin for the Web Console
+
+The production Web Console, browser API, and authentication routes will share one public origin, with `/api` and `/auth` routed through the production gateway to independently deployable backend services. Browser sessions use a host-only `__Host-` cookie, and unsafe Cookie-authenticated requests require both exact-Origin validation and a User Session-bound CSRF token. This avoids credentialed cross-origin browser access and makes the OIDC callback, Cookie policy, and CSRF boundary explicit; API-token and worker-token callers remain outside the browser Cookie boundary.
