@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
+from ai_company_api.api.identity_routes import router as identity_router
 from ai_company_api.api.routes import router
 from ai_company_api.db.session import (
     build_engine,
@@ -27,10 +28,12 @@ from ai_company_api.services.auth_context import (
 )
 from ai_company_api.services.auth_policy import (
     AUTHENTICATION_ENVIRONMENT_ENV,
+    AuthenticationEnvironment,
     AuthenticationPolicy,
     HumanCredentialType,
     authentication_policy_for_environment,
 )
+from ai_company_api.services.customer_identity_provider import CustomerIdentityProvider
 
 
 DEV_CORS_ORIGINS = (
@@ -80,6 +83,11 @@ def create_app(
     database_url: str = "sqlite:///./dev.db",
     cors_origins: tuple[str, ...] = DEV_CORS_ORIGINS,
     authentication_policy: AuthenticationPolicy | None = None,
+    customer_identity_provider: CustomerIdentityProvider | None = None,
+    allowed_login_return_destinations: frozenset[str] = frozenset({"/"}),
+    public_origin: str = "https://localhost",
+    identity_audit_observer_enabled: bool = False,
+    login_transaction_ttl_seconds: int = 600,
 ) -> FastAPI:
     resolved_authentication_policy = (
         authentication_policy
@@ -88,6 +96,22 @@ def create_app(
             os.getenv(AUTHENTICATION_ENVIRONMENT_ENV)
         )
     )
+    if (
+        HumanCredentialType.USER_SESSION
+        in resolved_authentication_policy.accepted_human_credentials
+        and customer_identity_provider is None
+    ):
+        raise ValueError(
+            "Customer Identity Provider is required when User Sessions are enabled"
+        )
+    if (
+        identity_audit_observer_enabled
+        and resolved_authentication_policy.environment
+        != AuthenticationEnvironment.TEST
+    ):
+        raise ValueError(
+            "Identity Audit observer is allowed only in the test environment"
+        )
     engine = build_engine(database_url)
 
     @asynccontextmanager
@@ -102,6 +126,11 @@ def create_app(
 
     app = FastAPI(title="AI Company API", lifespan=lifespan)
     app.state.authentication_policy = resolved_authentication_policy
+    app.state.customer_identity_provider = customer_identity_provider
+    app.state.allowed_login_return_destinations = allowed_login_return_destinations
+    app.state.public_origin = public_origin.rstrip("/")
+    app.state.identity_audit_observer_enabled = identity_audit_observer_enabled
+    app.state.login_transaction_ttl_seconds = login_transaction_ttl_seconds
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),
@@ -138,6 +167,7 @@ def create_app(
             auth_mode=auth.auth_mode,
         )
 
+    app.include_router(identity_router)
     app.include_router(router, dependencies=[Depends(get_auth_context_dependency)])
     return app
 

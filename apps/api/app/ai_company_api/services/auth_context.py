@@ -2,7 +2,9 @@ from collections.abc import AsyncGenerator, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
+import hmac
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlmodel import Session, select
@@ -11,11 +13,13 @@ from ai_company_api.db.session import get_session_dependency
 from ai_company_api.models.entities import (
     Organization,
     OrganizationMember,
+    DeviceSession,
     User,
     Workspace,
     WorkspaceRole,
 )
 from ai_company_api.services.auth_policy import HumanCredentialType
+from ai_company_api.services.identity_login import USER_SESSION_COOKIE
 
 
 DEV_USER_ID = "dev_user"
@@ -23,6 +27,7 @@ DEV_WORKSPACE_ID = "dev_workspace"
 DEV_ORGANIZATION_ID = "dev_organization"
 DEV_AUTH_MODE = "dev"
 API_TOKEN_AUTH_MODE = "api_token"
+USER_SESSION_AUTH_MODE = "user_session"
 DEV_AUTH_HEADER_PREFIX = "x-ai-scdc-"
 
 _current_auth_context: ContextVar["AuthContext | None"] = ContextVar(
@@ -139,11 +144,24 @@ def _resolve_auth_context(request: Request, session: Session) -> AuthContext:
             )
         return _dev_auth_context(request)
 
+    if USER_SESSION_COOKIE in request.cookies:
+        if HumanCredentialType.USER_SESSION not in accepted_credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User Session authentication is not allowed",
+            )
+        return _user_session_auth_context(request, session)
+
     if (
         HumanCredentialType.DEV_AUTH
         in accepted_credentials
     ):
         return _dev_auth_context(request)
+    if (
+        HumanCredentialType.USER_SESSION
+        in accepted_credentials
+    ):
+        return _user_session_auth_context(request, session)
     if (
         HumanCredentialType.WORKSPACE_API_TOKEN
         in accepted_credentials
@@ -222,6 +240,70 @@ def _api_token_auth_context(request: Request, session: Session) -> AuthContext:
         roles=frozenset({_role_value(member.role)}),
         auth_mode=API_TOKEN_AUTH_MODE,
     )
+
+
+def _user_session_auth_context(request: Request, session: Session) -> AuthContext:
+    cookie_value = request.cookies.get(USER_SESSION_COOKIE, "")
+    session_id, separator, session_secret = cookie_value.partition(".")
+    if separator == "" or session_id == "" or session_secret == "":
+        _invalid_user_session()
+    device_session = session.get(DeviceSession, session_id)
+    if (
+        device_session is None
+        or device_session.status != "active"
+        or _as_utc(device_session.idle_expires_at) <= datetime.now(timezone.utc)
+        or not hmac.compare_digest(
+            device_session.secret_hash,
+            hash_api_token(session_secret),
+        )
+    ):
+        _invalid_user_session()
+    user = session.get(User, device_session.user_id)
+    workspace = session.get(Workspace, device_session.active_workspace_id)
+    organization = session.get(
+        Organization,
+        device_session.active_organization_id,
+    )
+    member = session.exec(
+        select(OrganizationMember).where(
+            OrganizationMember.user_id == device_session.user_id,
+            OrganizationMember.workspace_id == device_session.active_workspace_id,
+            OrganizationMember.organization_id
+            == device_session.active_organization_id,
+            OrganizationMember.status == "active",
+        )
+    ).first()
+    if (
+        user is None
+        or workspace is None
+        or organization is None
+        or member is None
+        or user.status != "active"
+        or workspace.status != "active"
+        or organization.status != "active"
+        or workspace.organization_id != organization.id
+    ):
+        _invalid_user_session()
+    return AuthContext(
+        user_id=user.id,
+        workspace_id=workspace.id,
+        organization_id=organization.id,
+        roles=frozenset({_role_value(member.role)}),
+        auth_mode=USER_SESSION_AUTH_MODE,
+    )
+
+
+def _invalid_user_session() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="User Session is not valid",
+    )
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _ensure_active_membership_scope(

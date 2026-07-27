@@ -393,7 +393,17 @@ export type PlannerRunDecision = {
   created_tasks: TaskCard[];
 };
 
+export type ConsoleIdentity = {
+  user_id: string;
+  workspace_id: string;
+  organization_id: string;
+  roles: string[];
+  auth_mode: string;
+};
+
 export type ConsoleApiClient = {
+  getCurrentIdentity?: () => Promise<ConsoleIdentity | null>;
+  getLoginUrl?: (returnTo: string) => string;
   listTasks: () => Promise<TaskCard[]>;
   createTask: (goal: string) => Promise<TaskCard>;
   createPlannerRun: (goal: string) => Promise<PlannerRunDraft>;
@@ -1723,6 +1733,21 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
   }
 
   return {
+    async getCurrentIdentity() {
+      const response = await fetch(apiUrl(options.baseUrl, "/me"), {
+        credentials: "include"
+      });
+      if (response.status === 401) {
+        return null;
+      }
+      return readJsonResponse<ConsoleIdentity>(response, "GET /me");
+    },
+    getLoginUrl(returnTo: string) {
+      return apiUrl(
+        options.baseUrl,
+        `/auth/login?return_to=${encodeURIComponent(returnTo)}`
+      );
+    },
     async listTasks() {
       const projectId = await getProjectId();
       const response = await fetch(apiUrl(options.baseUrl, `/projects/${projectId}/tasks`));
@@ -2086,12 +2111,12 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
 
 export function createConfiguredApiClient(): ConsoleApiClient {
   const baseUrl = import.meta.env.VITE_API_BASE_URL;
-  if (!baseUrl) {
+  if (!baseUrl && import.meta.env.DEV) {
     return fakeApiClient;
   }
 
   return createHttpApiClient({
-    baseUrl,
+    baseUrl: baseUrl ?? "",
     projectId: import.meta.env.VITE_DEMO_PROJECT_ID
   });
 }

@@ -71,6 +71,9 @@ function mergeWorkflowTask(currentTask: TaskCard, resultTask: TaskCard): TaskCar
 }
 
 export function App({ apiClient = defaultApiClient }: AppProps) {
+  const [identityState, setIdentityState] = useState<
+    "checking" | "authenticated" | "signed_out" | "error"
+  >(apiClient.getCurrentIdentity ? "checking" : "authenticated");
   const [tasks, setTasks] = useState<TaskCard[]>([]);
   const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
   const [plannerRun, setPlannerRun] = useState<PlannerRunDraft | null>(null);
@@ -114,18 +117,42 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     let cancelled = false;
 
     setTaskLoadError(null);
-    void apiClient
-      .listTasks()
-      .then((initialTasks) => {
-        if (!cancelled) {
-          setTasks((currentTasks) => (currentTasks.length === 0 ? initialTasks : currentTasks));
+    async function loadAuthenticatedConsole() {
+      if (apiClient.getCurrentIdentity) {
+        try {
+          const identity = await apiClient.getCurrentIdentity();
+          if (cancelled) {
+            return;
+          }
+          if (!identity) {
+            setIdentityState("signed_out");
+            return;
+          }
+          setIdentityState("authenticated");
+        } catch (error) {
+          if (!cancelled) {
+            setIdentityState("error");
+            setTaskLoadError(errorMessage(error, "Failed to check sign-in"));
+          }
+          return;
         }
-      })
-      .catch((error) => {
+      }
+
+      try {
+        const initialTasks = await apiClient.listTasks();
+        if (!cancelled) {
+          setTasks((currentTasks) =>
+            currentTasks.length === 0 ? initialTasks : currentTasks
+          );
+        }
+      } catch (error) {
         if (!cancelled) {
           setTaskLoadError(errorMessage(error, "Failed to load tasks"));
         }
-      });
+      }
+    }
+
+    void loadAuthenticatedConsole();
 
     return () => {
       cancelled = true;
@@ -705,6 +732,42 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     } finally {
       setCreatingPullRequestTaskId(null);
     }
+  }
+
+  if (identityState === "checking") {
+    return (
+      <main className="sign-in-shell" aria-busy="true">
+        <p>Checking your session…</p>
+      </main>
+    );
+  }
+
+  if (identityState === "signed_out") {
+    const loginUrl =
+      apiClient.getLoginUrl?.("/") ?? "/auth/login?return_to=%2F";
+    return (
+      <main className="sign-in-shell">
+        <section aria-labelledby="sign-in-title">
+          <p className="eyebrow">AI Company</p>
+          <h1 id="sign-in-title">Continue to your workspace</h1>
+          <p>Sign in with the email linked to your account.</p>
+          <a className="primary-link" href={loginUrl}>
+            Sign in with email
+          </a>
+        </section>
+      </main>
+    );
+  }
+
+  if (identityState === "error") {
+    return (
+      <main className="sign-in-shell">
+        <section role="alert">
+          <h1>We could not check your session</h1>
+          <p>{taskLoadError}</p>
+        </section>
+      </main>
+    );
   }
 
   const contextPanel = (

@@ -15,6 +15,28 @@ body {
   margin: 0;
 }
 
+.sign-in-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background: var(--color-canvas, #f6f4ef);
+}
+
+.sign-in-shell section {
+  max-width: 32rem;
+}
+
+.primary-link {
+  display: inline-block;
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.4rem;
+  background: #111827;
+  color: #fff;
+  text-decoration: none;
+}
+
 button,
 input,
 textarea {
