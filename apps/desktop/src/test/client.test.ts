@@ -253,6 +253,73 @@ describe("desktop API clients", () => {
     expect(headers.get("X-CSRF-Token")).toBe("csrf-token-for-sign-out");
   });
 
+  it("lists and revokes Device Sessions through the shared browser boundary", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          sessions: [
+            {
+              id: "device_session_other",
+              device_description: "Chrome on Windows",
+              created_at: "2026-07-27T12:00:00",
+              last_seen_at: "2026-07-27T13:00:00",
+              status: "active",
+              is_current: false
+            }
+          ]
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          csrf_token: "csrf-token-for-device-revocation",
+          expires_at: "2026-07-27T14:00:00+00:00"
+        })
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = createHttpApiClient({
+      baseUrl: "https://app.example.test/api"
+    });
+
+    await expect(client.listDeviceSessions()).resolves.toEqual([
+      {
+        id: "device_session_other",
+        device_description: "Chrome on Windows",
+        created_at: "2026-07-27T12:00:00",
+        last_seen_at: "2026-07-27T13:00:00",
+        status: "active",
+        is_current: false
+      }
+    ]);
+    await expect(
+      client.revokeDeviceSession("device_session_other")
+    ).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://app.example.test/auth/device-sessions"
+    );
+    expect(fetchMock.mock.calls[0][1]).toEqual({
+      credentials: "include"
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://app.example.test/auth/csrf"
+    );
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      "https://app.example.test/auth/device-sessions/device_session_other"
+    );
+    expect(fetchMock.mock.calls[2][1]).toEqual(
+      expect.objectContaining({
+        method: "DELETE",
+        credentials: "include"
+      })
+    );
+    const headers = new Headers(fetchMock.mock.calls[2][1]?.headers);
+    expect(headers.get("X-CSRF-Token")).toBe(
+      "csrf-token-for-device-revocation"
+    );
+  });
+
   it("re-resolves workspace-derived project state after a workspace switch", async () => {
     let selectedWorkspace = "workspace_alpha";
     const fetchMock = vi.fn(

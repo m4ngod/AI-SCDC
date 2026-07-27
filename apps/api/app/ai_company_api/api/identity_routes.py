@@ -16,6 +16,7 @@ from ai_company_api.models.entities import (
 from ai_company_api.schemas.api import (
     AccountLinkCreate,
     AccountLinkRead,
+    DeviceSessionListRead,
     SignOutRead,
     WorkspaceSelectionUpdate,
 )
@@ -34,6 +35,11 @@ from ai_company_api.services.identity_login import (
 )
 from ai_company_api.services.identity_logout import sign_out_current_device
 from ai_company_api.services.identity_audit import record_identity_audit_event
+from ai_company_api.services.identity_device_sessions import (
+    active_device_sessions,
+    is_idle_expired,
+    revoke_active_device_session,
+)
 
 
 router = APIRouter(prefix="/auth", tags=["identity"])
@@ -125,6 +131,142 @@ def post_logout(
         provider=request.app.state.customer_identity_provider,
         device_session=device_session,
         now=request.app.state.identity_clock(),
+    )
+
+
+@router.get("/device-sessions", response_model=DeviceSessionListRead)
+def get_device_sessions(
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> DeviceSessionListRead:
+    device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="device_sessions_require_user_session",
+        )
+    correlation_id = secrets.token_hex(16)
+    now = request.app.state.identity_clock()
+    sessions = active_device_sessions(
+        session,
+        user_id=auth.user_id,
+        current_device_session_id=device_session.id,
+        now=now,
+    )
+    record_identity_audit_event(
+        session,
+        event_type="device_sessions_listed",
+        outcome="success",
+        reason_code="active_sessions_returned",
+        correlation_id=correlation_id,
+        user_id=auth.user_id,
+        device_session_id=device_session.id,
+    )
+    response.headers["X-Correlation-ID"] = correlation_id
+    return DeviceSessionListRead(sessions=sessions)
+
+
+@router.delete(
+    "/device-sessions/{device_session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_device_session(
+    device_session_id: str,
+    request: Request,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> Response:
+    current_device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(current_device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="device_session_revocation_requires_user_session",
+        )
+    correlation_id = secrets.token_hex(16)
+    now = request.app.state.identity_clock()
+    if device_session_id == current_device_session.id:
+        record_identity_audit_event(
+            session,
+            event_type="device_session_revocation_rejected",
+            outcome="failure",
+            reason_code="current_session_requires_sign_out",
+            correlation_id=correlation_id,
+            user_id=auth.user_id,
+            device_session_id=current_device_session.id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="current_device_session_requires_sign_out",
+            headers={"X-Correlation-ID": correlation_id},
+        )
+    revoked = revoke_active_device_session(
+        session,
+        user_id=auth.user_id,
+        device_session_id=device_session_id,
+        now=now,
+    )
+    if not revoked:
+        session.rollback()
+        owned_target = session.exec(
+            select(DeviceSession).where(
+                DeviceSession.id == device_session_id,
+                DeviceSession.user_id == auth.user_id,
+            )
+        ).first()
+        if owned_target is not None and owned_target.status == "revoked":
+            reason_code = "target_already_revoked"
+        elif (
+            owned_target is not None
+            and owned_target.status == "active"
+            and is_idle_expired(owned_target, now=now)
+        ):
+            reason_code = "target_expired"
+        else:
+            reason_code = "target_not_active_or_not_owned"
+        record_identity_audit_event(
+            session,
+            event_type="device_session_revocation_rejected",
+            outcome="failure",
+            reason_code=reason_code,
+            correlation_id=correlation_id,
+            user_id=auth.user_id,
+            device_session_id=current_device_session.id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="device_session_not_found",
+            headers={"X-Correlation-ID": correlation_id},
+        )
+    record_identity_audit_event(
+        session,
+        event_type="device_session_revoked",
+        outcome="success",
+        reason_code="selected_device_revoked",
+        correlation_id=correlation_id,
+        user_id=auth.user_id,
+        device_session_id=device_session_id,
+        commit=False,
+    )
+    session.commit()
+    return Response(
+        status_code=status.HTTP_204_NO_CONTENT,
+        headers={"X-Correlation-ID": correlation_id},
     )
 
 

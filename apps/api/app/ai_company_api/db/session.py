@@ -63,6 +63,7 @@ def _upgrade_sqlite_user_session_columns(engine) -> None:
             "previous_secret_hash": "VARCHAR",
             "previous_secret_valid_until": "DATETIME",
             "secret_rotated_at": "DATETIME",
+            "device_description": "VARCHAR",
         }
         for column_name, column_type in columns.items():
             if column_name not in existing_columns:
@@ -77,6 +78,15 @@ def _upgrade_sqlite_user_session_columns(engine) -> None:
                 "UPDATE device_session "
                 "SET secret_rotated_at = created_at "
                 "WHERE secret_rotated_at IS NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE device_session "
+                "SET device_description = "
+                "'Unknown browser on Unknown device' "
+                "WHERE device_description IS NULL "
+                "OR device_description = ''"
             )
         )
         connection.execute(

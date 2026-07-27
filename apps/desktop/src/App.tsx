@@ -13,6 +13,7 @@ import {
   createConfiguredApiClient
 } from "./api/client";
 import { GoalInput } from "./components/GoalInput";
+import { DeviceSessionsPanel } from "./components/DeviceSessionsPanel";
 import { PlannerDraftPanel } from "./components/PlannerDraftPanel";
 import { Shell } from "./components/Shell";
 import { TaskBoard } from "./components/TaskBoard";
@@ -1026,6 +1027,10 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       </select>
     </label>
   ) : null;
+  const deviceSessionsPanel =
+    currentIdentity?.auth_mode === "user_session" ? (
+      <DeviceSessionsPanel apiClient={apiClient} />
+    ) : null;
 
   if (
     currentIdentity &&
@@ -1034,14 +1039,17 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     return (
       <Shell
         contextPanel={
-          <section className="context-section" aria-label="Account context">
-            <h2>Choose a workspace to continue</h2>
-            <p>Your session is active, but its previous workspace is no longer available.</p>
-            {workspaceSelector}
-            {workspaceSelectionError ? (
-              <p role="alert">{workspaceSelectionError}</p>
-            ) : null}
-          </section>
+          <>
+            <section className="context-section" aria-label="Account context">
+              <h2>Choose a workspace to continue</h2>
+              <p>Your session is active, but its previous workspace is no longer available.</p>
+              {workspaceSelector}
+              {workspaceSelectionError ? (
+                <p role="alert">{workspaceSelectionError}</p>
+              ) : null}
+            </section>
+            {deviceSessionsPanel}
+          </>
         }
         workspaceName="Choose a workspace"
         onSignOut={
@@ -1095,6 +1103,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
           ) : null}
         </section>
       ) : null}
+      {deviceSessionsPanel}
       <section className="context-section">
         <h2>GitHub setup</h2>
         <form className="github-setup-form" onSubmit={handleSubmitGitHubSetup}>

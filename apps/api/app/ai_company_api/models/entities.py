@@ -288,6 +288,7 @@ class DeviceSession(SQLModel, table=True):
     previous_secret_hash: str | None = None
     previous_secret_valid_until: datetime | None = Field(default=None, index=True)
     secret_rotated_at: datetime = Field(default_factory=utc_now, index=True)
+    device_description: str = "Unknown browser on Unknown device"
     status: str = Field(default="active", index=True)
     idle_expires_at: datetime = Field(index=True)
     last_seen_at: datetime = Field(default_factory=utc_now, index=True)
