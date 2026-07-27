@@ -57,6 +57,7 @@ class AuthContext:
     organization_id: str
     roles: frozenset[WorkspaceRole]
     auth_mode: str
+    device_session_id: str | None = None
 
     def has_any_role(self, roles: Iterable[WorkspaceRole]) -> bool:
         return bool(self.roles.intersection(set(roles)))
@@ -128,12 +129,44 @@ async def get_auth_context_dependency(
     request: Request,
     session: Session = Depends(get_session_dependency),
 ) -> AsyncGenerator[AuthContext | None, None]:
+    async for context in _auth_context_dependency(
+        request,
+        session,
+        allow_workspace_selection_recovery=False,
+    ):
+        yield context
+
+
+async def get_workspace_selection_auth_context_dependency(
+    request: Request,
+    session: Session = Depends(get_session_dependency),
+) -> AsyncGenerator[AuthContext | None, None]:
+    async for context in _auth_context_dependency(
+        request,
+        session,
+        allow_workspace_selection_recovery=True,
+    ):
+        yield context
+
+
+async def _auth_context_dependency(
+    request: Request,
+    session: Session,
+    *,
+    allow_workspace_selection_recovery: bool,
+) -> AsyncGenerator[AuthContext | None, None]:
     if _is_worker_callback_path(request.url.path):
         with auth_context_scope(None):
             yield None
         return
 
-    context = _resolve_auth_context(request, session)
+    context = _resolve_auth_context(
+        request,
+        session,
+        allow_workspace_selection_recovery=(
+            allow_workspace_selection_recovery
+        ),
+    )
     if context.auth_mode == USER_SESSION_AUTH_MODE:
         enforce_cookie_request_protection(
             request,
@@ -147,6 +180,8 @@ async def get_auth_context_dependency(
 def _resolve_auth_context(
     request: Request,
     session: Session,
+    *,
+    allow_workspace_selection_recovery: bool = False,
 ) -> AuthContext:
     authentication_policy = request.app.state.authentication_policy
     accepted_credentials = authentication_policy.accepted_human_credentials
@@ -190,6 +225,9 @@ def _resolve_auth_context(
         return _user_session_auth_context_or_fail_closed(
             request,
             session,
+            allow_workspace_selection_recovery=(
+                allow_workspace_selection_recovery
+            ),
         )
 
     if (
@@ -204,6 +242,9 @@ def _resolve_auth_context(
         return _user_session_auth_context_or_fail_closed(
             request,
             session,
+            allow_workspace_selection_recovery=(
+                allow_workspace_selection_recovery
+            ),
         )
     if (
         HumanCredentialType.WORKSPACE_API_TOKEN
@@ -321,6 +362,8 @@ def _api_token_auth_context_or_audit(
 def _user_session_auth_context(
     request: Request,
     session: Session,
+    *,
+    allow_workspace_selection_recovery: bool = False,
 ) -> AuthContext:
     now = _as_utc(request.app.state.identity_clock())
     cookie_value = request.cookies.get(USER_SESSION_COOKIE, "")
@@ -355,6 +398,15 @@ def _user_session_auth_context(
             now=now,
         )
     user = session.get(User, device_session.user_id)
+    request.state.authenticated_device_session = device_session
+    if user is None or user.status != "active":
+        correlation_id = _record_authentication_failure(
+            session,
+            reason_code="user_session_user_inactive",
+            user_id=device_session.user_id,
+            device_session_id=device_session.id,
+        )
+        _invalid_user_session(correlation_id=correlation_id)
     workspace = session.get(Workspace, device_session.active_workspace_id)
     organization = session.get(
         Organization,
@@ -370,30 +422,48 @@ def _user_session_auth_context(
         )
     ).first()
     if (
-        user is None
-        or workspace is None
+        workspace is None
         or organization is None
         or member is None
-        or user.status != "active"
         or workspace.status != "active"
         or organization.status != "active"
         or workspace.organization_id != organization.id
     ):
-        correlation_id = _record_authentication_failure(
-            session,
-            reason_code="user_session_authority_inactive",
-            user_id=device_session.user_id,
+        request.state.workspace_selection_required = True
+        if not allow_workspace_selection_recovery:
+            correlation_id = secrets.token_hex(16)
+            record_identity_audit_event(
+                session,
+                event_type="workspace_authorization_denied",
+                outcome="failure",
+                reason_code="workspace_access_lost",
+                correlation_id=correlation_id,
+                user_id=device_session.user_id,
+                device_session_id=device_session.id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="workspace_access_lost",
+                headers={"X-Correlation-ID": correlation_id},
+            )
+        context = AuthContext(
+            user_id=user.id,
+            workspace_id=device_session.active_workspace_id,
+            organization_id=device_session.active_organization_id,
+            roles=frozenset(),
+            auth_mode=USER_SESSION_AUTH_MODE,
             device_session_id=device_session.id,
         )
-        _invalid_user_session(correlation_id=correlation_id)
-    context = AuthContext(
-        user_id=user.id,
-        workspace_id=workspace.id,
-        organization_id=organization.id,
-        roles=frozenset({_role_value(member.role)}),
-        auth_mode=USER_SESSION_AUTH_MODE,
-    )
-    request.state.authenticated_device_session = device_session
+    else:
+        request.state.workspace_selection_required = False
+        context = AuthContext(
+            user_id=user.id,
+            workspace_id=workspace.id,
+            organization_id=organization.id,
+            roles=frozenset({_role_value(member.role)}),
+            auth_mode=USER_SESSION_AUTH_MODE,
+            device_session_id=device_session.id,
+        )
     if _as_utc(device_session.last_seen_at) + timedelta(hours=1) <= now:
         correlation_id = secrets.token_hex(16)
         result = session.execute(
@@ -464,11 +534,19 @@ def _record_authentication_failure(
 def _user_session_auth_context_or_fail_closed(
     request: Request,
     session: Session,
+    *,
+    allow_workspace_selection_recovery: bool = False,
 ) -> AuthContext:
     try:
         if request.app.state.user_session_database_failure:
             raise SQLAlchemyError("Injected User Session database failure")
-        return _user_session_auth_context(request, session)
+        return _user_session_auth_context(
+            request,
+            session,
+            allow_workspace_selection_recovery=(
+                allow_workspace_selection_recovery
+            ),
+        )
     except SQLAlchemyError:
         correlation_id = secrets.token_hex(16)
         raise HTTPException(

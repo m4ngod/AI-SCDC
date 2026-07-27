@@ -8,7 +8,10 @@ import type {
   SandboxProfileInput,
   TaskCard
 } from "./api/client";
-import { createConfiguredApiClient } from "./api/client";
+import {
+  WebConsoleAuthenticationError,
+  createConfiguredApiClient
+} from "./api/client";
 import { GoalInput } from "./components/GoalInput";
 import { PlannerDraftPanel } from "./components/PlannerDraftPanel";
 import { Shell } from "./components/Shell";
@@ -58,6 +61,13 @@ function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
+function isWorkspaceAccessLost(error: unknown) {
+  return (
+    error instanceof WebConsoleAuthenticationError &&
+    error.state === "workspace_access_lost"
+  );
+}
+
 function mergeWorkflowTask(currentTask: TaskCard, resultTask: TaskCard): TaskCard {
   return {
     ...currentTask,
@@ -77,6 +87,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   >(apiClient.getCurrentIdentity ? "checking" : "authenticated");
   const [currentIdentity, setCurrentIdentity] =
     useState<ConsoleIdentity | null>(null);
+  const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
+  const [workspaceSelectionError, setWorkspaceSelectionError] =
+    useState<string | null>(null);
   const [tasks, setTasks] = useState<TaskCard[]>([]);
   const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
   const [plannerRun, setPlannerRun] = useState<PlannerRunDraft | null>(null);
@@ -111,6 +124,7 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const plannerRunRef = useRef<PlannerRunDraft | null>(null);
   const cloudArtifactPreviewRequestsRef = useRef<Record<string, string>>({});
   const cloudArtifactPreviewRequestSequenceRef = useRef(0);
+  const workspaceAccessRecoveryRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     plannerRunRef.current = plannerRun;
@@ -134,6 +148,10 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
           }
           setCurrentIdentity(identity);
           setIdentityState("authenticated");
+          if (identity.selection_state === "selection_required") {
+            setTasks([]);
+            return;
+          }
         } catch (error) {
           if (!cancelled) {
             setIdentityState("error");
@@ -152,6 +170,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         }
       } catch (error) {
         if (!cancelled) {
+          if (await enterSafeWorkspaceSelection(error)) {
+            return;
+          }
           setTaskLoadError(errorMessage(error, "Failed to load tasks"));
         }
       }
@@ -164,13 +185,69 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     };
   }, [apiClient]);
 
+  async function enterSafeWorkspaceSelection(error: unknown) {
+    if (!isWorkspaceAccessLost(error)) {
+      return false;
+    }
+    if (!workspaceAccessRecoveryRef.current) {
+      workspaceAccessRecoveryRef.current = (async () => {
+        setIdentityState("checking");
+        setTasks([]);
+        setPlannerRun(null);
+        setPlannerDecisionStatus(null);
+        setPlannerDecisionError(null);
+        setTaskLoadError(null);
+        setWorkspaceSelectionError(null);
+        setGithubSetupStatus(null);
+        setGithubSetupError(null);
+        setGithubSetupInput((currentInput) => ({
+          ...currentInput,
+          token: ""
+        }));
+        setSandboxProfileId(null);
+        setSandboxProfileRepoId(null);
+        setSandboxProfileStatus(null);
+        setLocalRunErrors({});
+        setWorkflowErrors({});
+        cloudArtifactPreviewRequestsRef.current = {};
+
+        try {
+          const identity = await apiClient.getCurrentIdentity?.();
+          if (!identity) {
+            setCurrentIdentity(null);
+            setIdentityState("signed_out");
+            return;
+          }
+          setCurrentIdentity(identity);
+          setIdentityState("authenticated");
+        } catch (identityError) {
+          setCurrentIdentity(null);
+          setIdentityState("error");
+          setTaskLoadError(
+            errorMessage(
+              identityError,
+              "Failed to recover workspace selection"
+            )
+          );
+        }
+      })().finally(() => {
+        workspaceAccessRecoveryRef.current = null;
+      });
+    }
+    await workspaceAccessRecoveryRef.current;
+    return true;
+  }
+
   async function refreshCloudRunLogs(
     cloudRunId: string,
     fallbackLogs: TaskCard["cloud_run_logs"] = []
   ) {
     try {
       return await apiClient.listCloudRunLogs(cloudRunId);
-    } catch {
+    } catch (error) {
+      if (isWorkspaceAccessLost(error)) {
+        throw error;
+      }
       return fallbackLogs;
     }
   }
@@ -181,7 +258,10 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   ) {
     try {
       return await apiClient.getCloudRunArtifactManifest(cloudRunId);
-    } catch {
+    } catch (error) {
+      if (isWorkspaceAccessLost(error)) {
+        throw error;
+      }
       return fallbackManifest;
     }
   }
@@ -191,10 +271,17 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       return;
     }
 
-    const run = await apiClient.createPlannerRun(goal);
-    setPlannerRun(run);
-    setPlannerDecisionStatus(null);
-    setPlannerDecisionError(null);
+    try {
+      const run = await apiClient.createPlannerRun(goal);
+      setPlannerRun(run);
+      setPlannerDecisionStatus(null);
+      setPlannerDecisionError(null);
+    } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
+      throw error;
+    }
   }
 
   async function handleApprovePlannerRun() {
@@ -212,6 +299,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         setPlannerDecisionError(null);
       }
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       if (plannerRunRef.current?.id === decidingRunId) {
         setPlannerDecisionError(errorMessage(error, "Failed to approve planner run"));
       }
@@ -234,6 +324,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         setPlannerDecisionError(null);
       }
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       if (plannerRunRef.current?.id === decidingRunId) {
         setPlannerDecisionError(errorMessage(error, "Failed to reject planner run"));
       }
@@ -271,6 +364,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         )
       );
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       setLocalRunErrors((currentErrors) => ({
         ...currentErrors,
         [taskId]: errorMessage(error, "Failed to start local run")
@@ -324,17 +420,26 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       setGithubSetupStatus("GitHub repo connected");
       setGithubSetupInput((currentInput) => ({ ...currentInput, token: "" }));
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       if (createdRepositoryId) {
         try {
           await apiClient.deleteRepository(createdRepositoryId);
-        } catch {
+        } catch (cleanupError) {
+          if (await enterSafeWorkspaceSelection(cleanupError)) {
+            return;
+          }
           // Preserve the setup error; cleanup failure is still visible in server logs.
         }
       }
       if (createdCredentialId) {
         try {
           await apiClient.deleteGitHubCredential(createdCredentialId);
-        } catch {
+        } catch (cleanupError) {
+          if (await enterSafeWorkspaceSelection(cleanupError)) {
+            return;
+          }
           // Preserve the setup error; cleanup failure is still visible in server logs.
         }
       }
@@ -399,6 +504,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         )
       );
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       setWorkflowErrors((currentErrors) => ({
         ...currentErrors,
         [taskId]: errorMessage(error, "Failed to start cloud run")
@@ -442,6 +550,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         )
       );
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       setWorkflowErrors((currentErrors) => ({
         ...currentErrors,
         [task.id]: errorMessage(error, "Failed to process cloud run")
@@ -483,6 +594,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         )
       );
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       setWorkflowErrors((currentErrors) => ({
         ...currentErrors,
         [task.id]: errorMessage(error, "Failed to cancel cloud run")
@@ -544,6 +658,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       if (cloudArtifactPreviewRequestsRef.current[task.id] !== requestToken) {
         return;
       }
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
 
       setTasks((currentTasks) =>
         currentTasks.map((currentTask) =>
@@ -588,6 +705,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         )
       );
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       setWorkflowErrors((currentErrors) => ({
         ...currentErrors,
         [task.id]: errorMessage(error, "Failed to run patch tests")
@@ -624,6 +744,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         )
       );
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       setWorkflowErrors((currentErrors) => ({
         ...currentErrors,
         [task.id]: errorMessage(error, "Failed to review patch")
@@ -659,6 +782,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         )
       );
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       setWorkflowErrors((currentErrors) => ({
         ...currentErrors,
         [task.id]: errorMessage(error, "Failed to approve patch")
@@ -694,6 +820,9 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         )
       );
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       setWorkflowErrors((currentErrors) => ({
         ...currentErrors,
         [task.id]: errorMessage(error, "Failed to request human approval")
@@ -730,12 +859,53 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
         )
       );
     } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
       setWorkflowErrors((currentErrors) => ({
         ...currentErrors,
         [task.id]: errorMessage(error, "Failed to create pull request")
       }));
     } finally {
       setCreatingPullRequestTaskId(null);
+    }
+  }
+
+  async function handleWorkspaceSelection(workspaceId: string) {
+    if (
+      isSwitchingWorkspace ||
+      !apiClient.selectWorkspace ||
+      !apiClient.getCurrentIdentity
+    ) {
+      return;
+    }
+    setIsSwitchingWorkspace(true);
+    setWorkspaceSelectionError(null);
+    setTaskLoadError(null);
+    setTasks([]);
+    try {
+      await apiClient.selectWorkspace(workspaceId);
+      const identity = await apiClient.getCurrentIdentity();
+      if (!identity) {
+        setCurrentIdentity(null);
+        setIdentityState("signed_out");
+        return;
+      }
+      setCurrentIdentity(identity);
+      if (identity.selection_state === "selection_required") {
+        return;
+      }
+      const initialTasks = await apiClient.listTasks();
+      setTasks(initialTasks);
+    } catch (error) {
+      if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
+      setWorkspaceSelectionError(
+        errorMessage(error, "Failed to select workspace")
+      );
+    } finally {
+      setIsSwitchingWorkspace(false);
     }
   }
 
@@ -775,9 +945,73 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
     );
   }
 
+  const workspaceOptions =
+    currentIdentity?.accounts.flatMap((account) =>
+      account.workspaces.map((workspace) => ({
+        ...workspace,
+        accountId: account.id,
+        accountName: account.name
+      }))
+    ) ?? [];
+  const workspaceSelector = currentIdentity && workspaceOptions.length > 0 ? (
+    <label className="workspace-selector">
+      <span>Workspace</span>
+      <select
+        aria-label="Workspace"
+        value={currentIdentity.workspace_id ?? ""}
+        disabled={isSwitchingWorkspace}
+        onChange={(event) => {
+          void handleWorkspaceSelection(event.target.value);
+        }}
+      >
+        {currentIdentity.workspace_id === null ? (
+          <option value="" disabled>
+            Choose a workspace
+          </option>
+        ) : null}
+        {currentIdentity.accounts.map((account) => (
+          <optgroup key={account.id} label={account.name}>
+            {account.workspaces.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>
+                {workspace.name} · {workspace.role}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+    </label>
+  ) : null;
+
+  if (
+    currentIdentity &&
+    currentIdentity.selection_state === "selection_required"
+  ) {
+    return (
+      <Shell
+        contextPanel={
+          <section className="context-section" aria-label="Account context">
+            <h2>Choose a workspace to continue</h2>
+            <p>Your session is active, but its previous workspace is no longer available.</p>
+            {workspaceSelector}
+            {workspaceSelectionError ? (
+              <p role="alert">{workspaceSelectionError}</p>
+            ) : null}
+          </section>
+        }
+        workspaceName="Choose a workspace"
+      >
+        <section className="thread-panel" aria-labelledby="workspace-selection-title">
+          <p className="eyebrow">Workspace access</p>
+          <h1 id="workspace-selection-title">Choose a workspace to continue</h1>
+          <p>No workspace data or actions are loaded until you make a selection.</p>
+        </section>
+      </Shell>
+    );
+  }
+
   const contextPanel = (
     <>
-      {currentIdentity ? (
+      {currentIdentity && currentIdentity.current_account && currentIdentity.current_workspace ? (
         <section
           className="context-section"
           aria-label="Account context"
@@ -801,6 +1035,10 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
               <dd>{currentIdentity.current_workspace.name}</dd>
             </div>
           </dl>
+          {workspaceOptions.length > 1 ? workspaceSelector : null}
+          {workspaceSelectionError ? (
+            <p role="alert">{workspaceSelectionError}</p>
+          ) : null}
         </section>
       ) : null}
       <section className="context-section">
@@ -946,8 +1184,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   return (
     <Shell
       contextPanel={contextPanel}
-      accountName={currentIdentity?.current_account.name}
-      workspaceName={currentIdentity?.current_workspace.name}
+      accountName={currentIdentity?.current_account?.name}
+      workspaceName={currentIdentity?.current_workspace?.name}
     >
       <section className="thread-panel" aria-labelledby="thread-title">
         <div className="section-heading">

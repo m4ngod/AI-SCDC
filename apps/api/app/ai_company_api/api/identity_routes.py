@@ -1,3 +1,4 @@
+import secrets
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -5,12 +6,24 @@ from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from ai_company_api.db.session import get_session_dependency
-from ai_company_api.models.entities import IdentityAuditEvent
-from ai_company_api.schemas.api import AccountLinkCreate, AccountLinkRead
+from ai_company_api.models.entities import (
+    DeviceSession,
+    IdentityAuditEvent,
+    Organization,
+    OrganizationMember,
+    Workspace,
+)
+from ai_company_api.schemas.api import (
+    AccountLinkCreate,
+    AccountLinkRead,
+    WorkspaceSelectionUpdate,
+)
 from ai_company_api.services.account_link_recovery import create_account_link
 from ai_company_api.services.auth_context import (
     AuthContext,
+    USER_SESSION_AUTH_MODE,
     get_auth_context_dependency,
+    get_workspace_selection_auth_context_dependency,
 )
 from ai_company_api.services.browser_request_protection import issue_csrf_token
 from ai_company_api.services.identity_login import (
@@ -18,11 +31,16 @@ from ai_company_api.services.identity_login import (
     reject_malformed_login_callback,
     start_login,
 )
+from ai_company_api.services.identity_audit import record_identity_audit_event
 
 
 router = APIRouter(prefix="/auth", tags=["identity"])
 SessionDep = Annotated[Session, Depends(get_session_dependency)]
 AuthDep = Annotated[AuthContext, Depends(get_auth_context_dependency)]
+SelectionAuthDep = Annotated[
+    AuthContext,
+    Depends(get_workspace_selection_auth_context_dependency),
+]
 
 
 @router.get("/login")
@@ -68,7 +86,7 @@ def get_callback(
 def get_csrf_token(
     request: Request,
     session: SessionDep,
-    _auth: AuthDep,
+    _auth: SelectionAuthDep,
 ) -> dict[str, str]:
     csrf_token, expires_at = issue_csrf_token(
         request,
@@ -78,6 +96,81 @@ def get_csrf_token(
         "csrf_token": csrf_token,
         "expires_at": expires_at.isoformat(),
     }
+
+
+@router.put("/workspace-selection", status_code=status.HTTP_204_NO_CONTENT)
+def put_workspace_selection(
+    request: Request,
+    data: WorkspaceSelectionUpdate,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> Response:
+    device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="workspace_selection_requires_user_session",
+        )
+    selected = session.exec(
+        select(OrganizationMember, Workspace, Organization)
+        .join(Workspace, Workspace.id == OrganizationMember.workspace_id)
+        .join(
+            Organization,
+            Organization.id == OrganizationMember.organization_id,
+        )
+        .where(
+            OrganizationMember.user_id == auth.user_id,
+            OrganizationMember.workspace_id == data.workspace_id,
+            OrganizationMember.status == "active",
+            Workspace.status == "active",
+            Organization.status == "active",
+            Workspace.organization_id == Organization.id,
+        )
+    ).first()
+    if selected is None:
+        correlation_id = secrets.token_hex(16)
+        record_identity_audit_event(
+            session,
+            event_type="workspace_selection_rejected",
+            outcome="failure",
+            reason_code="workspace_not_accessible",
+            correlation_id=correlation_id,
+            user_id=auth.user_id,
+            device_session_id=device_session.id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="workspace_not_accessible",
+            headers={"X-Correlation-ID": correlation_id},
+        )
+    _membership, workspace, organization = selected
+    device_session.active_workspace_id = workspace.id
+    device_session.active_organization_id = organization.id
+    device_session.updated_at = request.app.state.identity_clock()
+    correlation_id = secrets.token_hex(16)
+    session.add(device_session)
+    record_identity_audit_event(
+        session,
+        event_type="workspace_selection_changed",
+        outcome="success",
+        reason_code="user_selected_workspace",
+        correlation_id=correlation_id,
+        user_id=auth.user_id,
+        device_session_id=device_session.id,
+        commit=False,
+    )
+    session.commit()
+    return Response(
+        status_code=status.HTTP_204_NO_CONTENT,
+        headers={"X-Correlation-ID": correlation_id},
+    )
 
 
 @router.get("/test/audit-events")

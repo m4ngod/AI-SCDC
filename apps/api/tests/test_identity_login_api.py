@@ -279,9 +279,24 @@ def test_valid_callback_for_linked_identity_creates_device_session_and_me(
         "user_id": "user_linked",
         "workspace_id": "workspace_linked",
         "organization_id": "account_linked",
-        "roles": ["admin"],
-        "auth_mode": "user_session",
-        "current_account": {
+            "roles": ["admin"],
+            "auth_mode": "user_session",
+            "selection_state": "selected",
+            "accounts": [
+                {
+                    "id": "account_linked",
+                    "name": "Linked account",
+                    "kind": "legacy",
+                    "workspaces": [
+                        {
+                            "id": "workspace_linked",
+                            "name": "Linked workspace",
+                            "role": "admin",
+                        }
+                    ],
+                }
+            ],
+            "current_account": {
             "id": "account_linked",
             "name": "Linked account",
             "kind": "legacy",
@@ -340,9 +355,24 @@ def test_first_login_atomically_onboards_a_personal_account(tmp_path) -> None:
         "user_id": me.json()["user_id"],
         "workspace_id": me.json()["workspace_id"],
         "organization_id": me.json()["organization_id"],
-        "roles": ["owner"],
-        "auth_mode": "user_session",
-        "current_account": {
+            "roles": ["owner"],
+            "auth_mode": "user_session",
+            "selection_state": "selected",
+            "accounts": [
+                {
+                    "id": me.json()["organization_id"],
+                    "name": "Personal Account",
+                    "kind": "personal",
+                    "workspaces": [
+                        {
+                            "id": me.json()["workspace_id"],
+                            "name": "Default Workspace",
+                            "role": "owner",
+                        }
+                    ],
+                }
+            ],
+            "current_account": {
             "id": me.json()["organization_id"],
             "name": "Personal Account",
             "kind": "personal",
@@ -1939,7 +1969,10 @@ def test_authenticated_browser_uses_live_membership_role_and_removal(tmp_path) -
     assert callback.status_code == 303
     assert after_role_change.status_code == 200
     assert after_role_change.json()["roles"] == ["viewer"]
-    assert after_removal.status_code == 401
+    assert after_removal.status_code == 200
+    assert after_removal.json()["selection_state"] == "selection_required"
+    assert after_removal.json()["workspace_id"] is None
+    assert after_removal.json()["accounts"] == []
 
 
 def test_fake_customer_identity_provider_exercises_the_public_oidc_contract() -> None:

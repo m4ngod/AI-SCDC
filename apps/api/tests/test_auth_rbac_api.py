@@ -98,9 +98,11 @@ def test_explicit_test_policy_preserves_dev_auth_http_behavior() -> None:
         "user_id": "user_explicit",
         "workspace_id": "workspace_explicit",
         "organization_id": "account_explicit",
-        "roles": ["developer", "viewer"],
-        "auth_mode": "dev",
-        "current_account": {
+            "roles": ["developer", "viewer"],
+            "auth_mode": "dev",
+            "selection_state": "selected",
+            "accounts": [],
+            "current_account": {
             "id": "account_explicit",
             "name": "account_explicit",
             "kind": "legacy",
@@ -195,9 +197,11 @@ def test_me_uses_dev_auth_headers_instead_of_fixed_identity() -> None:
         "user_id": "user_custom",
         "workspace_id": "workspace_custom",
         "organization_id": "org_custom",
-        "roles": ["developer", "viewer"],
-        "auth_mode": "dev",
-        "current_account": {
+            "roles": ["developer", "viewer"],
+            "auth_mode": "dev",
+            "selection_state": "selected",
+            "accounts": [],
+            "current_account": {
             "id": "org_custom",
             "name": "org_custom",
             "kind": "legacy",
@@ -276,9 +280,24 @@ def test_api_token_policy_resolves_member_identity(tmp_path: Path) -> None:
         "user_id": "user_token",
         "workspace_id": "workspace_token",
         "organization_id": "org_token",
-        "roles": ["admin"],
-        "auth_mode": "api_token",
-        "current_account": {
+            "roles": ["admin"],
+            "auth_mode": "api_token",
+            "selection_state": "selected",
+            "accounts": [
+                {
+                    "id": "org_token",
+                    "name": "Token org",
+                    "kind": "legacy",
+                    "workspaces": [
+                        {
+                            "id": "workspace_token",
+                            "name": "Token workspace",
+                            "role": "admin",
+                        }
+                    ],
+                }
+            ],
+            "current_account": {
             "id": "org_token",
             "name": "Token org",
             "kind": "legacy",
@@ -348,9 +367,24 @@ def test_policy_prefers_presented_workspace_api_token_over_dev_auth(
         "user_id": "user_combined_policy",
         "workspace_id": "workspace_combined_policy",
         "organization_id": "account_combined_policy",
-        "roles": ["admin"],
-        "auth_mode": "api_token",
-        "current_account": {
+            "roles": ["admin"],
+            "auth_mode": "api_token",
+            "selection_state": "selected",
+            "accounts": [
+                {
+                    "id": "account_combined_policy",
+                    "name": "Combined account",
+                    "kind": "legacy",
+                    "workspaces": [
+                        {
+                            "id": "workspace_combined_policy",
+                            "name": "Combined workspace",
+                            "role": "admin",
+                        }
+                    ],
+                }
+            ],
+            "current_account": {
             "id": "account_combined_policy",
             "name": "Combined account",
             "kind": "legacy",

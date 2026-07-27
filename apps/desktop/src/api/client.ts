@@ -395,19 +395,30 @@ export type PlannerRunDecision = {
 
 export type ConsoleIdentity = {
   user_id: string;
-  workspace_id: string;
-  organization_id: string;
+  workspace_id: string | null;
+  organization_id: string | null;
   roles: string[];
   auth_mode: string;
+  selection_state: "selected" | "selection_required";
+  accounts: Array<{
+    id: string;
+    name: string;
+    kind: "legacy" | "personal";
+    workspaces: Array<{
+      id: string;
+      name: string;
+      role: string;
+    }>;
+  }>;
   current_account: {
     id: string;
     name: string;
     kind: "legacy" | "personal";
-  };
+  } | null;
   current_workspace: {
     id: string;
     name: string;
-  };
+  } | null;
 };
 
 export type WebConsoleAuthenticationState =
@@ -435,6 +446,7 @@ export class WebConsoleAuthenticationError extends Error {
 
 export type ConsoleApiClient = {
   getCurrentIdentity?: () => Promise<ConsoleIdentity | null>;
+  selectWorkspace?: (workspaceId: string) => Promise<void>;
   getLoginUrl?: (returnTo: string) => string;
   listTasks: () => Promise<TaskCard[]>;
   createTask: (goal: string) => Promise<TaskCard>;
@@ -1845,6 +1857,23 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
         return null;
       }
       return readJsonResponse<ConsoleIdentity>(response, "GET /me");
+    },
+    async selectWorkspace(workspaceId: string) {
+      const response = await fetch(
+        apiUrl(authBaseUrl, "/auth/workspace-selection"),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspace_id: workspaceId })
+        }
+      );
+      if (!response.ok) {
+        await readJsonResponse<never>(
+          response,
+          "PUT /auth/workspace-selection"
+        );
+      }
+      resolvedProjectId = undefined;
     },
     getLoginUrl(returnTo: string) {
       return apiUrl(

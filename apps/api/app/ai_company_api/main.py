@@ -9,7 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from sqlmodel import Session
+from sqlmodel import Session, select
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -21,10 +21,17 @@ from ai_company_api.db.session import (
     init_db,
     session_generator,
 )
-from ai_company_api.schemas.api import CurrentAccount, CurrentWorkspace, DevIdentity
+from ai_company_api.schemas.api import (
+    AccessibleAccount,
+    AccessibleWorkspace,
+    CurrentAccount,
+    CurrentWorkspace,
+    DevIdentity,
+)
 from ai_company_api.models.entities import (
     AccountKind,
     Organization,
+    OrganizationMember,
     User,
     Workspace,
     utc_now,
@@ -33,8 +40,10 @@ from ai_company_api.services.auth_context import (
     DEV_ORGANIZATION_ID,
     DEV_USER_ID,
     DEV_WORKSPACE_ID,
+    USER_SESSION_AUTH_MODE,
     AuthContext,
     get_auth_context_dependency,
+    get_workspace_selection_auth_context_dependency,
 )
 from ai_company_api.services.auth_policy import (
     AUTHENTICATION_ENVIRONMENT_ENV,
@@ -267,29 +276,118 @@ def create_app(
 
     @app.get("/me")
     def me(
-        auth: AuthContext = Depends(get_auth_context_dependency),
+        request: Request,
+        auth: AuthContext = Depends(
+            get_workspace_selection_auth_context_dependency
+        ),
         session: Session = Depends(get_session_dependency),
     ) -> DevIdentity:
-        account = session.get(Organization, auth.organization_id)
-        workspace = session.get(Workspace, auth.workspace_id)
+        selection_required = bool(
+            getattr(request.state, "workspace_selection_required", False)
+        )
+        account = (
+            None
+            if selection_required
+            else session.get(Organization, auth.organization_id)
+        )
+        workspace = (
+            None
+            if selection_required
+            else session.get(Workspace, auth.workspace_id)
+        )
+        accessible_statement = (
+            select(OrganizationMember, Workspace, Organization)
+            .join(
+                Workspace,
+                Workspace.id == OrganizationMember.workspace_id,
+            )
+            .join(
+                Organization,
+                Organization.id == OrganizationMember.organization_id,
+            )
+            .where(
+                OrganizationMember.user_id == auth.user_id,
+                OrganizationMember.status == "active",
+                Workspace.status == "active",
+                Organization.status == "active",
+                Workspace.organization_id == Organization.id,
+            )
+            .order_by(
+                Organization.name,
+                Organization.id,
+                Workspace.name,
+                Workspace.id,
+            )
+        )
+        if auth.auth_mode != USER_SESSION_AUTH_MODE:
+            accessible_statement = accessible_statement.where(
+                OrganizationMember.workspace_id == auth.workspace_id,
+                OrganizationMember.organization_id == auth.organization_id,
+            )
+        accessible_rows = session.exec(accessible_statement).all()
+        accessible_accounts: list[AccessibleAccount] = []
+        by_account_id: dict[str, AccessibleAccount] = {}
+        for membership, accessible_workspace, accessible_account in accessible_rows:
+            account_access = by_account_id.get(accessible_account.id)
+            if account_access is None:
+                account_access = AccessibleAccount(
+                    id=accessible_account.id,
+                    name=accessible_account.name,
+                    kind=accessible_account.account_kind,
+                )
+                by_account_id[accessible_account.id] = account_access
+                accessible_accounts.append(account_access)
+            account_access.workspaces.append(
+                AccessibleWorkspace(
+                    id=accessible_workspace.id,
+                    name=accessible_workspace.name,
+                    role=membership.role.value,
+                )
+            )
         return DevIdentity(
             user_id=auth.user_id,
-            workspace_id=auth.workspace_id,
-            organization_id=auth.organization_id,
-            roles=sorted(role.value for role in auth.roles),
-            auth_mode=auth.auth_mode,
-            current_account=CurrentAccount(
-                id=auth.organization_id,
-                name=account.name if account is not None else auth.organization_id,
-                kind=(
-                    account.account_kind
-                    if account is not None
-                    else AccountKind.LEGACY
-                ),
+            workspace_id=None if selection_required else auth.workspace_id,
+            organization_id=None if selection_required else auth.organization_id,
+            roles=(
+                []
+                if selection_required
+                else sorted(role.value for role in auth.roles)
             ),
-            current_workspace=CurrentWorkspace(
-                id=auth.workspace_id,
-                name=workspace.name if workspace is not None else auth.workspace_id,
+            auth_mode=auth.auth_mode,
+            selection_state=(
+                "selection_required"
+                if selection_required
+                else "selected"
+            ),
+            accounts=accessible_accounts,
+            current_account=(
+                None
+                if selection_required
+                else CurrentAccount(
+                    id=auth.organization_id,
+                    name=(
+                        account.name
+                        if account is not None
+                        else auth.organization_id
+                    ),
+                    kind=(
+                        account.account_kind
+                        if account is not None
+                        else AccountKind.LEGACY
+                    ),
+                )
+            ),
+            current_workspace=(
+                None
+                if selection_required
+                else CurrentWorkspace(
+                    id=auth.workspace_id,
+                    name=(
+                        workspace.name
+                        if workspace is not None
+                        else auth.workspace_id
+                    ),
+                )
             ),
         )
 
