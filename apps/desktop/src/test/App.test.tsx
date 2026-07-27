@@ -666,6 +666,24 @@ describe("App", () => {
     expect(apiClient.listTasks).toHaveBeenCalledOnce();
   });
 
+  it("offers email sign-in without loading workspace data when no session exists", async () => {
+    const apiClient = createMockApiClient({
+      getCurrentIdentity: vi.fn().mockResolvedValue(null),
+      getLoginUrl: vi
+        .fn()
+        .mockReturnValue("https://testserver/auth/login?return_to=%2F")
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const signIn = await screen.findByRole("link", { name: "Sign in with email" });
+    expect(signIn).toHaveAttribute(
+      "href",
+      "https://testserver/auth/login?return_to=%2F"
+    );
+    expect(apiClient.listTasks).not.toHaveBeenCalled();
+  });
+
   it("shows initial task loading errors in the context panel", async () => {
     const apiClient = createMockApiClient({
       listTasks: vi.fn().mockRejectedValue(new Error("API unavailable"))

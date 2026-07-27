@@ -115,12 +115,15 @@ def test_create_app_rejects_missing_authentication_environment(
         create_app(database_url="sqlite://")
 
 
-def test_production_environment_policy_enables_only_workspace_api_tokens() -> None:
+def test_production_environment_policy_enables_sessions_and_workspace_api_tokens() -> None:
     policy = authentication_policy_for_environment("production")
 
     assert policy.environment == AuthenticationEnvironment.PRODUCTION
     assert policy.accepted_human_credentials == frozenset(
-        {HumanCredentialType.WORKSPACE_API_TOKEN}
+        {
+            HumanCredentialType.USER_SESSION,
+            HumanCredentialType.WORKSPACE_API_TOKEN,
+        }
     )
 
 

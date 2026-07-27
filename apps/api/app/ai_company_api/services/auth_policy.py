@@ -12,6 +12,7 @@ class AuthenticationEnvironment(StrEnum):
 class HumanCredentialType(StrEnum):
     DEV_AUTH = "dev"
     WORKSPACE_API_TOKEN = "api_token"
+    USER_SESSION = "user_session"
 
 
 AUTHENTICATION_ENVIRONMENT_ENV = "AI_SCDC_AUTHENTICATION_ENVIRONMENT"
@@ -75,16 +76,21 @@ def authentication_policy_for_environment(
         raise ValueError(
             f"Unsupported authentication environment: {environment_value}"
         ) from exc
-    credential_type = (
-        HumanCredentialType.DEV_AUTH
+    credential_types = (
+        frozenset({HumanCredentialType.DEV_AUTH})
         if environment
         in {
             AuthenticationEnvironment.LOCAL,
             AuthenticationEnvironment.TEST,
         }
-        else HumanCredentialType.WORKSPACE_API_TOKEN
+        else frozenset(
+            {
+                HumanCredentialType.USER_SESSION,
+                HumanCredentialType.WORKSPACE_API_TOKEN,
+            }
+        )
     )
     return AuthenticationPolicy(
         environment=environment,
-        accepted_human_credentials=frozenset({credential_type}),
+        accepted_human_credentials=credential_types,
     )

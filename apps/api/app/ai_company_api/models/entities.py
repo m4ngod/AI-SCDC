@@ -191,6 +191,87 @@ class OrganizationMember(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class ExternalIdentity(SQLModel, table=True):
+    __tablename__ = "external_identity"
+    __table_args__ = (
+        UniqueConstraint(
+            "issuer",
+            "subject",
+            name="uq_external_identity_issuer_subject",
+        ),
+    )
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("external_identity"),
+        primary_key=True,
+    )
+    issuer: str = Field(index=True)
+    subject: str = Field(index=True)
+    user_id: str = Field(index=True, foreign_key="user_account.id")
+    email: str | None = Field(default=None, index=True)
+    status: str = Field(default="active", index=True)
+    last_confirmed_status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class DeviceSession(SQLModel, table=True):
+    __tablename__ = "device_session"
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("device_session"),
+        primary_key=True,
+    )
+    user_id: str = Field(index=True, foreign_key="user_account.id")
+    active_workspace_id: str = Field(index=True, foreign_key="workspace.id")
+    active_organization_id: str = Field(index=True, foreign_key="organization.id")
+    secret_hash: str
+    status: str = Field(default="active", index=True)
+    idle_expires_at: datetime = Field(index=True)
+    last_seen_at: datetime = Field(default_factory=utc_now, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now)
+    revoked_at: datetime | None = None
+
+
+class LoginTransaction(SQLModel, table=True):
+    __tablename__ = "login_transaction"
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("login_transaction"),
+        primary_key=True,
+    )
+    state_hash: str = Field(unique=True, index=True)
+    nonce_hash: str
+    pkce_verifier: str
+    return_to: str
+    browser_binding_hash: str
+    redirect_uri: str
+    correlation_id: str = Field(index=True)
+    status: str = Field(default="pending", index=True)
+    completed_session_id: str | None = Field(default=None, index=True)
+    expires_at: datetime = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
+
+
+class IdentityAuditEvent(SQLModel, table=True):
+    __tablename__ = "identity_audit_event"
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("identity_audit"),
+        primary_key=True,
+    )
+    event_type: str = Field(index=True)
+    outcome: str = Field(index=True)
+    reason_code: str = Field(index=True)
+    correlation_id: str = Field(index=True)
+    user_id: str | None = Field(default=None, index=True)
+    external_identity_id: str | None = Field(default=None, index=True)
+    device_session_id: str | None = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class Repository(SQLModel, table=True):
     __tablename__ = "repository"
 

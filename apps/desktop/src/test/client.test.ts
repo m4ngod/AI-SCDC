@@ -36,6 +36,48 @@ describe("desktop API clients", () => {
     );
   });
 
+  it("uses the server session to resolve the current Web Console identity", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        user_id: "user_linked",
+        workspace_id: "workspace_linked",
+        organization_id: "account_linked",
+        roles: ["admin"],
+        auth_mode: "user_session"
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = createHttpApiClient({
+      baseUrl: "https://api.example.test"
+    });
+
+    await expect(client.getCurrentIdentity?.()).resolves.toEqual({
+      user_id: "user_linked",
+      workspace_id: "workspace_linked",
+      organization_id: "account_linked",
+      roles: ["admin"],
+      auth_mode: "user_session"
+    });
+    expect(fetchMock).toHaveBeenCalledWith("https://api.example.test/me", {
+      credentials: "include"
+    });
+    expect(client.getLoginUrl?.("/")).toBe(
+      "https://api.example.test/auth/login?return_to=%2F"
+    );
+  });
+
+  it("reports a signed-out Web Console without exposing an authentication error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ detail: "Not authenticated" }, { status: 401 }))
+    );
+    const client = createHttpApiClient({
+      baseUrl: "https://api.example.test"
+    });
+
+    await expect(client.getCurrentIdentity?.()).resolves.toBeNull();
+  });
+
   it("fake client runs tests for a demo patch", async () => {
     await expect(fakeApiClient.runPatchTests("patch_demo")).resolves.toMatchObject({
       task: {
