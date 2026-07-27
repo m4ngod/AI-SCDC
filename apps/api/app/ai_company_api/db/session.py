@@ -63,6 +63,7 @@ def _upgrade_sqlite_user_session_columns(engine) -> None:
             "previous_secret_hash": "VARCHAR",
             "previous_secret_valid_until": "DATETIME",
             "secret_rotated_at": "DATETIME",
+            "recent_authenticated_at": "DATETIME",
             "device_description": "VARCHAR",
         }
         for column_name, column_type in columns.items():
@@ -101,6 +102,50 @@ def _upgrade_sqlite_user_session_columns(engine) -> None:
                 "CREATE INDEX IF NOT EXISTS "
                 "ix_device_session_secret_rotated_at "
                 "ON device_session (secret_rotated_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_device_session_recent_authenticated_at "
+                "ON device_session (recent_authenticated_at)"
+            )
+        )
+
+        if "login_transaction" not in existing_tables:
+            return
+        login_transaction_columns = {
+            row["name"]
+            for row in connection.execute(
+                text("PRAGMA table_info(login_transaction)")
+            ).mappings()
+        }
+        if "purpose" not in login_transaction_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE login_transaction "
+                    "ADD COLUMN purpose VARCHAR NOT NULL DEFAULT 'login'"
+                )
+            )
+        if "requested_session_id" not in login_transaction_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE login_transaction "
+                    "ADD COLUMN requested_session_id VARCHAR"
+                )
+            )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_login_transaction_purpose "
+                "ON login_transaction (purpose)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_login_transaction_requested_session_id "
+                "ON login_transaction (requested_session_id)"
             )
         )
 

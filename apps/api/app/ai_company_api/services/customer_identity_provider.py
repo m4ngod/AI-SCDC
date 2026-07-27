@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from base64 import urlsafe_b64encode
+from datetime import datetime
 from hashlib import sha256
 from threading import Event, Lock
 from time import sleep
@@ -30,6 +31,9 @@ class OidcAuthorizationRequest:
     state: str
     nonce: str
     code_challenge: str
+    prompt: str | None = None
+    max_age_seconds: int | None = None
+    acr_values: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,8 @@ class ValidatedExternalIdentity:
     subject: str
     email: str | None
     nonce: str
+    authenticated_at: datetime | None
+    authentication_context: str | None
 
 
 class CustomerIdentityProvider(Protocol):
@@ -106,18 +112,23 @@ class DeterministicFakeCustomerIdentityProvider:
 
     def authorization_url(self, request: OidcAuthorizationRequest) -> str:
         self._require_available("authorization")
-        query = urlencode(
-            {
-                "response_type": "code",
-                "client_id": request.client_id,
-                "redirect_uri": request.redirect_uri,
-                "scope": "openid email",
-                "state": request.state,
-                "nonce": request.nonce,
-                "code_challenge": request.code_challenge,
-                "code_challenge_method": "S256",
-            }
-        )
+        query_parameters: dict[str, str | int] = {
+            "response_type": "code",
+            "client_id": request.client_id,
+            "redirect_uri": request.redirect_uri,
+            "scope": "openid email",
+            "state": request.state,
+            "nonce": request.nonce,
+            "code_challenge": request.code_challenge,
+            "code_challenge_method": "S256",
+        }
+        if request.prompt is not None:
+            query_parameters["prompt"] = request.prompt
+        if request.max_age_seconds is not None:
+            query_parameters["max_age"] = request.max_age_seconds
+        if request.acr_values is not None:
+            query_parameters["acr_values"] = request.acr_values
+        query = urlencode(query_parameters)
         return f"{self.discover().authorization_endpoint}?{query}"
 
     def exchange_code(
@@ -180,6 +191,16 @@ class DeterministicFakeCustomerIdentityProvider:
             subject=str(record["subject"]),
             email=str(record["email"]) if record["email"] is not None else None,
             nonce=str(record["nonce"]),
+            authenticated_at=(
+                record["authenticated_at"]
+                if isinstance(record["authenticated_at"], datetime)
+                else None
+            ),
+            authentication_context=(
+                str(record["authentication_context"])
+                if record["authentication_context"] is not None
+                else None
+            ),
         )
 
     def end_session_url(self, *, post_logout_redirect_uri: str) -> str | None:
@@ -207,6 +228,8 @@ class DeterministicFakeCustomerIdentityProvider:
         audience: str | None = None,
         pkce_valid: bool = True,
         token_valid: bool = True,
+        authenticated_at: datetime | None = None,
+        authentication_context: str | None = None,
     ) -> str:
         parsed = urlparse(authorization_url)
         expected = urlparse(self.discover().authorization_endpoint)
@@ -229,6 +252,8 @@ class DeterministicFakeCustomerIdentityProvider:
             "code_challenge": query["code_challenge"][0],
             "pkce_valid": pkce_valid,
             "token_valid": token_valid,
+            "authenticated_at": authenticated_at,
+            "authentication_context": authentication_context,
             "used": False,
         }
         self._codes[code] = record

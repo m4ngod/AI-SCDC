@@ -646,6 +646,7 @@ function createDeferred<T>() {
 describe("App", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    window.history.replaceState({}, "", "/");
   });
 
   it("renders sidebar, main thread, and right context panel", () => {
@@ -1761,6 +1762,132 @@ describe("App", () => {
     expect(requestHumanApproval).toHaveBeenCalledWith("patch_approval_test");
     expect(await within(board).findByText("HUMAN_APPROVAL")).toBeInTheDocument();
   });
+
+  it("starts Recent Authentication without retaining credential plaintext", async () => {
+    const user = userEvent.setup();
+    const assign = vi.fn();
+    vi.stubGlobal("location", {
+      assign,
+      pathname: "/",
+      search: ""
+    });
+    const createGitHubCredential = vi
+      .fn<ConsoleApiClient["createGitHubCredential"]>()
+      .mockRejectedValue(
+        new WebConsoleAuthenticationError(
+          "reauthentication_required",
+          403,
+          "reauthentication_required"
+        )
+      );
+    const createGitHubRepository = vi.fn();
+    const getRecentAuthenticationUrl = vi
+      .fn()
+      .mockReturnValue(
+        "https://app.example.test/auth/reauthenticate?return_to=%2Freauthentication%2Fconfirm"
+      );
+    const apiClient = createMockApiClient({
+      createGitHubCredential,
+      createGitHubRepository,
+      getRecentAuthenticationUrl
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const tokenInput = screen.getByLabelText("GitHub token");
+    await user.type(tokenInput, "ghp_plaintext_must_not_survive_redirect");
+    await user.click(
+      screen.getByRole("button", { name: "Connect GitHub repo" })
+    );
+
+    await waitFor(() =>
+      expect(assign).toHaveBeenCalledWith(
+        "https://app.example.test/auth/reauthenticate?return_to=%2Freauthentication%2Fconfirm"
+      )
+    );
+    expect(tokenInput).toHaveValue("");
+    expect(createGitHubRepository).not.toHaveBeenCalled();
+  });
+
+  it("shows an explicit confirmation screen after Recent Authentication", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/reauthentication/confirm?reauthentication=confirmed"
+    );
+    const createGitHubCredential = vi.fn();
+    const apiClient = createMockApiClient({
+      createGitHubCredential
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Confirm credential change"
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Your email was verified. Review the details and submit the credential change again."
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("GitHub token")).toHaveValue("");
+    expect(
+      screen.getByRole("button", {
+        name: "Confirm and connect GitHub repo"
+      })
+    ).toBeInTheDocument();
+    expect(createGitHubCredential).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "cancelled",
+      "Email verification was cancelled. No credential was changed."
+    ],
+    [
+      "provider_unavailable",
+      "Email verification is temporarily unavailable. No credential was changed."
+    ],
+    [
+      "failed",
+      "Email verification could not be completed. No credential was changed."
+    ]
+  ])(
+    "shows a recoverable credential screen when Recent Authentication is %s",
+    async (result, message) => {
+      window.history.replaceState(
+        {},
+        "",
+        `/reauthentication/confirm?reauthentication=${result}`
+      );
+      const getRecentAuthenticationUrl = vi
+        .fn()
+        .mockReturnValue(
+          "https://app.example.test/auth/reauthenticate?return_to=%2Freauthentication%2Fconfirm"
+        );
+      const createGitHubCredential = vi.fn();
+      const apiClient = createMockApiClient({
+        createGitHubCredential,
+        getRecentAuthenticationUrl
+      });
+
+      render(<App apiClient={apiClient} />);
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(message);
+      expect(
+        screen.getByRole("link", {
+          name: "Try email verification again"
+        })
+      ).toHaveAttribute(
+        "href",
+        "https://app.example.test/auth/reauthenticate?return_to=%2Freauthentication%2Fconfirm"
+      );
+      expect(screen.getByLabelText("GitHub token")).toHaveValue("");
+      expect(createGitHubCredential).not.toHaveBeenCalled();
+    }
+  );
 
   it("registers a github repository from the setup panel", async () => {
     const user = userEvent.setup();

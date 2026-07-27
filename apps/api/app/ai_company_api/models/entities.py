@@ -288,6 +288,7 @@ class DeviceSession(SQLModel, table=True):
     previous_secret_hash: str | None = None
     previous_secret_valid_until: datetime | None = Field(default=None, index=True)
     secret_rotated_at: datetime = Field(default_factory=utc_now, index=True)
+    recent_authenticated_at: datetime | None = Field(default=None, index=True)
     device_description: str = "Unknown browser on Unknown device"
     status: str = Field(default="active", index=True)
     idle_expires_at: datetime = Field(index=True)
@@ -311,6 +312,8 @@ class LoginTransaction(SQLModel, table=True):
     browser_binding_hash: str
     redirect_uri: str
     correlation_id: str = Field(index=True)
+    purpose: str = Field(default="login", index=True)
+    requested_session_id: str | None = Field(default=None, index=True)
     status: str = Field(default="pending", index=True)
     completed_session_id: str | None = Field(default=None, index=True)
     expires_at: datetime = Field(index=True)

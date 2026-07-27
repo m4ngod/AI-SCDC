@@ -416,6 +416,13 @@ describe("desktop API clients", () => {
     expect(client.getLoginUrl?.("/")).toBe(
       "https://app.example.test/auth/login?return_to=%2F"
     );
+    expect(
+      client.getRecentAuthenticationUrl?.(
+        "/reauthentication/confirm"
+      )
+    ).toBe(
+      "https://app.example.test/auth/reauthenticate?return_to=%2Freauthentication%2Fconfirm"
+    );
   });
 
   it.each([
