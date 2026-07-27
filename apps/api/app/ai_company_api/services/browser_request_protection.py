@@ -106,7 +106,23 @@ def enforce_cookie_request_protection(
         device_session.secret_hash,
         payload=payload,
     )
-    if not hmac.compare_digest(presented_signature, expected_signature):
+    current_signature_matches = hmac.compare_digest(
+        presented_signature,
+        expected_signature,
+    )
+    previous_signature_matches = bool(
+        device_session.previous_secret_hash is not None
+        and device_session.previous_secret_valid_until is not None
+        and _as_utc(device_session.previous_secret_valid_until) >= _as_utc(now)
+        and hmac.compare_digest(
+            presented_signature,
+            _csrf_signature(
+                device_session.previous_secret_hash,
+                payload=payload,
+            ),
+        )
+    )
+    if not current_signature_matches and not previous_signature_matches:
         _reject_browser_request(
             session,
             event_type="csrf_rejected",

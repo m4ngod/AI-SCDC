@@ -16,6 +16,7 @@ from ai_company_api.models.entities import (
 from ai_company_api.schemas.api import (
     AccountLinkCreate,
     AccountLinkRead,
+    SignOutRead,
     WorkspaceSelectionUpdate,
 )
 from ai_company_api.services.account_link_recovery import create_account_link
@@ -31,6 +32,7 @@ from ai_company_api.services.identity_login import (
     reject_malformed_login_callback,
     start_login,
 )
+from ai_company_api.services.identity_logout import sign_out_current_device
 from ai_company_api.services.identity_audit import record_identity_audit_event
 
 
@@ -96,6 +98,34 @@ def get_csrf_token(
         "csrf_token": csrf_token,
         "expires_at": expires_at.isoformat(),
     }
+
+
+@router.post("/logout", response_model=SignOutRead)
+def post_logout(
+    request: Request,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> Response:
+    device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sign_out_requires_user_session",
+        )
+    return sign_out_current_device(
+        session,
+        request=request,
+        provider=request.app.state.customer_identity_provider,
+        device_session=device_session,
+        now=request.app.state.identity_clock(),
+    )
 
 
 @router.put("/workspace-selection", status_code=status.HTTP_204_NO_CONTENT)

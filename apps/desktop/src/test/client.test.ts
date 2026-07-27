@@ -212,6 +212,47 @@ describe("desktop API clients", () => {
     );
   });
 
+  it("signs out through the CSRF boundary and returns the approved redirect", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          csrf_token: "csrf-token-for-sign-out",
+          expires_at: "2026-07-27T13:00:00+00:00"
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          redirect_to:
+            "https://fake-idp.example.test/logout?post_logout_redirect_uri=https%3A%2F%2Fapp.example.test%2F"
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = createHttpApiClient({
+      baseUrl: "https://app.example.test/api"
+    });
+
+    await expect(client.signOut()).resolves.toEqual({
+      redirect_to:
+        "https://fake-idp.example.test/logout?post_logout_redirect_uri=https%3A%2F%2Fapp.example.test%2F"
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://app.example.test/auth/csrf"
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://app.example.test/auth/logout"
+    );
+    expect(fetchMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include"
+      })
+    );
+    const headers = new Headers(fetchMock.mock.calls[1][1]?.headers);
+    expect(headers.get("X-CSRF-Token")).toBe("csrf-token-for-sign-out");
+  });
+
   it("re-resolves workspace-derived project state after a workspace switch", async () => {
     let selectedWorkspace = "workspace_alpha";
     const fetchMock = vi.fn(

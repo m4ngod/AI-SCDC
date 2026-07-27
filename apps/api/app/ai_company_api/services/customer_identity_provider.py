@@ -82,6 +82,7 @@ class DeterministicFakeCustomerIdentityProvider:
     ) -> None:
         self.issuer = issuer.rstrip("/")
         self.client_id = client_id
+        self._end_session_endpoint: str | None = f"{self.issuer}/logout"
         self._code_sequence = 0
         self._codes: dict[str, dict[str, object]] = {}
         self._id_tokens: dict[str, dict[str, object]] = {}
@@ -100,7 +101,7 @@ class DeterministicFakeCustomerIdentityProvider:
             issuer=self.issuer,
             authorization_endpoint=f"{self.issuer}/authorize",
             token_endpoint=f"{self.issuer}/token",
-            end_session_endpoint=f"{self.issuer}/logout",
+            end_session_endpoint=self._end_session_endpoint,
         )
 
     def authorization_url(self, request: OidcAuthorizationRequest) -> str:
@@ -242,6 +243,9 @@ class DeterministicFakeCustomerIdentityProvider:
 
     def set_failure_for(self, *operations: str) -> None:
         self._failed_operations.update(operations)
+
+    def set_end_session_endpoint(self, endpoint: str | None) -> None:
+        self._end_session_endpoint = endpoint
 
     def set_exchange_delays(
         self,

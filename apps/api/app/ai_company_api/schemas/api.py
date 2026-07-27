@@ -947,6 +947,10 @@ class WorkspaceSelectionUpdate(BaseModel):
     workspace_id: str = Field(min_length=1)
 
 
+class SignOutRead(BaseModel):
+    redirect_to: str | None
+
+
 AuditedStringInput = Annotated[object, WithJsonSchema({"type": "string"})]
 
 

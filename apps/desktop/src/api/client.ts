@@ -421,6 +421,10 @@ export type ConsoleIdentity = {
   } | null;
 };
 
+export type SignOutResult = {
+  redirect_to: string | null;
+};
+
 export type WebConsoleAuthenticationState =
   | "logged_out"
   | "provider_unavailable"
@@ -448,6 +452,7 @@ export type ConsoleApiClient = {
   getCurrentIdentity?: () => Promise<ConsoleIdentity | null>;
   selectWorkspace?: (workspaceId: string) => Promise<void>;
   getLoginUrl?: (returnTo: string) => string;
+  signOut: () => Promise<SignOutResult>;
   listTasks: () => Promise<TaskCard[]>;
   createTask: (goal: string) => Promise<TaskCard>;
   createPlannerRun: (goal: string) => Promise<PlannerRunDraft>;
@@ -873,6 +878,9 @@ function fakeTaskFromPatchArtifact(patchArtifactId: string) {
 }
 
 export const fakeApiClient: ConsoleApiClient = {
+  async signOut() {
+    return { redirect_to: null };
+  },
   async listTasks() {
     return [...demoTasks];
   },
@@ -1849,6 +1857,18 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
   }
 
   return {
+    async signOut() {
+      const response = await fetch(
+        apiUrl(authBaseUrl, "/auth/logout"),
+        {
+          method: "POST"
+        }
+      );
+      return readJsonResponse<SignOutResult>(
+        response,
+        "POST /auth/logout"
+      );
+    },
     async getCurrentIdentity() {
       const response = await fetch(apiUrl(options.baseUrl, "/me"), {
         credentials: "include"

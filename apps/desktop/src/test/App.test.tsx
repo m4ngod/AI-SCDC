@@ -1,12 +1,13 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import type {
   CloudRunArtifactContentCard,
   CloudRunArtifactManifestCard,
   CloudRunCard,
   ConsoleApiClient,
+  ConsoleIdentity,
   PlannerRunDraft,
   TaskCard
 } from "../api/client";
@@ -340,9 +341,44 @@ function secondPatchReadyTaskFixture(): TaskCard {
   };
 }
 
+function signedInIdentityFixture(): ConsoleIdentity {
+  return {
+    user_id: "user_sign_out",
+    workspace_id: "workspace_sign_out",
+    organization_id: "account_sign_out",
+    roles: ["owner"],
+    auth_mode: "user_session",
+    selection_state: "selected",
+    accounts: [
+      {
+        id: "account_sign_out",
+        name: "Sign Out Account",
+        kind: "personal",
+        workspaces: [
+          {
+            id: "workspace_sign_out",
+            name: "Sign Out Workspace",
+            role: "owner"
+          }
+        ]
+      }
+    ],
+    current_account: {
+      id: "account_sign_out",
+      name: "Sign Out Account",
+      kind: "personal"
+    },
+    current_workspace: {
+      id: "workspace_sign_out",
+      name: "Sign Out Workspace"
+    }
+  };
+}
+
 function createMockApiClient(overrides: Partial<ConsoleApiClient> = {}): ConsoleApiClient {
   return {
     selectWorkspace: vi.fn().mockResolvedValue(undefined),
+    signOut: vi.fn().mockResolvedValue({ redirect_to: null }),
     listTasks: vi.fn().mockResolvedValue([]),
     createTask: vi.fn(),
     createPlannerRun: vi.fn().mockResolvedValue(plannerRunFixture()),
@@ -606,6 +642,10 @@ function createDeferred<T>() {
 }
 
 describe("App", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("renders sidebar, main thread, and right context panel", () => {
     render(<App />);
 
@@ -735,6 +775,61 @@ describe("App", () => {
     expect(topbar).toHaveTextContent("Personal Account");
     expect(topbar).toHaveTextContent("Default Workspace");
     expect(topbar).not.toHaveTextContent("Demo Workspace");
+  });
+
+  it("signs out locally before a best-effort provider redirect", async () => {
+    const user = userEvent.setup();
+    const redirectTo =
+      "https://fake-idp.example.test/logout?post_logout_redirect_uri=https%3A%2F%2Fapp.example.test%2F";
+    const signOut = vi
+      .fn<ConsoleApiClient["signOut"]>()
+      .mockResolvedValue({ redirect_to: redirectTo });
+    const assign = vi.fn(() => {
+      throw new Error("Browser navigation failed");
+    });
+    vi.stubGlobal("location", { assign });
+    const apiClient = createMockApiClient({
+      signOut,
+      getCurrentIdentity: vi.fn().mockResolvedValue(signedInIdentityFixture())
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Sign out" })
+    );
+
+    expect(signOut).toHaveBeenCalledOnce();
+    expect(
+      await screen.findByRole("link", { name: "Sign in with email" })
+    ).toBeInTheDocument();
+    expect(assign).toHaveBeenCalledWith(redirectTo);
+  });
+
+  it("keeps the signed-in view when the protected Sign Out request is rejected", async () => {
+    const user = userEvent.setup();
+    const signOut = vi
+      .fn<ConsoleApiClient["signOut"]>()
+      .mockRejectedValue(new Error("csrf_token_mismatch"));
+    const apiClient = createMockApiClient({
+      signOut,
+      getCurrentIdentity: vi.fn().mockResolvedValue(signedInIdentityFixture())
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Sign out" })
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "csrf_token_mismatch"
+    );
+    expect(screen.getByRole("banner")).toHaveTextContent("Sign Out Account");
+    expect(
+      screen.queryByRole("link", { name: "Sign in with email" })
+    ).not.toBeInTheDocument();
+    expect(signOut).toHaveBeenCalledOnce();
   });
 
   it("requires an explicit workspace selection before loading workspace data", async () => {
