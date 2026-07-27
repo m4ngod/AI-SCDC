@@ -399,6 +399,15 @@ export type ConsoleIdentity = {
   organization_id: string;
   roles: string[];
   auth_mode: string;
+  current_account: {
+    id: string;
+    name: string;
+    kind: "legacy" | "personal";
+  };
+  current_workspace: {
+    id: string;
+    name: string;
+  };
 };
 
 export type ConsoleApiClient = {

@@ -43,7 +43,16 @@ describe("desktop API clients", () => {
         workspace_id: "workspace_linked",
         organization_id: "account_linked",
         roles: ["admin"],
-        auth_mode: "user_session"
+        auth_mode: "user_session",
+        current_account: {
+          id: "account_linked",
+          name: "Linked account",
+          kind: "legacy"
+        },
+        current_workspace: {
+          id: "workspace_linked",
+          name: "Linked workspace"
+        }
       })
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -56,7 +65,16 @@ describe("desktop API clients", () => {
       workspace_id: "workspace_linked",
       organization_id: "account_linked",
       roles: ["admin"],
-      auth_mode: "user_session"
+      auth_mode: "user_session",
+      current_account: {
+        id: "account_linked",
+        name: "Linked account",
+        kind: "legacy"
+      },
+      current_workspace: {
+        id: "workspace_linked",
+        name: "Linked workspace"
+      }
     });
     expect(fetchMock).toHaveBeenCalledWith("https://api.example.test/me", {
       credentials: "include"

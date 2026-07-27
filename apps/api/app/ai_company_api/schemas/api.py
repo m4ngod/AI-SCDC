@@ -917,9 +917,22 @@ class CloudRunCostSummaryRead(BaseModel):
     usage_entries: list[UsageLedgerCostSummaryRead]
 
 
+class CurrentAccount(BaseModel):
+    id: str
+    name: str
+    kind: Literal["legacy", "personal"]
+
+
+class CurrentWorkspace(BaseModel):
+    id: str
+    name: str
+
+
 class DevIdentity(BaseModel):
     user_id: str
     workspace_id: str
     organization_id: str
     roles: list[str] = Field(default_factory=list)
     auth_mode: str = "dev"
+    current_account: CurrentAccount
+    current_workspace: CurrentWorkspace

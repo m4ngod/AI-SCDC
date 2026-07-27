@@ -19,6 +19,7 @@ def build_engine(database_url: str):
 
 
 def init_db(engine) -> None:
+    _upgrade_sqlite_account_classification(engine)
     _upgrade_sqlite_cloud_run_phase_9_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10a_columns(engine)
     _upgrade_sqlite_cloud_run_phase_10b_columns(engine)
@@ -35,6 +36,62 @@ def init_db(engine) -> None:
     _upgrade_sqlite_planner_run_metadata(engine)
     _upgrade_sqlite_task_execution_constraints(engine)
     _upgrade_sqlite_patch_review_uniqueness(engine)
+
+
+def _upgrade_sqlite_account_classification(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row["name"]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).mappings()
+        }
+        if "organization" not in existing_tables:
+            return
+
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(
+                text("PRAGMA table_info(organization)")
+            ).mappings()
+        }
+        if "account_kind" not in existing_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE organization "
+                    "ADD COLUMN account_kind VARCHAR NOT NULL DEFAULT 'legacy'"
+                )
+            )
+        if "personal_owner_user_id" not in existing_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE organization "
+                    "ADD COLUMN personal_owner_user_id VARCHAR"
+                )
+            )
+
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_organization_account_kind "
+                "ON organization (account_kind)"
+            )
+        )
+        if not _sqlite_has_unique_index(
+            connection,
+            "organization",
+            ("personal_owner_user_id",),
+        ):
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_organization_personal_owner_user "
+                    "ON organization (personal_owner_user_id) "
+                    "WHERE personal_owner_user_id IS NOT NULL"
+                )
+            )
 
 
 def _upgrade_sqlite_repository_phase_7_columns(engine) -> None:

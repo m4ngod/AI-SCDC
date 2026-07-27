@@ -124,6 +124,11 @@ class WorkspaceRole(str, Enum):
     VIEWER = "viewer"
 
 
+class AccountKind(str, Enum):
+    LEGACY = "legacy"
+    PERSONAL = "personal"
+
+
 class User(SQLModel, table=True):
     __tablename__ = "user_account"
 
@@ -137,9 +142,34 @@ class User(SQLModel, table=True):
 
 class Organization(SQLModel, table=True):
     __tablename__ = "organization"
+    __table_args__ = (
+        UniqueConstraint(
+            "personal_owner_user_id",
+            name="uq_organization_personal_owner_user",
+        ),
+    )
 
     id: str = Field(default_factory=lambda: prefixed_id("org"), primary_key=True)
     name: str
+    account_kind: AccountKind = Field(
+        default=AccountKind.LEGACY,
+        sa_column=Column(
+            SAEnum(
+                AccountKind,
+                name="account_kind",
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+                native_enum=False,
+                validate_strings=True,
+                create_constraint=True,
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    personal_owner_user_id: str | None = Field(
+        default=None,
+        foreign_key="user_account.id",
+    )
     status: str = Field(default="active", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

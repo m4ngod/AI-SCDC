@@ -3,6 +3,7 @@ import type {
   CloudRunArtifactCard,
   CloudRunArtifactManifestCard,
   ConsoleApiClient,
+  ConsoleIdentity,
   PlannerRunDraft,
   SandboxProfileInput,
   TaskCard
@@ -74,6 +75,8 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   const [identityState, setIdentityState] = useState<
     "checking" | "authenticated" | "signed_out" | "error"
   >(apiClient.getCurrentIdentity ? "checking" : "authenticated");
+  const [currentIdentity, setCurrentIdentity] =
+    useState<ConsoleIdentity | null>(null);
   const [tasks, setTasks] = useState<TaskCard[]>([]);
   const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
   const [plannerRun, setPlannerRun] = useState<PlannerRunDraft | null>(null);
@@ -125,9 +128,11 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
             return;
           }
           if (!identity) {
+            setCurrentIdentity(null);
             setIdentityState("signed_out");
             return;
           }
+          setCurrentIdentity(identity);
           setIdentityState("authenticated");
         } catch (error) {
           if (!cancelled) {
@@ -772,6 +777,32 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
 
   const contextPanel = (
     <>
+      {currentIdentity ? (
+        <section
+          className="context-section"
+          aria-label="Account context"
+        >
+          <h2>Account</h2>
+          <dl>
+            <div>
+              <dt>Account</dt>
+              <dd>{currentIdentity.current_account.name}</dd>
+            </div>
+            <div>
+              <dt>Type</dt>
+              <dd>
+                {currentIdentity.current_account.kind === "personal"
+                  ? "Personal"
+                  : "Legacy"}
+              </dd>
+            </div>
+            <div>
+              <dt>Workspace</dt>
+              <dd>{currentIdentity.current_workspace.name}</dd>
+            </div>
+          </dl>
+        </section>
+      ) : null}
       <section className="context-section">
         <h2>GitHub setup</h2>
         <form className="github-setup-form" onSubmit={handleSubmitGitHubSetup}>
@@ -913,7 +944,11 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
   );
 
   return (
-    <Shell contextPanel={contextPanel}>
+    <Shell
+      contextPanel={contextPanel}
+      accountName={currentIdentity?.current_account.name}
+      workspaceName={currentIdentity?.current_workspace.name}
+    >
       <section className="thread-panel" aria-labelledby="thread-title">
         <div className="section-heading">
           <div>

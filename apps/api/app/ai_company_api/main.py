@@ -17,8 +17,8 @@ from ai_company_api.db.session import (
     init_db,
     session_generator,
 )
-from ai_company_api.schemas.api import DevIdentity
-from ai_company_api.models.entities import Organization, User, Workspace
+from ai_company_api.schemas.api import CurrentAccount, CurrentWorkspace, DevIdentity
+from ai_company_api.models.entities import AccountKind, Organization, User, Workspace
 from ai_company_api.services.auth_context import (
     DEV_ORGANIZATION_ID,
     DEV_USER_ID,
@@ -34,6 +34,9 @@ from ai_company_api.services.auth_policy import (
     authentication_policy_for_environment,
 )
 from ai_company_api.services.customer_identity_provider import CustomerIdentityProvider
+from ai_company_api.services.identity_login import (
+    PERSONAL_ONBOARDING_FAILURE_STEPS,
+)
 
 
 DEV_CORS_ORIGINS = (
@@ -88,6 +91,7 @@ def create_app(
     public_origin: str = "https://localhost",
     identity_audit_observer_enabled: bool = False,
     login_transaction_ttl_seconds: int = 600,
+    personal_onboarding_failure_step: str | None = None,
 ) -> FastAPI:
     resolved_authentication_policy = (
         authentication_policy
@@ -112,6 +116,20 @@ def create_app(
         raise ValueError(
             "Identity Audit observer is allowed only in the test environment"
         )
+    if personal_onboarding_failure_step is not None:
+        if (
+            resolved_authentication_policy.environment
+            != AuthenticationEnvironment.TEST
+        ):
+            raise ValueError(
+                "Personal onboarding failure injection is allowed only "
+                "in the test environment"
+            )
+        if (
+            personal_onboarding_failure_step
+            not in PERSONAL_ONBOARDING_FAILURE_STEPS
+        ):
+            raise ValueError("Unsupported Personal onboarding failure step")
     engine = build_engine(database_url)
 
     @asynccontextmanager
@@ -131,6 +149,9 @@ def create_app(
     app.state.public_origin = public_origin.rstrip("/")
     app.state.identity_audit_observer_enabled = identity_audit_observer_enabled
     app.state.login_transaction_ttl_seconds = login_transaction_ttl_seconds
+    app.state.personal_onboarding_failure_step = (
+        personal_onboarding_failure_step
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),
@@ -158,13 +179,31 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/me")
-    def me(auth: AuthContext = Depends(get_auth_context_dependency)) -> DevIdentity:
+    def me(
+        auth: AuthContext = Depends(get_auth_context_dependency),
+        session: Session = Depends(get_session_dependency),
+    ) -> DevIdentity:
+        account = session.get(Organization, auth.organization_id)
+        workspace = session.get(Workspace, auth.workspace_id)
         return DevIdentity(
             user_id=auth.user_id,
             workspace_id=auth.workspace_id,
             organization_id=auth.organization_id,
             roles=sorted(role.value for role in auth.roles),
             auth_mode=auth.auth_mode,
+            current_account=CurrentAccount(
+                id=auth.organization_id,
+                name=account.name if account is not None else auth.organization_id,
+                kind=(
+                    account.account_kind
+                    if account is not None
+                    else AccountKind.LEGACY
+                ),
+            ),
+            current_workspace=CurrentWorkspace(
+                id=auth.workspace_id,
+                name=workspace.name if workspace is not None else auth.workspace_id,
+            ),
         )
 
     app.include_router(identity_router)

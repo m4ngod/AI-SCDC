@@ -174,7 +174,315 @@ def test_valid_callback_for_linked_identity_creates_device_session_and_me(
         "organization_id": "account_linked",
         "roles": ["admin"],
         "auth_mode": "user_session",
+        "current_account": {
+            "id": "account_linked",
+            "name": "Linked account",
+            "kind": "legacy",
+        },
+        "current_workspace": {
+            "id": "workspace_linked",
+            "name": "Linked workspace",
+        },
     }
+
+
+def test_first_login_atomically_onboards_a_personal_account(tmp_path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'onboarding.db').as_posix()}"
+    provider = DeterministicFakeCustomerIdentityProvider()
+
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=USER_SESSION_TEST_POLICY,
+            customer_identity_provider=provider,
+            allowed_login_return_destinations=frozenset({"/console"}),
+            public_origin="https://testserver",
+            identity_audit_observer_enabled=True,
+        ),
+        base_url="https://testserver",
+    ) as client:
+        login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        authorization_url = login.headers["location"]
+        state = parse_qs(urlparse(authorization_url).query)["state"][0]
+        code = provider.issue_authorization_code(
+            authorization_url,
+            subject="subject-new-customer",
+            email="new-customer@example.test",
+        )
+
+        callback = client.get(
+            "/auth/callback",
+            params={"state": state, "code": code},
+            follow_redirects=False,
+        )
+        me = client.get("/me")
+        audit = client.get(
+            "/auth/test/audit-events",
+            params={"correlation_id": callback.headers["x-correlation-id"]},
+        )
+
+    assert callback.status_code == 303
+    assert callback.headers["location"] == "/console"
+    assert "__Host-ai_scdc_session=" in callback.headers["set-cookie"]
+    assert me.status_code == 200
+    assert me.json() == {
+        "user_id": me.json()["user_id"],
+        "workspace_id": me.json()["workspace_id"],
+        "organization_id": me.json()["organization_id"],
+        "roles": ["owner"],
+        "auth_mode": "user_session",
+        "current_account": {
+            "id": me.json()["organization_id"],
+            "name": "Personal Account",
+            "kind": "personal",
+        },
+        "current_workspace": {
+            "id": me.json()["workspace_id"],
+            "name": "Default Workspace",
+        },
+    }
+    assert {
+        (event["event_type"], event["outcome"], event["reason_code"])
+        for event in audit.json()
+    } == {
+        ("onboarding_success", "success", "personal_account_created"),
+        ("session_created", "success", "oidc_callback"),
+        ("login_success", "success", "personal_account_onboarding"),
+    }
+    assert all(
+        forbidden not in f"{callback.text}{audit.text}"
+        for forbidden in (
+            code,
+            "id_token",
+            "access_token",
+            "otp",
+            provider.issuer,
+        )
+    )
+
+
+def test_repeated_login_resolves_the_same_personal_account_without_reonboarding(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'repeat-onboarding.db').as_posix()}"
+    provider = DeterministicFakeCustomerIdentityProvider()
+
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=USER_SESSION_TEST_POLICY,
+            customer_identity_provider=provider,
+            allowed_login_return_destinations=frozenset({"/console"}),
+            public_origin="https://testserver",
+            identity_audit_observer_enabled=True,
+        ),
+        base_url="https://testserver",
+    ) as client:
+        first_login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        first_authorization_url = first_login.headers["location"]
+        first_state = parse_qs(urlparse(first_authorization_url).query)["state"][0]
+        first_code = provider.issue_authorization_code(
+            first_authorization_url,
+            subject="subject-returning",
+            email="returning@example.test",
+        )
+        first_callback = client.get(
+            "/auth/callback",
+            params={"state": first_state, "code": first_code},
+            follow_redirects=False,
+        )
+        first_me = client.get("/me")
+
+        repeated_callback = client.get(
+            "/auth/callback",
+            params={"state": first_state, "code": first_code},
+            follow_redirects=False,
+        )
+        first_audit = client.get(
+            "/auth/test/audit-events",
+            params={"correlation_id": first_callback.headers["x-correlation-id"]},
+        )
+
+        second_login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        second_authorization_url = second_login.headers["location"]
+        second_state = parse_qs(urlparse(second_authorization_url).query)["state"][0]
+        second_code = provider.issue_authorization_code(
+            second_authorization_url,
+            subject="subject-returning",
+            email="returning@example.test",
+        )
+        second_callback = client.get(
+            "/auth/callback",
+            params={"state": second_state, "code": second_code},
+            follow_redirects=False,
+        )
+        second_me = client.get("/me")
+        second_audit = client.get(
+            "/auth/test/audit-events",
+            params={"correlation_id": second_callback.headers["x-correlation-id"]},
+        )
+
+    assert first_callback.status_code == 303
+    assert repeated_callback.status_code == 303
+    assert "__Host-ai_scdc_session=" not in repeated_callback.headers.get(
+        "set-cookie",
+        "",
+    )
+    assert sum(
+        event["event_type"] == "onboarding_success"
+        for event in first_audit.json()
+    ) == 1
+    assert sum(
+        event["event_type"] == "session_created"
+        for event in first_audit.json()
+    ) == 1
+    assert second_callback.status_code == 303
+    assert first_me.json()["user_id"] == second_me.json()["user_id"]
+    assert first_me.json()["current_account"] == second_me.json()["current_account"]
+    assert first_me.json()["current_workspace"] == second_me.json()[
+        "current_workspace"
+    ]
+    assert "onboarding_success" not in {
+        event["event_type"] for event in second_audit.json()
+    }
+
+
+@pytest.mark.parametrize(
+    "failure_step",
+    (
+        "user",
+        "account",
+        "workspace",
+        "membership",
+        "external_identity",
+        "device_session",
+    ),
+)
+def test_onboarding_failure_rolls_back_and_a_new_login_can_retry(
+    tmp_path,
+    failure_step: str,
+) -> None:
+    database_url = (
+        f"sqlite:///{(tmp_path / f'onboarding-{failure_step}.db').as_posix()}"
+    )
+    provider = DeterministicFakeCustomerIdentityProvider()
+
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=USER_SESSION_TEST_POLICY,
+            customer_identity_provider=provider,
+            allowed_login_return_destinations=frozenset({"/console"}),
+            public_origin="https://testserver",
+            identity_audit_observer_enabled=True,
+            personal_onboarding_failure_step=failure_step,
+        ),
+        base_url="https://testserver",
+    ) as client:
+        failed_login = client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        failed_authorization_url = failed_login.headers["location"]
+        failed_state = parse_qs(urlparse(failed_authorization_url).query)["state"][0]
+        failed_code = provider.issue_authorization_code(
+            failed_authorization_url,
+            subject="subject-retry",
+            email="retry@example.test",
+        )
+        failed_callback = client.get(
+            "/auth/callback",
+            params={"state": failed_state, "code": failed_code},
+            follow_redirects=False,
+        )
+        signed_out = client.get("/me")
+        rollback_audit = client.get(
+            "/auth/test/audit-events",
+            params={
+                "correlation_id": failed_callback.headers["x-correlation-id"],
+            },
+        )
+
+    assert failed_callback.status_code == 500
+    assert failed_callback.json() == {
+        "error": "login_failed",
+        "correlation_id": failed_callback.headers["x-correlation-id"],
+    }
+    assert "__Host-ai_scdc_session=" not in failed_callback.headers.get(
+        "set-cookie",
+        "",
+    )
+    assert signed_out.status_code == 401
+    assert rollback_audit.json() == [
+        {
+            "event_type": "onboarding_rollback",
+            "outcome": "failure",
+            "reason_code": "persistence_failed",
+            "correlation_id": failed_callback.headers["x-correlation-id"],
+            "user_id": None,
+            "external_identity_id": None,
+            "device_session_id": None,
+        }
+    ]
+    assert all(
+        forbidden not in f"{failed_callback.text}{rollback_audit.text}"
+        for forbidden in (
+            failed_code,
+            "id_token",
+            "access_token",
+            "otp",
+            provider.issuer,
+        )
+    )
+
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=USER_SESSION_TEST_POLICY,
+            customer_identity_provider=provider,
+            allowed_login_return_destinations=frozenset({"/console"}),
+            public_origin="https://testserver",
+        ),
+        base_url="https://testserver",
+    ) as retry_client:
+        retry_login = retry_client.get(
+            "/auth/login",
+            params={"return_to": "/console"},
+            follow_redirects=False,
+        )
+        retry_authorization_url = retry_login.headers["location"]
+        retry_state = parse_qs(urlparse(retry_authorization_url).query)["state"][0]
+        retry_code = provider.issue_authorization_code(
+            retry_authorization_url,
+            subject="subject-retry",
+            email="retry@example.test",
+        )
+        retry_callback = retry_client.get(
+            "/auth/callback",
+            params={"state": retry_state, "code": retry_code},
+            follow_redirects=False,
+        )
+        retried_me = retry_client.get("/me")
+
+    assert retry_state != failed_state
+    assert retry_code != failed_code
+    assert retry_callback.status_code == 303
+    assert retried_me.status_code == 200
+    assert retried_me.json()["current_account"]["kind"] == "personal"
+    assert retried_me.json()["roles"] == ["owner"]
 
 
 def test_login_rejects_unapproved_return_destination_with_safe_audit_event() -> None:
@@ -953,6 +1261,30 @@ def test_identity_audit_observer_cannot_be_enabled_outside_test() -> None:
             authentication_policy=production_policy,
             customer_identity_provider=provider,
             identity_audit_observer_enabled=True,
+        )
+
+
+def test_personal_onboarding_failure_injection_cannot_be_enabled_outside_test() -> None:
+    provider = DeterministicFakeCustomerIdentityProvider()
+    production_policy = AuthenticationPolicy(
+        environment=AuthenticationEnvironment.PRODUCTION,
+        accepted_human_credentials=frozenset(
+            {HumanCredentialType.USER_SESSION}
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Personal onboarding failure injection is allowed only "
+            "in the test environment"
+        ),
+    ):
+        create_app(
+            database_url="sqlite://",
+            authentication_policy=production_policy,
+            customer_identity_provider=provider,
+            personal_onboarding_failure_step="user",
         )
 
 
