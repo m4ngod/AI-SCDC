@@ -1,4 +1,5 @@
-from collections.abc import AsyncGenerator, Iterable
+from collections.abc import AsyncGenerator, Iterable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from hashlib import sha256
@@ -14,6 +15,7 @@ from ai_company_api.models.entities import (
     Workspace,
     WorkspaceRole,
 )
+from ai_company_api.services.auth_policy import HumanCredentialType
 
 
 DEV_USER_ID = "dev_user"
@@ -41,6 +43,17 @@ class AuthContext:
         return bool(self.roles.intersection(set(roles)))
 
 
+@contextmanager
+def auth_context_scope(
+    context: AuthContext | None,
+) -> Iterator[AuthContext | None]:
+    token = _current_auth_context.set(context)
+    try:
+        yield context
+    finally:
+        _current_auth_context.reset(token)
+
+
 def get_current_auth_context() -> AuthContext | None:
     return _current_auth_context.get()
 
@@ -55,19 +68,16 @@ def require_current_auth_context() -> AuthContext:
     return context
 
 
-def current_user_id(default: str = DEV_USER_ID) -> str:
-    context = get_current_auth_context()
-    return context.user_id if context is not None else default
+def current_user_id() -> str:
+    return require_current_auth_context().user_id
 
 
-def current_workspace_id(default: str = DEV_WORKSPACE_ID) -> str:
-    context = get_current_auth_context()
-    return context.workspace_id if context is not None else default
+def current_workspace_id() -> str:
+    return require_current_auth_context().workspace_id
 
 
-def current_organization_id(default: str = DEV_ORGANIZATION_ID) -> str:
-    context = get_current_auth_context()
-    return context.organization_id if context is not None else default
+def current_organization_id() -> str:
+    return require_current_auth_context().organization_id
 
 
 def enforce_workspace_access(
@@ -100,30 +110,55 @@ async def get_auth_context_dependency(
     session: Session = Depends(get_session_dependency),
 ) -> AsyncGenerator[AuthContext | None, None]:
     if _is_worker_callback_path(request.url.path):
-        token = _current_auth_context.set(None)
-        try:
+        with auth_context_scope(None):
             yield None
-        finally:
-            _current_auth_context.reset(token)
         return
 
     context = _resolve_auth_context(request, session)
-    token = _current_auth_context.set(context)
-    try:
+    with auth_context_scope(context):
         yield context
-    finally:
-        _current_auth_context.reset(token)
 
 
 def _resolve_auth_context(request: Request, session: Session) -> AuthContext:
-    auth_mode = getattr(request.app.state, "auth_mode", DEV_AUTH_MODE)
-    if auth_mode == DEV_AUTH_MODE:
+    authentication_policy = request.app.state.authentication_policy
+    accepted_credentials = authentication_policy.accepted_human_credentials
+
+    if "authorization" in request.headers:
+        if HumanCredentialType.WORKSPACE_API_TOKEN not in accepted_credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Workspace API token authentication is not allowed",
+            )
+        return _api_token_auth_context(request, session)
+
+    if _has_dev_auth_headers(request):
+        if HumanCredentialType.DEV_AUTH not in accepted_credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Dev Auth is not allowed",
+            )
         return _dev_auth_context(request)
-    if auth_mode == API_TOKEN_AUTH_MODE:
+
+    if (
+        HumanCredentialType.DEV_AUTH
+        in accepted_credentials
+    ):
+        return _dev_auth_context(request)
+    if (
+        HumanCredentialType.WORKSPACE_API_TOKEN
+        in accepted_credentials
+    ):
         return _api_token_auth_context(request, session)
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Unsupported authentication mode",
+        detail="Authentication policy cannot resolve human credentials",
+    )
+
+
+def _has_dev_auth_headers(request: Request) -> bool:
+    return any(
+        header_name.lower().startswith(DEV_AUTH_HEADER_PREFIX)
+        for header_name in request.headers
     )
 
 

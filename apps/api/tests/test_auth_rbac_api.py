@@ -1,10 +1,18 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from ai_company_api.db.session import build_engine, init_db
 from ai_company_api.main import create_app
+from ai_company_api.services.auth_policy import (
+    AUTHENTICATION_ENVIRONMENT_ENV,
+    AuthenticationEnvironment,
+    AuthenticationPolicy,
+    HumanCredentialType,
+    authentication_policy_for_environment,
+)
 from ai_company_api.models.entities import (
     CloudRun,
     CloudRunLogEntry,
@@ -25,9 +33,30 @@ from ai_company_api.models.entities import (
 from ai_company_api.services.auth_context import hash_api_token
 
 
-def build_client(database_path: Path | None = None, *, auth_mode: str = "dev") -> TestClient:
+DEV_AUTH_TEST_POLICY = AuthenticationPolicy(
+    environment=AuthenticationEnvironment.TEST,
+    accepted_human_credentials=frozenset({HumanCredentialType.DEV_AUTH}),
+)
+API_TOKEN_TEST_POLICY = AuthenticationPolicy(
+    environment=AuthenticationEnvironment.TEST,
+    accepted_human_credentials=frozenset(
+        {HumanCredentialType.WORKSPACE_API_TOKEN}
+    ),
+)
+
+
+def build_client(
+    database_path: Path | None = None,
+    *,
+    authentication_policy: AuthenticationPolicy = DEV_AUTH_TEST_POLICY,
+) -> TestClient:
     database_url = "sqlite://" if database_path is None else f"sqlite:///{database_path.as_posix()}"
-    return TestClient(create_app(database_url=database_url, auth_mode=auth_mode))
+    return TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=authentication_policy,
+        )
+    )
 
 
 def auth_headers(
@@ -43,6 +72,98 @@ def auth_headers(
         "x-ai-scdc-organization-id": organization_id,
         "x-ai-scdc-roles": roles,
     }
+
+
+def test_explicit_test_policy_preserves_dev_auth_http_behavior() -> None:
+    policy = AuthenticationPolicy(
+        environment=AuthenticationEnvironment.TEST,
+        accepted_human_credentials=frozenset({HumanCredentialType.DEV_AUTH}),
+    )
+
+    with TestClient(
+        create_app(database_url="sqlite://", authentication_policy=policy)
+    ) as client:
+        response = client.get(
+            "/me",
+            headers=auth_headers(
+                user_id="user_explicit",
+                workspace_id="workspace_explicit",
+                organization_id="account_explicit",
+                roles="developer,viewer",
+            ),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "user_id": "user_explicit",
+        "workspace_id": "workspace_explicit",
+        "organization_id": "account_explicit",
+        "roles": ["developer", "viewer"],
+        "auth_mode": "dev",
+    }
+
+
+def test_create_app_rejects_missing_authentication_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(AUTHENTICATION_ENVIRONMENT_ENV, raising=False)
+
+    with pytest.raises(
+        ValueError,
+        match="must explicitly select an authentication environment",
+    ):
+        create_app(database_url="sqlite://")
+
+
+def test_production_environment_policy_enables_only_workspace_api_tokens() -> None:
+    policy = authentication_policy_for_environment("production")
+
+    assert policy.environment == AuthenticationEnvironment.PRODUCTION
+    assert policy.accepted_human_credentials == frozenset(
+        {HumanCredentialType.WORKSPACE_API_TOKEN}
+    )
+
+
+def test_unknown_authentication_environment_is_rejected_before_startup() -> None:
+    with pytest.raises(ValueError, match="Unsupported authentication environment: qa"):
+        policy = AuthenticationPolicy(
+            environment="qa",
+            accepted_human_credentials=frozenset({HumanCredentialType.DEV_AUTH}),
+        )
+        create_app(database_url="sqlite://", authentication_policy=policy)
+
+
+def test_production_policy_rejects_dev_auth_before_startup() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Dev Auth is allowed only in local or test environments",
+    ):
+        policy = AuthenticationPolicy(
+            environment=AuthenticationEnvironment.PRODUCTION,
+            accepted_human_credentials=frozenset({HumanCredentialType.DEV_AUTH}),
+        )
+        create_app(database_url="sqlite://", authentication_policy=policy)
+
+
+def test_policy_without_human_credentials_is_rejected_before_startup() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Authentication policy must accept at least one human credential",
+    ):
+        policy = AuthenticationPolicy(
+            environment=AuthenticationEnvironment.TEST,
+            accepted_human_credentials=frozenset(),
+        )
+        create_app(database_url="sqlite://", authentication_policy=policy)
+
+
+def test_policy_rejects_unknown_human_credential_before_startup() -> None:
+    with pytest.raises(ValueError, match="Unsupported human credential: oidc"):
+        policy = AuthenticationPolicy(
+            environment=AuthenticationEnvironment.TEST,
+            accepted_human_credentials=frozenset({"oidc"}),
+        )
+        create_app(database_url="sqlite://", authentication_policy=policy)
 
 
 def test_me_uses_dev_auth_headers_instead_of_fixed_identity() -> None:
@@ -67,8 +188,11 @@ def test_me_uses_dev_auth_headers_instead_of_fixed_identity() -> None:
     }
 
 
-def test_api_token_auth_mode_rejects_missing_token(tmp_path: Path) -> None:
-    with build_client(tmp_path / "app.db", auth_mode="api_token") as client:
+def test_api_token_policy_rejects_missing_token(tmp_path: Path) -> None:
+    with build_client(
+        tmp_path / "app.db",
+        authentication_policy=API_TOKEN_TEST_POLICY,
+    ) as client:
         health = client.get("/health")
         response = client.get("/projects")
 
@@ -77,7 +201,21 @@ def test_api_token_auth_mode_rejects_missing_token(tmp_path: Path) -> None:
     assert response.json()["detail"] == "Bearer API token is required"
 
 
-def test_api_token_auth_mode_resolves_member_identity(tmp_path: Path) -> None:
+def test_api_token_policy_rejects_malformed_authorization(tmp_path: Path) -> None:
+    with build_client(
+        tmp_path / "app.db",
+        authentication_policy=API_TOKEN_TEST_POLICY,
+    ) as client:
+        response = client.get(
+            "/me",
+            headers={"Authorization": "Basic not-a-bearer-token"},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Bearer API token is required"
+
+
+def test_api_token_policy_resolves_member_identity(tmp_path: Path) -> None:
     database_path = tmp_path / "app.db"
     database_url = f"sqlite:///{database_path.as_posix()}"
     engine = build_engine(database_url)
@@ -104,7 +242,12 @@ def test_api_token_auth_mode_resolves_member_identity(tmp_path: Path) -> None:
         session.add(member)
         session.commit()
 
-    with TestClient(create_app(database_url=database_url, auth_mode="api_token")) as client:
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=API_TOKEN_TEST_POLICY,
+        )
+    ) as client:
         response = client.get("/me", headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
@@ -117,7 +260,109 @@ def test_api_token_auth_mode_resolves_member_identity(tmp_path: Path) -> None:
     }
 
 
-def test_api_token_auth_mode_rejects_inactive_workspace_scope(tmp_path: Path) -> None:
+def test_policy_prefers_presented_workspace_api_token_over_dev_auth(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "combined-policy.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    token = "scdc_combined_policy_token"
+    with Session(engine) as session:
+        user = User(
+            id="user_combined_policy",
+            email="combined@example.test",
+            display_name="Combined",
+        )
+        organization = Organization(
+            id="account_combined_policy",
+            name="Combined account",
+        )
+        workspace = Workspace(
+            id="workspace_combined_policy",
+            organization_id=organization.id,
+            name="Combined workspace",
+        )
+        member = OrganizationMember(
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            user_id=user.id,
+            role=WorkspaceRole.ADMIN,
+            api_token_hash=hash_api_token(token),
+        )
+        session.add(user)
+        session.add(organization)
+        session.add(workspace)
+        session.add(member)
+        session.commit()
+
+    policy = AuthenticationPolicy(
+        environment=AuthenticationEnvironment.TEST,
+        accepted_human_credentials=frozenset(
+            {
+                HumanCredentialType.DEV_AUTH,
+                HumanCredentialType.WORKSPACE_API_TOKEN,
+            }
+        ),
+    )
+    with TestClient(
+        create_app(database_url=database_url, authentication_policy=policy)
+    ) as client:
+        response = client.get(
+            "/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "user_id": "user_combined_policy",
+        "workspace_id": "workspace_combined_policy",
+        "organization_id": "account_combined_policy",
+        "roles": ["admin"],
+        "auth_mode": "api_token",
+    }
+
+
+def test_api_token_only_policy_rejects_dev_auth_headers(tmp_path: Path) -> None:
+    policy = AuthenticationPolicy(
+        environment=AuthenticationEnvironment.TEST,
+        accepted_human_credentials=frozenset(
+            {HumanCredentialType.WORKSPACE_API_TOKEN}
+        ),
+    )
+    with TestClient(
+        create_app(
+            database_url=f"sqlite:///{(tmp_path / 'app.db').as_posix()}",
+            authentication_policy=policy,
+        )
+    ) as client:
+        response = client.get("/me", headers=auth_headers())
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Dev Auth is not allowed"
+
+
+def test_dev_only_policy_rejects_authorization_credentials() -> None:
+    policy = AuthenticationPolicy(
+        environment=AuthenticationEnvironment.TEST,
+        accepted_human_credentials=frozenset({HumanCredentialType.DEV_AUTH}),
+    )
+    with TestClient(
+        create_app(database_url="sqlite://", authentication_policy=policy)
+    ) as client:
+        response = client.get(
+            "/me",
+            headers={"Authorization": "Bearer scdc_not_allowed"},
+        )
+
+    assert response.status_code == 401
+    assert (
+        response.json()["detail"]
+        == "Workspace API token authentication is not allowed"
+    )
+
+
+def test_api_token_policy_rejects_inactive_workspace_scope(tmp_path: Path) -> None:
     database_path = tmp_path / "app.db"
     database_url = f"sqlite:///{database_path.as_posix()}"
     engine = build_engine(database_url)
@@ -145,11 +390,74 @@ def test_api_token_auth_mode_rejects_inactive_workspace_scope(tmp_path: Path) ->
         session.add(member)
         session.commit()
 
-    with TestClient(create_app(database_url=database_url, auth_mode="api_token")) as client:
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=API_TOKEN_TEST_POLICY,
+        )
+    ) as client:
         response = client.get("/me", headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid API token"
+
+
+def test_api_token_policy_rejects_revoked_membership(tmp_path: Path) -> None:
+    database_path = tmp_path / "app.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    engine = build_engine(database_url)
+    init_db(engine)
+    token = "scdc_revoked_membership_token"
+    with Session(engine) as session:
+        user = User(id="user_revoked", email="revoked@example.test")
+        organization = Organization(id="org_revoked", name="Revoked org")
+        workspace = Workspace(
+            id="workspace_revoked",
+            organization_id=organization.id,
+            name="Revoked workspace",
+        )
+        member = OrganizationMember(
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            user_id=user.id,
+            role=WorkspaceRole.ADMIN,
+            api_token_hash=hash_api_token(token),
+            status="revoked",
+        )
+        session.add(user)
+        session.add(organization)
+        session.add(workspace)
+        session.add(member)
+        session.commit()
+
+    with TestClient(
+        create_app(
+            database_url=database_url,
+            authentication_policy=API_TOKEN_TEST_POLICY,
+        )
+    ) as client:
+        response = client.get(
+            "/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid API token"
+
+
+def test_worker_route_does_not_resolve_human_credentials_under_strict_policy(
+    tmp_path: Path,
+) -> None:
+    with build_client(
+        tmp_path / "app.db",
+        authentication_policy=API_TOKEN_TEST_POLICY,
+    ) as client:
+        response = client.post(
+            "/cloud-run-worker/process-next",
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 204
 
 
 def test_money_moving_workspace_endpoints_require_billing_role() -> None:

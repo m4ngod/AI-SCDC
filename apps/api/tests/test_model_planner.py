@@ -28,6 +28,8 @@ from ai_company_llm_gateway.models import (
     UsageRecord,
 )
 
+pytestmark = pytest.mark.usefixtures("explicit_dev_auth_context")
+
 
 class RecordingChatAdapter:
     def __init__(self, response: ChatProviderResponse) -> None:
