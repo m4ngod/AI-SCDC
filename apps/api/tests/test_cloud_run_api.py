@@ -2790,7 +2790,7 @@ def test_remote_worker_payload_rejects_hashless_current_lease(
 
     response = client.post(
         f"/cloud-run-worker/leases/{lease['lease_id']}/payload",
-        json={"worker_id": worker_id},
+        json={"worker_id": worker_id, "callback_token": "presented-token"},
     )
 
     assert response.status_code == 403

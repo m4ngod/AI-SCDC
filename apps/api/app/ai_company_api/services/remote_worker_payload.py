@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-from datetime import timezone
 import os
 
 from fastapi import HTTPException, status
-from sqlmodel import Session, select
+from sqlmodel import Session
 
-from ai_company_api.models.entities import CloudRun, SandboxProfile, Task, utc_now
+from ai_company_api.models.entities import SandboxProfile, Task
 from ai_company_api.schemas.api import (
     RemoteWorkerCommandPayload,
     RemoteWorkerPayloadRead,
     RemoteWorkerPayloadRequest,
 )
-from ai_company_api.services.cloud_runner import verify_cloud_run_callback_token_or_403
+from ai_company_api.services.cloud_runner import resolve_cloud_run_callback_lease
 from ai_company_api.services.github_repository import (
     get_active_github_credential,
     validate_github_repository_url,
@@ -28,20 +27,12 @@ def get_remote_worker_payload(
     lease_id: str,
     data: RemoteWorkerPayloadRequest,
 ) -> RemoteWorkerPayloadRead:
-    cloud_run = _get_current_worker_cloud_run_or_409(
+    cloud_run = resolve_cloud_run_callback_lease(
         session,
         lease_id=lease_id,
         worker_id=data.worker_id,
-    )
-    if cloud_run.callback_token_hash is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Worker callback token is not valid",
-        )
-    verify_cloud_run_callback_token_or_403(
-        cloud_run,
-        worker_id=data.worker_id,
         callback_token=data.callback_token,
+        require_callback_token=True,
     )
     task = session.get(Task, cloud_run.task_id)
     if task is None:
@@ -100,43 +91,6 @@ def get_remote_worker_payload(
         network_enabled=profile.network_enabled,
         clone_token=clone_token,
     )
-
-
-def _get_current_worker_cloud_run_or_409(
-    session: Session,
-    *,
-    lease_id: str,
-    worker_id: str,
-) -> CloudRun:
-    cloud_run = session.exec(
-        select(CloudRun).where(CloudRun.lease_id == lease_id)
-    ).first()
-    if cloud_run is None or cloud_run.worker_id != worker_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cloud run lease is not current",
-        )
-    if cloud_run.status != "running":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cloud run lease is not current",
-        )
-    if cloud_run.completed_at is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cloud run lease is not current",
-        )
-    lease_expires_at = cloud_run.lease_expires_at
-    if lease_expires_at is not None and lease_expires_at.tzinfo is None:
-        lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
-    if lease_expires_at is None or lease_expires_at < utc_now():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cloud run lease is not current",
-        )
-    return cloud_run
-
-
 def _select_profile_commands_for_cloud_run(
     profile: SandboxProfile,
     *,
