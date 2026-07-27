@@ -37,6 +37,7 @@ def get_login(
         allowed_return_destinations=request.app.state.allowed_login_return_destinations,
         public_origin=request.app.state.public_origin,
         transaction_ttl_seconds=request.app.state.login_transaction_ttl_seconds,
+        now=request.app.state.identity_clock(),
     )
 
 
@@ -58,6 +59,7 @@ def get_callback(
         personal_onboarding_failure_step=(
             request.app.state.personal_onboarding_failure_step
         ),
+        now=request.app.state.identity_clock(),
     )
 
 

@@ -30,12 +30,16 @@ from ai_company_api.services.customer_identity_provider import (
     ValidatedExternalIdentity,
 )
 from ai_company_api.services.identity_audit import record_identity_audit_event
+from ai_company_api.services.user_session_credentials import (
+    USER_SESSION_COOKIE,
+    USER_SESSION_IDLE_SECONDS,
+    UserSessionCredentialRejected,
+    resolve_user_session_credential,
+)
 
 
 LOGIN_BROWSER_COOKIE = "__Host-ai_scdc_login"
-USER_SESSION_COOKIE = "__Host-ai_scdc_session"
 LOGIN_TRANSACTION_TTL_SECONDS = 600
-USER_SESSION_IDLE_SECONDS = 30 * 24 * 60 * 60
 PERSONAL_ONBOARDING_FAILURE_STEPS = frozenset(
     {
         "user",
@@ -60,7 +64,9 @@ def start_login(
     allowed_return_destinations: frozenset[str],
     public_origin: str,
     transaction_ttl_seconds: int = LOGIN_TRANSACTION_TTL_SECONDS,
+    now: datetime | None = None,
 ) -> Response:
+    current_time = _as_utc(now) if now is not None else utc_now()
     correlation_id = secrets.token_hex(16)
     if return_to not in allowed_return_destinations:
         record_identity_audit_event(
@@ -152,7 +158,7 @@ def start_login(
         browser_binding_hash=_secret_hash(browser_secret),
         redirect_uri=redirect_uri,
         correlation_id=correlation_id,
-        expires_at=utc_now() + timedelta(seconds=transaction_ttl_seconds),
+        expires_at=current_time + timedelta(seconds=transaction_ttl_seconds),
     )
     session.add(transaction)
     session.commit()
@@ -180,7 +186,9 @@ def complete_login_callback(
     state_value: str,
     code: str,
     personal_onboarding_failure_step: str | None = None,
+    now: datetime | None = None,
 ) -> Response:
+    current_time = _as_utc(now) if now is not None else utc_now()
     transaction = session.exec(
         select(LoginTransaction).where(
             LoginTransaction.state_hash == _secret_hash(state_value)
@@ -194,10 +202,14 @@ def complete_login_callback(
             reason_code="state_not_found",
         )
     if transaction.status == "completed":
-        if _has_completed_session(request, session, transaction):
-            response = RedirectResponse(transaction.return_to, status_code=303)
-            response.headers["X-Correlation-ID"] = transaction.correlation_id
-            return response
+        completed_response = _completed_session_response(
+            request,
+            session,
+            transaction,
+            now=current_time,
+        )
+        if completed_response is not None:
+            return completed_response
         return _reject_callback(
             session,
             transaction=transaction,
@@ -221,7 +233,7 @@ def complete_login_callback(
             correlation_id=transaction.correlation_id,
             reason_code="transaction_not_pending",
         )
-    if _as_utc(transaction.expires_at) <= utc_now():
+    if _as_utc(transaction.expires_at) <= current_time:
         return _reject_callback(
             session,
             transaction=transaction,
@@ -241,16 +253,15 @@ def complete_login_callback(
         if (
             current_transaction is not None
             and current_transaction.status == "completed"
-            and _has_completed_session(request, session, current_transaction)
         ):
-            response = RedirectResponse(
-                current_transaction.return_to,
-                status_code=303,
+            completed_response = _completed_session_response(
+                request,
+                session,
+                current_transaction,
+                now=current_time,
             )
-            response.headers["X-Correlation-ID"] = (
-                current_transaction.correlation_id
-            )
-            return response
+            if completed_response is not None:
+                return completed_response
         if (
             current_transaction is not None
             and current_transaction.status == "completed"
@@ -441,12 +452,13 @@ def complete_login_callback(
         )
 
     session_secret = secrets.token_urlsafe(32)
-    now = utc_now()
+    now = current_time
     device_session = DeviceSession(
         user_id=user.id,
         active_workspace_id=workspace.id,
         active_organization_id=organization.id,
         secret_hash=_secret_hash(session_secret),
+        secret_rotated_at=now,
         idle_expires_at=now + timedelta(seconds=USER_SESSION_IDLE_SECONDS),
         last_seen_at=now,
     )
@@ -751,23 +763,50 @@ def _has_completed_session(
     request: Request,
     session: Session,
     transaction: LoginTransaction,
+    *,
+    now: datetime,
 ) -> bool:
     if transaction.completed_session_id is None:
         return False
     cookie_value = request.cookies.get(USER_SESSION_COOKIE, "")
-    session_id, separator, session_secret = cookie_value.partition(".")
-    if separator == "" or session_id != transaction.completed_session_id:
-        return False
-    device_session = session.get(DeviceSession, session_id)
-    return bool(
-        device_session is not None
-        and device_session.status == "active"
-        and _as_utc(device_session.idle_expires_at) > utc_now()
-        and secrets.compare_digest(
-            _secret_hash(session_secret),
-            device_session.secret_hash,
-        )
+    resolved_credential = resolve_user_session_credential(
+        session,
+        cookie_value=cookie_value,
+        now=now,
     )
+    return (
+        resolved_credential.device_session.id
+        == transaction.completed_session_id
+    )
+
+
+def _completed_session_response(
+    request: Request,
+    session: Session,
+    transaction: LoginTransaction,
+    *,
+    now: datetime,
+) -> Response | None:
+    try:
+        has_completed_session = _has_completed_session(
+            request,
+            session,
+            transaction,
+            now=now,
+        )
+    except UserSessionCredentialRejected as exc:
+        if exc.correlation_id is None:
+            return None
+        return _safe_failure_response(
+            error="login_callback_rejected",
+            correlation_id=exc.correlation_id,
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+    if not has_completed_session:
+        return None
+    response = RedirectResponse(transaction.return_to, status_code=303)
+    response.headers["X-Correlation-ID"] = transaction.correlation_id
+    return response
 
 
 def _claim_login_transaction(
