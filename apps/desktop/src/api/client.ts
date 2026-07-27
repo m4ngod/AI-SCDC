@@ -410,6 +410,29 @@ export type ConsoleIdentity = {
   };
 };
 
+export type WebConsoleAuthenticationState =
+  | "logged_out"
+  | "provider_unavailable"
+  | "account_link_required"
+  | "workspace_access_lost"
+  | "reauthentication_required";
+
+export class WebConsoleAuthenticationError extends Error {
+  readonly state: WebConsoleAuthenticationState;
+  readonly status: number;
+
+  constructor(
+    state: WebConsoleAuthenticationState,
+    status: number,
+    detail: string
+  ) {
+    super(detail);
+    this.name = "WebConsoleAuthenticationError";
+    this.state = state;
+    this.status = status;
+  }
+}
+
 export type ConsoleApiClient = {
   getCurrentIdentity?: () => Promise<ConsoleIdentity | null>;
   getLoginUrl?: (returnTo: string) => string;
@@ -570,6 +593,7 @@ type ApiPlannerRunDecision = {
 
 type HttpApiClientOptions = {
   baseUrl: string;
+  authBaseUrl?: string;
   projectId?: string;
 };
 
@@ -1288,15 +1312,55 @@ function apiUrl(baseUrl: string, path: string) {
   return `${baseUrl.replace(/\/+$/, "")}${path}`;
 }
 
+function defaultAuthBaseUrl(baseUrl: string) {
+  return baseUrl.replace(/\/api\/?$/, "");
+}
+
 async function readJsonResponse<T>(response: Response, context: string): Promise<T> {
   if (response.ok) {
     return (await response.json()) as T;
   }
 
   const detail = await readErrorDetail(response);
+  const authenticationState = webConsoleAuthenticationState(
+    response.status,
+    detail
+  );
+  if (authenticationState) {
+    throw new WebConsoleAuthenticationError(
+      authenticationState,
+      response.status,
+      detail
+    );
+  }
   throw new Error(
     `${context} failed with ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`
   );
+}
+
+function webConsoleAuthenticationState(
+  status: number,
+  detail: string
+): WebConsoleAuthenticationState | undefined {
+  if (
+    detail === "identity_provider_unavailable" ||
+    detail === "provider_unavailable"
+  ) {
+    return "provider_unavailable";
+  }
+  if (detail === "account_link_required") {
+    return "account_link_required";
+  }
+  if (detail === "workspace_access_lost") {
+    return "workspace_access_lost";
+  }
+  if (detail === "reauthentication_required") {
+    return "reauthentication_required";
+  }
+  if (status === 401) {
+    return "logged_out";
+  }
+  return undefined;
 }
 
 async function readErrorDetail(response: Response) {
@@ -1614,6 +1678,10 @@ function mapPullRequestResult(result: ApiPullRequestResult): PullRequestResult {
 
 export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiClient {
   let resolvedProjectId = options.projectId;
+  const authBaseUrl =
+    options.authBaseUrl ?? defaultAuthBaseUrl(options.baseUrl);
+  const browserFetch = globalThis.fetch.bind(globalThis);
+  const unsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
   const workflowStatuses = new Set([
     "PATCH_READY",
     "SELF_TESTING",
@@ -1624,6 +1692,33 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
     "HUMAN_APPROVAL",
     "PR_CREATED"
   ]);
+
+  async function fetch(input: RequestInfo | URL, init: RequestInit = {}) {
+    const method = (init.method ?? "GET").toUpperCase();
+    let requestInit: RequestInit = {
+      ...init,
+      credentials: "include"
+    };
+    if (unsafeMethods.has(method)) {
+      const csrfResponse = await browserFetch(
+        apiUrl(authBaseUrl, "/auth/csrf"),
+        {
+          credentials: "include"
+        }
+      );
+      const csrf = await readJsonResponse<{
+        csrf_token: string;
+        expires_at: string;
+      }>(csrfResponse, "GET /auth/csrf");
+      const headers = new Headers(init.headers);
+      headers.set("X-CSRF-Token", csrf.csrf_token);
+      requestInit = {
+        ...requestInit,
+        headers
+      };
+    }
+    return browserFetch(input, requestInit);
+  }
 
   async function getProjectId() {
     if (resolvedProjectId) {
@@ -1753,7 +1848,7 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
     },
     getLoginUrl(returnTo: string) {
       return apiUrl(
-        options.baseUrl,
+        authBaseUrl,
         `/auth/login?return_to=${encodeURIComponent(returnTo)}`
       );
     },

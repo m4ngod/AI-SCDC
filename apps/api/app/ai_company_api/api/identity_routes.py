@@ -12,6 +12,7 @@ from ai_company_api.services.auth_context import (
     AuthContext,
     get_auth_context_dependency,
 )
+from ai_company_api.services.browser_request_protection import issue_csrf_token
 from ai_company_api.services.identity_login import (
     complete_login_callback,
     reject_malformed_login_callback,
@@ -61,6 +62,22 @@ def get_callback(
         ),
         now=request.app.state.identity_clock(),
     )
+
+
+@router.get("/csrf")
+def get_csrf_token(
+    request: Request,
+    session: SessionDep,
+    _auth: AuthDep,
+) -> dict[str, str]:
+    csrf_token, expires_at = issue_csrf_token(
+        request,
+        now=request.app.state.identity_clock(),
+    )
+    return {
+        "csrf_token": csrf_token,
+        "expires_at": expires_at.isoformat(),
+    }
 
 
 @router.get("/test/audit-events")
