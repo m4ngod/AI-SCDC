@@ -11,6 +11,7 @@ from ai_company_api.models.entities import (
     IdentityAuditEvent,
     Organization,
     OrganizationMember,
+    SecretAccessAuditLog,
     Workspace,
 )
 from ai_company_api.schemas.api import (
@@ -31,7 +32,9 @@ from ai_company_api.services.browser_request_protection import issue_csrf_token
 from ai_company_api.services.identity_login import (
     complete_login_callback,
     reject_malformed_login_callback,
+    reject_provider_callback,
     start_login,
+    start_recent_authentication,
 )
 from ai_company_api.services.identity_logout import sign_out_current_device
 from ai_company_api.services.identity_audit import record_identity_audit_event
@@ -68,13 +71,55 @@ def get_login(
     )
 
 
+@router.get("/reauthenticate")
+def get_recent_authentication(
+    request: Request,
+    session: SessionDep,
+    _auth: SelectionAuthDep,
+    return_to: str = Query(...),
+) -> Response:
+    device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if not isinstance(device_session, DeviceSession):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="recent_authentication_requires_user_session",
+        )
+    return start_recent_authentication(
+        session,
+        provider=request.app.state.customer_identity_provider,
+        device_session=device_session,
+        return_to=return_to,
+        allowed_return_destinations=(
+            request.app.state.allowed_recent_authentication_return_destinations
+        ),
+        public_origin=request.app.state.public_origin,
+        transaction_ttl_seconds=request.app.state.login_transaction_ttl_seconds,
+        now=request.app.state.identity_clock(),
+    )
+
+
 @router.get("/callback")
 def get_callback(
     request: Request,
     session: SessionDep,
     state: str | None = Query(default=None),
     code: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    error_description: str | None = Query(default=None),
 ) -> Response:
+    del error_description
+    if state and error:
+        return reject_provider_callback(
+            session,
+            request=request,
+            state_value=state,
+            provider_error=error,
+            now=request.app.state.identity_clock(),
+        )
     if not state or not code:
         return reject_malformed_login_callback(session)
     return complete_login_callback(
@@ -382,6 +427,34 @@ def get_identity_audit_events(
             item["operator_reason"] = event.operator_reason
         response.append(item)
     return response
+
+
+@router.get("/test/secret-access-audit-events")
+def get_secret_access_audit_events(
+    request: Request,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> list[dict[str, str | bool]]:
+    if not request.app.state.secret_access_audit_observer_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    events = session.exec(
+        select(SecretAccessAuditLog)
+        .where(SecretAccessAuditLog.workspace_id == auth.workspace_id)
+        .order_by(
+            SecretAccessAuditLog.created_at,
+            SecretAccessAuditLog.id,
+        )
+    ).all()
+    return [
+        {
+            "secret_kind": event.secret_kind,
+            "secret_id": event.secret_id,
+            "operation": event.operation,
+            "access_reason": event.access_reason,
+            "success": event.success,
+        }
+        for event in events
+    ]
 
 
 @router.post(

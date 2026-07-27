@@ -7,11 +7,13 @@ from ai_company_api.models.entities import (
     GitHubCredential,
     GitHubCredentialStatus,
     Repository,
+    prefixed_id,
     utc_now,
 )
 from ai_company_api.schemas.api import (
     GitHubCredentialCreate,
     GitHubCredentialRead,
+    GitHubCredentialReplace,
     GitHubRepositoryCreate,
     RepositoryRead,
 )
@@ -21,7 +23,10 @@ from ai_company_api.services.auth_context import (
     get_current_auth_context,
 )
 from ai_company_api.services.repository import _repository_read, get_project
-from ai_company_api.services.secret_access_audit import record_secret_access
+from ai_company_api.services.secret_access_audit import (
+    fail_closed_secret_operation,
+    record_secret_access,
+)
 from ai_company_api.services.secret_vault import SecretVault, get_secret_vault
 from ai_company_api.services.workspace_audit import (
     record_workspace_audit,
@@ -64,9 +69,24 @@ def create_github_credential(
     vault: SecretVault | None = None,
     commit: bool = True,
 ) -> GitHubCredentialRead:
-    sealed = (vault or get_secret_vault()).seal(data.token.get_secret_value())
+    credential_id = prefixed_id("github_credential")
+    workspace_id = current_workspace_id()
+    try:
+        sealed = (vault or get_secret_vault()).seal(
+            data.token.get_secret_value()
+        )
+    except Exception:
+        fail_closed_secret_operation(
+            session,
+            secret_kind="github_credential",
+            secret_id=credential_id,
+            operation="create",
+            access_reason="github_credential_create",
+            workspace_id=workspace_id,
+        )
     credential = GitHubCredential(
-        workspace_id=current_workspace_id(),
+        id=credential_id,
+        workspace_id=workspace_id,
         display_name=data.display_name,
         token_last4=sealed.secret_last4,
         encrypted_token=sealed.encrypted_secret,
@@ -122,7 +142,17 @@ def delete_github_credential(
         access_level="high_value_write",
     )
 
-    get_secret_vault().delete(credential.encrypted_token)
+    try:
+        get_secret_vault().delete(credential.encrypted_token)
+    except Exception:
+        fail_closed_secret_operation(
+            session,
+            secret_kind="github_credential",
+            secret_id=credential.id,
+            operation="delete",
+            access_reason="github_credential_delete",
+            workspace_id=credential.workspace_id,
+        )
     credential.status = GitHubCredentialStatus.DELETED
     credential.updated_at = utc_now()
     session.add(credential)
@@ -132,6 +162,59 @@ def delete_github_credential(
         secret_id=credential.id,
         operation="delete",
         access_reason="github_credential_delete",
+        workspace_id=credential.workspace_id,
+    )
+    if commit:
+        session.commit()
+        session.refresh(credential)
+    else:
+        session.flush()
+        session.refresh(credential)
+    return _github_credential_read(credential)
+
+
+def replace_github_credential(
+    session: Session,
+    credential_id: str,
+    data: GitHubCredentialReplace,
+    vault: SecretVault | None = None,
+    *,
+    commit: bool = True,
+) -> GitHubCredentialRead:
+    credential = get_active_github_credential(session, credential_id)
+    require_audited_workspace_permission(
+        session,
+        "credential.write",
+        operation="github_credential.replace",
+        resource_type="github_credential",
+        resource_id=credential.id,
+        access_level="high_value_write",
+    )
+    try:
+        sealed = (vault or get_secret_vault()).rotate(
+            credential.encrypted_token,
+            data.token.get_secret_value(),
+        )
+    except Exception:
+        fail_closed_secret_operation(
+            session,
+            secret_kind="github_credential",
+            secret_id=credential.id,
+            operation="rotate",
+            access_reason="github_credential_replace",
+            workspace_id=credential.workspace_id,
+        )
+    credential.display_name = data.display_name
+    credential.token_last4 = sealed.secret_last4
+    credential.encrypted_token = sealed.encrypted_secret
+    credential.updated_at = utc_now()
+    session.add(credential)
+    record_secret_access(
+        session,
+        secret_kind="github_credential",
+        secret_id=credential.id,
+        operation="rotate",
+        access_reason="github_credential_replace",
         workspace_id=credential.workspace_id,
     )
     if commit:

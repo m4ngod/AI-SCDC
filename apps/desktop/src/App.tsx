@@ -69,6 +69,13 @@ function isWorkspaceAccessLost(error: unknown) {
   );
 }
 
+function requiresRecentAuthentication(error: unknown) {
+  return (
+    error instanceof WebConsoleAuthenticationError &&
+    error.state === "reauthentication_required"
+  );
+}
+
 function mergeWorkflowTask(currentTask: TaskCard, resultTask: TaskCard): TaskCard {
   return {
     ...currentTask,
@@ -83,6 +90,19 @@ function mergeWorkflowTask(currentTask: TaskCard, resultTask: TaskCard): TaskCar
 }
 
 export function App({ apiClient = defaultApiClient }: AppProps) {
+  const recentAuthenticationResult = new URLSearchParams(
+    globalThis.location?.search ?? ""
+  ).get("reauthentication");
+  const isCredentialConfirmation =
+    recentAuthenticationResult === "confirmed";
+  const recentAuthenticationRecoveryMessage =
+    recentAuthenticationResult === "cancelled"
+      ? "Email verification was cancelled. No credential was changed."
+      : recentAuthenticationResult === "provider_unavailable"
+        ? "Email verification is temporarily unavailable. No credential was changed."
+        : recentAuthenticationResult === "failed"
+          ? "Email verification could not be completed. No credential was changed."
+          : null;
   const [identityState, setIdentityState] = useState<
     "checking" | "authenticated" | "signed_out" | "error"
   >(apiClient.getCurrentIdentity ? "checking" : "authenticated");
@@ -467,6 +487,25 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       setGithubSetupInput((currentInput) => ({ ...currentInput, token: "" }));
     } catch (error) {
       if (await enterSafeWorkspaceSelection(error)) {
+        return;
+      }
+      if (requiresRecentAuthentication(error)) {
+        setGithubSetupInput((currentInput) => ({
+          ...currentInput,
+          token: ""
+        }));
+        const recentAuthenticationUrl =
+          apiClient.getRecentAuthenticationUrl?.(
+            "/reauthentication/confirm"
+          ) ??
+          "/auth/reauthenticate?return_to=%2Freauthentication%2Fconfirm";
+        try {
+          globalThis.location.assign(recentAuthenticationUrl);
+        } catch {
+          setGithubSetupError(
+            "Email verification is required before changing credentials"
+          );
+        }
         return;
       }
       if (createdRepositoryId) {
@@ -1105,7 +1144,32 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
       ) : null}
       {deviceSessionsPanel}
       <section className="context-section">
-        <h2>GitHub setup</h2>
+        <h2>
+          {isCredentialConfirmation
+            ? "Confirm credential change"
+            : "GitHub setup"}
+        </h2>
+        {isCredentialConfirmation ? (
+          <p>
+            Your email was verified. Review the details and submit the
+            credential change again.
+          </p>
+        ) : null}
+        {recentAuthenticationRecoveryMessage ? (
+          <div role="alert">
+            <p>{recentAuthenticationRecoveryMessage}</p>
+            <a
+              href={
+                apiClient.getRecentAuthenticationUrl?.(
+                  "/reauthentication/confirm"
+                ) ??
+                "/auth/reauthenticate?return_to=%2Freauthentication%2Fconfirm"
+              }
+            >
+              Try email verification again
+            </a>
+          </div>
+        ) : null}
         <form className="github-setup-form" onSubmit={handleSubmitGitHubSetup}>
           <label>
             <span>GitHub token</span>
@@ -1175,7 +1239,11 @@ export function App({ apiClient = defaultApiClient }: AppProps) {
             />
           </label>
           <button type="submit" disabled={isConnectingGitHubRepo}>
-            {isConnectingGitHubRepo ? "Connecting GitHub repo" : "Connect GitHub repo"}
+            {isConnectingGitHubRepo
+              ? "Connecting GitHub repo"
+              : isCredentialConfirmation
+                ? "Confirm and connect GitHub repo"
+                : "Connect GitHub repo"}
           </button>
           {githubSetupStatus ? <p>{githubSetupStatus}</p> : null}
           {sandboxProfileStatus ? <p>{sandboxProfileStatus}</p> : null}

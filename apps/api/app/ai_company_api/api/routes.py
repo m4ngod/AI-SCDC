@@ -32,6 +32,7 @@ from ai_company_api.schemas.api import (
     DebugAttemptRead,
     GitHubCredentialCreate,
     GitHubCredentialRead,
+    GitHubCredentialReplace,
     GitHubRepositoryCreate,
     LocalRunCreate,
     LocalTaskRunRead,
@@ -40,6 +41,7 @@ from ai_company_api.schemas.api import (
     MessageCreate,
     ModelCredentialCreate,
     ModelCredentialRead,
+    ModelCredentialReplace,
     ModelProviderCreate,
     ModelProviderRead,
     ModelRouteCreate,
@@ -110,6 +112,7 @@ from ai_company_api.services.github_repository import (
     create_github_repository,
     delete_github_credential,
     list_github_credentials,
+    replace_github_credential,
 )
 from ai_company_api.services.github_pull_request import (
     create_pull_request_for_approval,
@@ -145,6 +148,7 @@ from ai_company_api.services.model_settings import (
     list_model_credentials,
     list_model_providers,
     list_model_routes,
+    replace_model_credential,
     resolve_model_route,
     update_model_route,
 )
@@ -170,6 +174,9 @@ from ai_company_api.services.repository import (
     transition_task,
 )
 from ai_company_api.services.remote_worker_payload import get_remote_worker_payload
+from ai_company_api.services.recent_authentication import (
+    require_recent_authentication,
+)
 from ai_company_api.services.sandbox_profiles import (
     create_sandbox_profile,
     get_sandbox_profile_read,
@@ -287,6 +294,7 @@ def get_github_credentials(session: SessionDep) -> list[GitHubCredentialRead]:
     response_model=GitHubCredentialRead,
 )
 def post_github_credential(
+    request: Request,
     data: GitHubCredentialCreate,
     session: SessionDep,
 ) -> GitHubCredentialRead:
@@ -297,6 +305,7 @@ def post_github_credential(
         resource_type="github_credential",
         access_level="high_value_write",
     )
+    require_recent_authentication(request, session)
     result = create_github_credential(session, data, commit=False)
     record_workspace_audit(
         session,
@@ -317,12 +326,44 @@ def post_github_credential(
 )
 def delete_github_credential_by_id(
     credential_id: str,
+    request: Request,
     session: SessionDep,
 ) -> GitHubCredentialRead:
+    require_recent_authentication(request, session)
     result = delete_github_credential(session, credential_id, commit=False)
     record_workspace_audit(
         session,
         operation="github_credential.delete",
+        resource_type="github_credential",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        commit=True,
+    )
+    return result
+
+
+@router.put(
+    "/github-credentials/{credential_id}",
+    response_model=GitHubCredentialRead,
+)
+def put_github_credential_by_id(
+    credential_id: str,
+    request: Request,
+    data: GitHubCredentialReplace,
+    session: SessionDep,
+) -> GitHubCredentialRead:
+    require_recent_authentication(request, session)
+    result = replace_github_credential(
+        session,
+        credential_id,
+        data,
+        commit=False,
+    )
+    record_workspace_audit(
+        session,
+        operation="github_credential.replace",
         resource_type="github_credential",
         resource_id=result.id,
         access_level="high_value_write",
@@ -541,6 +582,7 @@ def get_model_credentials(session: SessionDep) -> list[ModelCredentialRead]:
     response_model=ModelCredentialRead,
 )
 def post_model_credential(
+    request: Request,
     data: ModelCredentialCreate,
     session: SessionDep,
 ) -> ModelCredentialRead:
@@ -551,6 +593,7 @@ def post_model_credential(
         resource_type="model_credential",
         access_level="high_value_write",
     )
+    require_recent_authentication(request, session)
     result = create_model_credential(session, data, commit=False)
     record_workspace_audit(
         session,
@@ -571,12 +614,44 @@ def post_model_credential(
 )
 def delete_model_credential_by_id(
     credential_id: str,
+    request: Request,
     session: SessionDep,
 ) -> ModelCredentialRead:
+    require_recent_authentication(request, session)
     result = delete_model_credential(session, credential_id, commit=False)
     record_workspace_audit(
         session,
         operation="model_credential.delete",
+        resource_type="model_credential",
+        resource_id=result.id,
+        access_level="high_value_write",
+        success=True,
+        status_code=status.HTTP_200_OK,
+        commit=True,
+    )
+    return result
+
+
+@router.put(
+    "/model-credentials/{credential_id}",
+    response_model=ModelCredentialRead,
+)
+def put_model_credential_by_id(
+    credential_id: str,
+    request: Request,
+    data: ModelCredentialReplace,
+    session: SessionDep,
+) -> ModelCredentialRead:
+    require_recent_authentication(request, session)
+    result = replace_model_credential(
+        session,
+        credential_id,
+        data,
+        commit=False,
+    )
+    record_workspace_audit(
+        session,
+        operation="model_credential.replace",
         resource_type="model_credential",
         resource_id=result.id,
         access_level="high_value_write",

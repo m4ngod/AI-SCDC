@@ -10,12 +10,14 @@ from ai_company_api.models.entities import (
     ModelProviderType,
     ModelRoute,
     ModelRouteStatus,
+    prefixed_id,
     utc_now,
 )
 from ai_company_api.schemas.api import (
     AgentRole,
     ModelCredentialCreate,
     ModelCredentialRead,
+    ModelCredentialReplace,
     ModelProviderCreate,
     ModelProviderRead,
     ModelRouteCreate,
@@ -28,7 +30,10 @@ from ai_company_api.services.auth_context import (
     enforce_workspace_access,
     get_current_auth_context,
 )
-from ai_company_api.services.secret_access_audit import record_secret_access
+from ai_company_api.services.secret_access_audit import (
+    fail_closed_secret_operation,
+    record_secret_access,
+)
 from ai_company_api.services.secret_vault import SecretVault, get_secret_vault
 from ai_company_api.services.workspace_audit import require_audited_workspace_permission
 
@@ -239,8 +244,22 @@ def create_model_credential(
     if _enum_value(provider.status) != ModelProviderStatus.ACTIVE.value:
         raise HTTPException(status_code=400, detail="Model provider is disabled")
 
-    sealed = (vault or get_secret_vault()).seal(data.secret_value.get_secret_value())
+    credential_id = prefixed_id("model_credential")
+    try:
+        sealed = (vault or get_secret_vault()).seal(
+            data.secret_value.get_secret_value()
+        )
+    except Exception:
+        fail_closed_secret_operation(
+            session,
+            secret_kind="model_credential",
+            secret_id=credential_id,
+            operation="create",
+            access_reason="model_credential_create",
+            workspace_id=provider.workspace_id,
+        )
     credential = ModelCredential(
+        id=credential_id,
         workspace_id=provider.workspace_id,
         provider_id=provider.id,
         display_name=data.display_name,
@@ -280,7 +299,17 @@ def delete_model_credential(
         resource_id=credential.id,
         access_level="high_value_write",
     )
-    get_secret_vault().delete(credential.encrypted_secret)
+    try:
+        get_secret_vault().delete(credential.encrypted_secret)
+    except Exception:
+        fail_closed_secret_operation(
+            session,
+            secret_kind="model_credential",
+            secret_id=credential.id,
+            operation="delete",
+            access_reason="model_credential_delete",
+            workspace_id=credential.workspace_id,
+        )
     credential.status = ModelCredentialStatus.DELETED
     credential.updated_at = utc_now()
     session.add(credential)
@@ -290,6 +319,59 @@ def delete_model_credential(
         secret_id=credential.id,
         operation="delete",
         access_reason="model_credential_delete",
+        workspace_id=credential.workspace_id,
+    )
+    if commit:
+        session.commit()
+        session.refresh(credential)
+    else:
+        session.flush()
+        session.refresh(credential)
+    return _credential_read(credential)
+
+
+def replace_model_credential(
+    session: Session,
+    credential_id: str,
+    data: ModelCredentialReplace,
+    vault: SecretVault | None = None,
+    *,
+    commit: bool = True,
+) -> ModelCredentialRead:
+    credential = get_model_credential(session, credential_id)
+    require_audited_workspace_permission(
+        session,
+        "credential.write",
+        operation="model_credential.replace",
+        resource_type="model_credential",
+        resource_id=credential.id,
+        access_level="high_value_write",
+    )
+    try:
+        sealed = (vault or get_secret_vault()).rotate(
+            credential.encrypted_secret,
+            data.secret_value.get_secret_value(),
+        )
+    except Exception:
+        fail_closed_secret_operation(
+            session,
+            secret_kind="model_credential",
+            secret_id=credential.id,
+            operation="rotate",
+            access_reason="model_credential_replace",
+            workspace_id=credential.workspace_id,
+        )
+    credential.display_name = data.display_name
+    credential.secret_last4 = sealed.secret_last4
+    credential.encrypted_secret = sealed.encrypted_secret
+    credential.updated_at = utc_now()
+    session.add(credential)
+    record_secret_access(
+        session,
+        secret_kind="model_credential",
+        secret_id=credential.id,
+        operation="rotate",
+        access_reason="model_credential_replace",
         workspace_id=credential.workspace_id,
     )
     if commit:

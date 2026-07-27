@@ -167,8 +167,12 @@ def create_app(
     authentication_policy: AuthenticationPolicy | None = None,
     customer_identity_provider: CustomerIdentityProvider | None = None,
     allowed_login_return_destinations: frozenset[str] = frozenset({"/"}),
+    allowed_recent_authentication_return_destinations: frozenset[str] = (
+        frozenset({"/reauthentication/confirm"})
+    ),
     public_origin: str = "https://localhost",
     identity_audit_observer_enabled: bool = False,
+    secret_access_audit_observer_enabled: bool = False,
     login_transaction_ttl_seconds: int = 600,
     personal_onboarding_failure_step: str | None = None,
     identity_operator_user_ids: frozenset[str] = frozenset(),
@@ -197,6 +201,14 @@ def create_app(
     ):
         raise ValueError(
             "Identity Audit observer is allowed only in the test environment"
+        )
+    if (
+        secret_access_audit_observer_enabled
+        and resolved_authentication_policy.environment
+        != AuthenticationEnvironment.TEST
+    ):
+        raise ValueError(
+            "Secret Access Audit observer is allowed only in the test environment"
         )
     if personal_onboarding_failure_step is not None:
         if (
@@ -238,8 +250,14 @@ def create_app(
     app.state.authentication_policy = resolved_authentication_policy
     app.state.customer_identity_provider = customer_identity_provider
     app.state.allowed_login_return_destinations = allowed_login_return_destinations
+    app.state.allowed_recent_authentication_return_destinations = (
+        allowed_recent_authentication_return_destinations
+    )
     app.state.public_origin = public_origin.rstrip("/")
     app.state.identity_audit_observer_enabled = identity_audit_observer_enabled
+    app.state.secret_access_audit_observer_enabled = (
+        secret_access_audit_observer_enabled
+    )
     app.state.login_transaction_ttl_seconds = login_transaction_ttl_seconds
     app.state.personal_onboarding_failure_step = (
         personal_onboarding_failure_step

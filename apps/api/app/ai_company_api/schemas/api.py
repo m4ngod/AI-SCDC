@@ -111,6 +111,11 @@ class GitHubCredentialCreate(BaseModel):
     token: SecretStr = Field(min_length=5)
 
 
+class GitHubCredentialReplace(BaseModel):
+    display_name: str = Field(min_length=1)
+    token: SecretStr = Field(min_length=5)
+
+
 class GitHubCredentialRead(BaseModel):
     id: str
     workspace_id: str
@@ -734,6 +739,11 @@ class ModelProviderRead(BaseModel):
 
 class ModelCredentialCreate(BaseModel):
     provider_id: str
+    display_name: str = Field(min_length=1)
+    secret_value: SecretStr = Field(min_length=5)
+
+
+class ModelCredentialReplace(BaseModel):
     display_name: str = Field(min_length=1)
     secret_value: SecretStr = Field(min_length=5)
 

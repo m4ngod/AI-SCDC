@@ -461,6 +461,7 @@ export type ConsoleApiClient = {
   getCurrentIdentity?: () => Promise<ConsoleIdentity | null>;
   selectWorkspace?: (workspaceId: string) => Promise<void>;
   getLoginUrl?: (returnTo: string) => string;
+  getRecentAuthenticationUrl?: (returnTo: string) => string;
   signOut: () => Promise<SignOutResult>;
   listDeviceSessions: () => Promise<DeviceSessionCard[]>;
   revokeDeviceSession: (deviceSessionId: string) => Promise<void>;
@@ -889,6 +890,9 @@ function fakeTaskFromPatchArtifact(patchArtifactId: string) {
 }
 
 export const fakeApiClient: ConsoleApiClient = {
+  getRecentAuthenticationUrl(returnTo: string) {
+    return `/auth/reauthenticate?return_to=${encodeURIComponent(returnTo)}`;
+  },
   async signOut() {
     return { redirect_to: null };
   },
@@ -1949,6 +1953,12 @@ export function createHttpApiClient(options: HttpApiClientOptions): ConsoleApiCl
       return apiUrl(
         authBaseUrl,
         `/auth/login?return_to=${encodeURIComponent(returnTo)}`
+      );
+    },
+    getRecentAuthenticationUrl(returnTo: string) {
+      return apiUrl(
+        authBaseUrl,
+        `/auth/reauthenticate?return_to=${encodeURIComponent(returnTo)}`
       );
     },
     async listTasks() {

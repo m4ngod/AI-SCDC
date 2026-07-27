@@ -1,3 +1,6 @@
+from typing import NoReturn
+
+from fastapi import HTTPException, status
 from sqlmodel import Session
 
 from ai_company_api.models.entities import SecretAccessAuditLog, Workspace
@@ -93,6 +96,32 @@ def open_secret(
         commit=commit_audit,
     )
     return secret
+
+
+def fail_closed_secret_operation(
+    session: Session,
+    *,
+    secret_kind: str,
+    secret_id: str,
+    operation: str,
+    access_reason: str,
+    workspace_id: str,
+) -> NoReturn:
+    session.rollback()
+    record_secret_access(
+        session,
+        secret_kind=secret_kind,
+        secret_id=secret_id,
+        operation=operation,
+        access_reason=access_reason,
+        workspace_id=workspace_id,
+        success=False,
+        commit=True,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="secret_vault_unavailable",
+    )
 
 
 def _resolved_organization_id(
