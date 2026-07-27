@@ -3,15 +3,23 @@ import type { ReactNode } from "react";
 type ShellProps = {
   children: ReactNode;
   contextPanel: ReactNode;
+  accountName?: string;
+  workspaceName?: string;
 };
 
-export function Shell({ children, contextPanel }: ShellProps) {
+export function Shell({
+  children,
+  contextPanel,
+  accountName,
+  workspaceName
+}: ShellProps) {
   return (
     <div className="console-shell">
       <header className="topbar" role="banner">
         <div className="brand">AI Company</div>
         <div className="topbar-meta" aria-label="Workspace metadata">
-          <span>Demo Workspace</span>
+          {accountName ? <span>{accountName}</span> : null}
+          <span>{workspaceName ?? "Demo Workspace"}</span>
           <span>Demo Project</span>
           <span>main</span>
           <span>Local Runner: Mock</span>

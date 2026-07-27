@@ -47,6 +47,9 @@ def get_callback(
         request=request,
         state_value=state,
         code=code,
+        personal_onboarding_failure_step=(
+            request.app.state.personal_onboarding_failure_step
+        ),
     )
 
 

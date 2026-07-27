@@ -100,6 +100,15 @@ def test_explicit_test_policy_preserves_dev_auth_http_behavior() -> None:
         "organization_id": "account_explicit",
         "roles": ["developer", "viewer"],
         "auth_mode": "dev",
+        "current_account": {
+            "id": "account_explicit",
+            "name": "account_explicit",
+            "kind": "legacy",
+        },
+        "current_workspace": {
+            "id": "workspace_explicit",
+            "name": "workspace_explicit",
+        },
     }
 
 
@@ -188,6 +197,15 @@ def test_me_uses_dev_auth_headers_instead_of_fixed_identity() -> None:
         "organization_id": "org_custom",
         "roles": ["developer", "viewer"],
         "auth_mode": "dev",
+        "current_account": {
+            "id": "org_custom",
+            "name": "org_custom",
+            "kind": "legacy",
+        },
+        "current_workspace": {
+            "id": "workspace_custom",
+            "name": "workspace_custom",
+        },
     }
 
 
@@ -260,6 +278,15 @@ def test_api_token_policy_resolves_member_identity(tmp_path: Path) -> None:
         "organization_id": "org_token",
         "roles": ["admin"],
         "auth_mode": "api_token",
+        "current_account": {
+            "id": "org_token",
+            "name": "Token org",
+            "kind": "legacy",
+        },
+        "current_workspace": {
+            "id": "workspace_token",
+            "name": "Token workspace",
+        },
     }
 
 
@@ -323,6 +350,15 @@ def test_policy_prefers_presented_workspace_api_token_over_dev_auth(
         "organization_id": "account_combined_policy",
         "roles": ["admin"],
         "auth_mode": "api_token",
+        "current_account": {
+            "id": "account_combined_policy",
+            "name": "Combined account",
+            "kind": "legacy",
+        },
+        "current_workspace": {
+            "id": "workspace_combined_policy",
+            "name": "Combined workspace",
+        },
     }
 
 

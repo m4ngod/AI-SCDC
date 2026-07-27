@@ -684,6 +684,40 @@ describe("App", () => {
     expect(apiClient.listTasks).not.toHaveBeenCalled();
   });
 
+  it("shows the signed-in Personal Account and default Workspace", async () => {
+    const apiClient = createMockApiClient({
+      getCurrentIdentity: vi.fn().mockResolvedValue({
+        user_id: "user_personal",
+        workspace_id: "workspace_personal",
+        organization_id: "account_personal",
+        roles: ["owner"],
+        auth_mode: "user_session",
+        current_account: {
+          id: "account_personal",
+          name: "Personal Account",
+          kind: "personal"
+        },
+        current_workspace: {
+          id: "workspace_personal",
+          name: "Default Workspace"
+        }
+      })
+    });
+
+    render(<App apiClient={apiClient} />);
+
+    const accountContext = await screen.findByRole("region", {
+      name: "Account context"
+    });
+    expect(within(accountContext).getByText("Personal Account")).toBeInTheDocument();
+    expect(within(accountContext).getByText("Default Workspace")).toBeInTheDocument();
+    expect(within(accountContext).queryByText("Organization")).not.toBeInTheDocument();
+    const topbar = screen.getByRole("banner");
+    expect(topbar).toHaveTextContent("Personal Account");
+    expect(topbar).toHaveTextContent("Default Workspace");
+    expect(topbar).not.toHaveTextContent("Demo Workspace");
+  });
+
   it("shows initial task loading errors in the context panel", async () => {
     const apiClient = createMockApiClient({
       listTasks: vi.fn().mockRejectedValue(new Error("API unavailable"))

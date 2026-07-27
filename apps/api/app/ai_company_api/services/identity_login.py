@@ -6,9 +6,11 @@ import secrets
 from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from ai_company_api.models.entities import (
+    AccountKind,
     DeviceSession,
     ExternalIdentity,
     LoginTransaction,
@@ -16,6 +18,7 @@ from ai_company_api.models.entities import (
     OrganizationMember,
     User,
     Workspace,
+    WorkspaceRole,
     utc_now,
 )
 from ai_company_api.services.customer_identity_provider import (
@@ -23,6 +26,7 @@ from ai_company_api.services.customer_identity_provider import (
     CustomerIdentityProviderError,
     CustomerIdentityProviderUnavailable,
     OidcAuthorizationRequest,
+    ValidatedExternalIdentity,
 )
 from ai_company_api.services.identity_audit import record_identity_audit_event
 
@@ -31,6 +35,20 @@ LOGIN_BROWSER_COOKIE = "__Host-ai_scdc_login"
 USER_SESSION_COOKIE = "__Host-ai_scdc_session"
 LOGIN_TRANSACTION_TTL_SECONDS = 600
 USER_SESSION_IDLE_SECONDS = 30 * 24 * 60 * 60
+PERSONAL_ONBOARDING_FAILURE_STEPS = frozenset(
+    {
+        "user",
+        "account",
+        "workspace",
+        "membership",
+        "external_identity",
+        "device_session",
+    }
+)
+
+
+class PersonalOnboardingInjectedFailure(RuntimeError):
+    pass
 
 
 def start_login(
@@ -160,6 +178,7 @@ def complete_login_callback(
     request: Request,
     state_value: str,
     code: str,
+    personal_onboarding_failure_step: str | None = None,
 ) -> Response:
     transaction = session.exec(
         select(LoginTransaction).where(
@@ -348,28 +367,45 @@ def complete_login_callback(
             reason_code="identity_status_inactive",
         )
 
+    transaction_id = transaction.id
+    correlation_id = transaction.correlation_id
     external_identity = session.exec(
         select(ExternalIdentity).where(
             ExternalIdentity.issuer == identity_claims.issuer,
             ExternalIdentity.subject == identity_claims.subject,
         )
     ).first()
-    if external_identity is None or external_identity.status != "active":
+    onboarding_created = external_identity is None
+    if external_identity is None:
+        try:
+            user, membership, external_identity = _create_personal_onboarding(
+                session,
+                identity_claims=identity_claims,
+                failure_step=personal_onboarding_failure_step,
+            )
+        except (PersonalOnboardingInjectedFailure, SQLAlchemyError):
+            return _rollback_personal_onboarding(
+                session,
+                transaction_id=transaction_id,
+                correlation_id=correlation_id,
+            )
+    elif external_identity.status != "active":
         return _reject_callback(
             session,
             transaction=transaction,
             correlation_id=transaction.correlation_id,
             reason_code="external_identity_not_active",
         )
-    user = session.get(User, external_identity.user_id)
-    membership = session.exec(
-        select(OrganizationMember)
-        .where(
-            OrganizationMember.user_id == external_identity.user_id,
-            OrganizationMember.status == "active",
-        )
-        .order_by(OrganizationMember.created_at, OrganizationMember.id)
-    ).first()
+    else:
+        user = session.get(User, external_identity.user_id)
+        membership = session.exec(
+            select(OrganizationMember)
+            .where(
+                OrganizationMember.user_id == external_identity.user_id,
+                OrganizationMember.status == "active",
+            )
+            .order_by(OrganizationMember.created_at, OrganizationMember.id)
+        ).first()
     if user is None or user.status != "active" or membership is None:
         return _reject_callback(
             session,
@@ -403,35 +439,65 @@ def complete_login_callback(
         idle_expires_at=now + timedelta(seconds=USER_SESSION_IDLE_SECONDS),
         last_seen_at=now,
     )
-    session.add(device_session)
-    session.flush()
-    transaction.status = "completed"
-    transaction.completed_session_id = device_session.id
-    transaction.completed_at = now
-    session.add(transaction)
-    record_identity_audit_event(
-        session,
-        event_type="session_created",
-        outcome="success",
-        reason_code="oidc_callback",
-        correlation_id=transaction.correlation_id,
-        user_id=user.id,
-        external_identity_id=external_identity.id,
-        device_session_id=device_session.id,
-        commit=False,
-    )
-    record_identity_audit_event(
-        session,
-        event_type="login_success",
-        outcome="success",
-        reason_code="linked_external_identity",
-        correlation_id=transaction.correlation_id,
-        user_id=user.id,
-        external_identity_id=external_identity.id,
-        device_session_id=device_session.id,
-        commit=False,
-    )
-    session.commit()
+    try:
+        session.add(device_session)
+        session.flush()
+        if onboarding_created:
+            _inject_personal_onboarding_failure(
+                personal_onboarding_failure_step,
+                "device_session",
+            )
+        transaction.status = "completed"
+        transaction.completed_session_id = device_session.id
+        transaction.completed_at = now
+        session.add(transaction)
+        if onboarding_created:
+            record_identity_audit_event(
+                session,
+                event_type="onboarding_success",
+                outcome="success",
+                reason_code="personal_account_created",
+                correlation_id=transaction.correlation_id,
+                user_id=user.id,
+                external_identity_id=external_identity.id,
+                device_session_id=device_session.id,
+                commit=False,
+            )
+        record_identity_audit_event(
+            session,
+            event_type="session_created",
+            outcome="success",
+            reason_code="oidc_callback",
+            correlation_id=transaction.correlation_id,
+            user_id=user.id,
+            external_identity_id=external_identity.id,
+            device_session_id=device_session.id,
+            commit=False,
+        )
+        record_identity_audit_event(
+            session,
+            event_type="login_success",
+            outcome="success",
+            reason_code=(
+                "personal_account_onboarding"
+                if onboarding_created
+                else "linked_external_identity"
+            ),
+            correlation_id=transaction.correlation_id,
+            user_id=user.id,
+            external_identity_id=external_identity.id,
+            device_session_id=device_session.id,
+            commit=False,
+        )
+        session.commit()
+    except (PersonalOnboardingInjectedFailure, SQLAlchemyError):
+        if not onboarding_created:
+            raise
+        return _rollback_personal_onboarding(
+            session,
+            transaction_id=transaction_id,
+            correlation_id=correlation_id,
+        )
 
     response = RedirectResponse(transaction.return_to, status_code=303)
     response.set_cookie(
@@ -460,6 +526,92 @@ def reject_malformed_login_callback(session: Session) -> Response:
         transaction=None,
         correlation_id=secrets.token_hex(16),
         reason_code="protocol_parameters_missing",
+    )
+
+
+def _create_personal_onboarding(
+    session: Session,
+    *,
+    identity_claims: ValidatedExternalIdentity,
+    failure_step: str | None,
+) -> tuple[User, OrganizationMember, ExternalIdentity]:
+    user = User(
+        email=identity_claims.email,
+        display_name=identity_claims.email or "AI-SCDC User",
+    )
+    session.add(user)
+    session.flush()
+    _inject_personal_onboarding_failure(failure_step, "user")
+
+    account = Organization(
+        name="Personal Account",
+        account_kind=AccountKind.PERSONAL,
+        personal_owner_user_id=user.id,
+    )
+    session.add(account)
+    session.flush()
+    _inject_personal_onboarding_failure(failure_step, "account")
+
+    workspace = Workspace(
+        organization_id=account.id,
+        name="Default Workspace",
+    )
+    session.add(workspace)
+    session.flush()
+    _inject_personal_onboarding_failure(failure_step, "workspace")
+
+    membership = OrganizationMember(
+        organization_id=account.id,
+        workspace_id=workspace.id,
+        user_id=user.id,
+        role=WorkspaceRole.OWNER,
+    )
+    session.add(membership)
+    session.flush()
+    _inject_personal_onboarding_failure(failure_step, "membership")
+
+    external_identity = ExternalIdentity(
+        issuer=identity_claims.issuer,
+        subject=identity_claims.subject,
+        user_id=user.id,
+        email=identity_claims.email,
+    )
+    session.add(external_identity)
+    session.flush()
+    _inject_personal_onboarding_failure(failure_step, "external_identity")
+    return user, membership, external_identity
+
+
+def _inject_personal_onboarding_failure(
+    configured_step: str | None,
+    completed_step: str,
+) -> None:
+    if configured_step == completed_step:
+        raise PersonalOnboardingInjectedFailure(completed_step)
+
+
+def _rollback_personal_onboarding(
+    session: Session,
+    *,
+    transaction_id: str,
+    correlation_id: str,
+) -> JSONResponse:
+    session.rollback()
+    transaction = session.get(LoginTransaction, transaction_id)
+    if transaction is not None and transaction.status == "processing":
+        transaction.status = "rejected"
+        session.add(transaction)
+    record_identity_audit_event(
+        session,
+        event_type="onboarding_rollback",
+        outcome="failure",
+        reason_code="persistence_failed",
+        correlation_id=correlation_id,
+    )
+    return _safe_failure_response(
+        error="login_failed",
+        correlation_id=correlation_id,
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
 
 
