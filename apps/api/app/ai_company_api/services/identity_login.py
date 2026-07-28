@@ -42,12 +42,14 @@ from ai_company_api.services.provider_logout_continuations import (
     replace_provider_logout_continuation,
 )
 from ai_company_api.services.user_session_credentials import (
-    USER_SESSION_COOKIE,
+    USER_SESSION_COOKIE as USER_SESSION_COOKIE,
     USER_SESSION_IDLE_SECONDS,
     USER_SESSION_PREVIOUS_SECRET_SECONDS,
     UserSessionCredentialRejected,
     hash_session_secret,
     resolve_user_session_credential,
+    set_user_session_cookie,
+    user_session_cookie_name,
 )
 
 
@@ -748,14 +750,10 @@ def complete_login_callback(
         )
 
     response = RedirectResponse(transaction.return_to, status_code=303)
-    response.set_cookie(
-        key=USER_SESSION_COOKIE,
+    set_user_session_cookie(
+        response,
+        request,
         value=f"{device_session.id}.{session_secret}",
-        max_age=USER_SESSION_IDLE_SECONDS,
-        secure=True,
-        httponly=True,
-        samesite="lax",
-        path="/",
     )
     response.delete_cookie(
         key=LOGIN_BROWSER_COOKIE,
@@ -805,7 +803,7 @@ def _complete_recent_authentication(
         )
     verified_authenticated_at = _as_utc(authenticated_at)
 
-    cookie_value = request.cookies.get(USER_SESSION_COOKIE, "")
+    cookie_value = request.cookies.get(user_session_cookie_name(request), "")
     try:
         resolved_credential = resolve_user_session_credential(
             session,
@@ -930,14 +928,10 @@ def _complete_recent_authentication(
         transaction,
         result="confirmed",
     )
-    response.set_cookie(
-        key=USER_SESSION_COOKIE,
+    set_user_session_cookie(
+        response,
+        request,
         value=f"{device_session.id}.{new_secret}",
-        max_age=USER_SESSION_IDLE_SECONDS,
-        secure=True,
-        httponly=True,
-        samesite="lax",
-        path="/",
     )
     response.delete_cookie(
         key=LOGIN_BROWSER_COOKIE,
@@ -1270,7 +1264,7 @@ def _has_completed_session(
 ) -> bool:
     if transaction.completed_session_id is None:
         return False
-    cookie_value = request.cookies.get(USER_SESSION_COOKIE, "")
+    cookie_value = request.cookies.get(user_session_cookie_name(request), "")
     resolved_credential = resolve_user_session_credential(
         session,
         cookie_value=cookie_value,

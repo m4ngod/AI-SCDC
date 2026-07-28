@@ -59,9 +59,9 @@ class AuthingCiamConfig:
             or not _is_https_url(management_api_base_url)
             or urlparse(management_api_base_url).path not in {"", "/"}
             or not self.client_id.strip()
-            or not self.app_secret
+            or not self.app_secret.strip()
             or not _is_authing_user_pool_id(self.user_pool_id)
-            or not self.user_pool_secret
+            or not self.user_pool_secret.strip()
             or self.request_timeout_seconds <= 0
             or not 0 <= self.clock_skew_seconds <= 300
             or not 30 <= self.jwks_cache_seconds <= 900
@@ -123,6 +123,18 @@ class AuthingCustomerIdentityProvider:
 
     def discover(self) -> OidcDiscovery:
         return self._validated_discovery().public
+
+    def check_availability(self) -> None:
+        payload = self._request_json(
+            "GET",
+            self._discovery_url,
+            operation="discovery",
+        )
+        validated = self._validate_discovery(payload)
+        with self._cache_lock:
+            self._discovery = validated
+        self._management_access_token(force_refresh=False)
+        self._validate_oidc_client_credentials()
 
     def authorization_url(
         self,
@@ -657,6 +669,23 @@ class AuthingCustomerIdentityProvider:
                 expires_at=now + timedelta(seconds=expires_in),
             )
             return access_token
+
+    def _validate_oidc_client_credentials(self) -> None:
+        payload = self._request_json(
+            "POST",
+            f"{self._config.issuer}/token/introspection",
+            data={
+                "token": "ai-scdc-readiness-invalid-token",
+                "token_type_hint": "access_token",
+                "client_id": self.client_id,
+                "client_secret": self._config.app_secret,
+            },
+            operation="client credential validation",
+        )
+        if payload.get("active") is not False:
+            raise CustomerIdentityProviderError(
+                "CIAM client credential validation response is not valid"
+            )
 
     def _clear_management_token(self) -> None:
         with self._cache_lock:

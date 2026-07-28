@@ -905,6 +905,88 @@ def test_authing_provider_distinguishes_unavailable_results(
     assert USER_POOL_SECRET not in message
 
 
+def test_authing_availability_check_bypasses_cached_discovery() -> None:
+    request_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return httpx.Response(200, json=_discovery())
+        return httpx.Response(503)
+
+    provider = _provider(handler)
+    provider.discover()
+
+    with pytest.raises(CustomerIdentityProviderServiceUnavailable):
+        provider.check_availability()
+
+    assert request_count == 2
+
+
+def test_authing_availability_check_validates_management_and_oidc_credentials() -> None:
+    requested_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        if str(request.url) == DISCOVERY_URL:
+            return httpx.Response(200, json=_discovery())
+        if str(request.url) == MANAGEMENT_TOKEN_ENDPOINT:
+            return httpx.Response(
+                200,
+                json={
+                    "statusCode": 200,
+                    "data": {
+                        "access_token": "management-access-token",
+                        "expires_in": 3600,
+                    },
+                },
+            )
+        assert str(request.url) == f"{ISSUER}/token/introspection"
+        assert parse_qs(request.content.decode("utf-8")) == {
+            "token": ["ai-scdc-readiness-invalid-token"],
+            "token_type_hint": ["access_token"],
+            "client_id": [CLIENT_ID],
+            "client_secret": [APP_SECRET],
+        }
+        return httpx.Response(
+            200,
+            json={"active": False},
+        )
+
+    _provider(handler).check_availability()
+
+    assert requested_urls == [
+        DISCOVERY_URL,
+        f"{MANAGEMENT_API_BASE_URL}/api/v3/get-management-token",
+        f"{ISSUER}/token/introspection",
+    ]
+
+
+def test_authing_availability_rejects_invalid_app_secret_without_leaking_it() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == DISCOVERY_URL:
+            return httpx.Response(200, json=_discovery())
+        if str(request.url) == MANAGEMENT_TOKEN_ENDPOINT:
+            return httpx.Response(
+                200,
+                json={
+                    "statusCode": 200,
+                    "data": {
+                        "access_token": "management-access-token",
+                        "expires_in": 3600,
+                    },
+                },
+            )
+        return httpx.Response(401, json={"secret": APP_SECRET})
+
+    with pytest.raises(CustomerIdentityProviderError) as exc_info:
+        _provider(handler).check_availability()
+
+    assert APP_SECRET not in str(exc_info.value)
+    assert USER_POOL_SECRET not in str(exc_info.value)
+
+
 def test_authing_end_session_uses_allowlisted_return_without_tokens(
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:

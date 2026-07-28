@@ -83,6 +83,8 @@ class CustomerIdentityProvider(Protocol):
 
     def discover(self) -> OidcDiscovery: ...
 
+    def check_availability(self) -> None: ...
+
     def authorization_url(self, request: OidcAuthorizationRequest) -> str: ...
 
     def exchange_code(
@@ -154,6 +156,9 @@ class DeterministicFakeCustomerIdentityProvider:
             token_endpoint=f"{self.issuer}/token",
             end_session_endpoint=self._end_session_endpoint,
         )
+
+    def check_availability(self) -> None:
+        self._require_available("discovery")
 
     def authorization_url(self, request: OidcAuthorizationRequest) -> str:
         self._require_available("authorization")

@@ -5,6 +5,7 @@ import os
 import secrets
 from threading import Event
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from anyio import create_task_group
 from fastapi import Depends, FastAPI, Request
@@ -12,6 +13,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import text
 from sqlmodel import Session, select
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -64,13 +66,24 @@ from ai_company_api.services.auth_policy import (
     HumanCredentialType,
     authentication_policy_for_environment,
 )
-from ai_company_api.services.customer_identity_provider import CustomerIdentityProvider
+from ai_company_api.services.customer_identity_provider import (
+    CustomerIdentityProvider,
+)
 from ai_company_api.services.identity_login import (
     PERSONAL_ONBOARDING_FAILURE_STEPS,
 )
 from ai_company_api.services.identity_status_synchronization import (
     maintain_identity_status_synchronization,
 )
+from ai_company_api.services.authing_ciam_provider import (
+    AuthingCiamConfig,
+    AuthingCustomerIdentityProvider,
+)
+from ai_company_api.services.kms_readiness import (
+    run_kms_live_smoke,
+    run_kms_preflight,
+)
+from ai_company_api.services.secret_vault import SECRET_VAULT_PROVIDER_ENV
 from ai_company_api.services.user_session_credentials import (
     USER_SESSION_COOKIE,
     USER_SESSION_IDLE_SECONDS,
@@ -81,6 +94,19 @@ DEV_CORS_ORIGINS = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 )
+DATABASE_URL_ENV = "AI_SCDC_DATABASE_URL"
+PUBLIC_ORIGIN_ENV = "AI_SCDC_PUBLIC_ORIGIN"
+CORS_ORIGINS_ENV = "AI_SCDC_CORS_ORIGINS"
+CORS_ALLOW_CREDENTIALS_ENV = "AI_SCDC_CORS_ALLOW_CREDENTIALS"
+AUTHING_APP_HOST_ENV = "AI_SCDC_AUTHING_APP_HOST"
+AUTHING_ISSUER_ENV = "AI_SCDC_AUTHING_ISSUER"
+AUTHING_APP_ID_ENV = "AI_SCDC_AUTHING_APP_ID"
+AUTHING_APP_SECRET_ENV = "AI_SCDC_AUTHING_APP_SECRET"
+AUTHING_USER_POOL_ID_ENV = "AI_SCDC_AUTHING_USER_POOL_ID"
+AUTHING_USER_POOL_SECRET_ENV = "AI_SCDC_AUTHING_USER_POOL_SECRET"
+USER_SESSION_COOKIE_NAME_ENV = "AI_SCDC_USER_SESSION_COOKIE_NAME"
+USER_SESSION_COOKIE_SECURE_ENV = "AI_SCDC_USER_SESSION_COOKIE_SECURE"
+USER_SESSION_COOKIE_DOMAIN_ENV = "AI_SCDC_USER_SESSION_COOKIE_DOMAIN"
 SECRET_REQUEST_FIELDS = {"secret_value", "token"}
 REDACTED_SECRET_INPUT = "[redacted]"
 
@@ -91,9 +117,15 @@ class UserSessionResponseStateMiddleware:
         app: ASGIApp,
         *,
         clock: Callable[[], datetime],
+        user_session_cookie_name: str,
+        user_session_cookie_secure: bool,
+        user_session_cookie_domain: str | None,
     ) -> None:
         self.app = app
         self.clock = MonotonicAuditClock(clock)
+        self.user_session_cookie_name = user_session_cookie_name
+        self.user_session_cookie_secure = user_session_cookie_secure
+        self.user_session_cookie_domain = user_session_cookie_domain
 
     async def __call__(
         self,
@@ -136,13 +168,14 @@ class UserSessionResponseStateMiddleware:
                     device_session_id, session_secret = rotation
                     cookie_response = Response()
                     cookie_response.set_cookie(
-                        key=USER_SESSION_COOKIE,
+                        key=self.user_session_cookie_name,
                         value=f"{device_session_id}.{session_secret}",
                         max_age=USER_SESSION_IDLE_SECONDS,
-                        secure=True,
+                        secure=self.user_session_cookie_secure,
                         httponly=True,
                         samesite="lax",
                         path="/",
+                        domain=self.user_session_cookie_domain,
                     )
                     headers = MutableHeaders(scope=message)
                     for name, value in cookie_response.raw_headers:
@@ -187,6 +220,9 @@ class AICompanyFastAPI(FastAPI):
         return UserSessionResponseStateMiddleware(
             super().build_middleware_stack(),
             clock=self.audit_clock,
+            user_session_cookie_name=self.state.user_session_cookie_name,
+            user_session_cookie_secure=self.state.user_session_cookie_secure,
+            user_session_cookie_domain=self.state.user_session_cookie_domain,
         )
 
 
@@ -225,9 +261,101 @@ def redact_validation_errors(
     return redacted_errors
 
 
+def create_configured_app() -> FastAPI:
+    authentication_policy = authentication_policy_for_environment(
+        os.getenv(AUTHENTICATION_ENVIRONMENT_ENV)
+    )
+    if authentication_policy.environment not in {
+        AuthenticationEnvironment.STAGING,
+        AuthenticationEnvironment.PRODUCTION,
+    }:
+        return create_app(
+            database_url=os.getenv(DATABASE_URL_ENV, "sqlite:///./dev.db"),
+            authentication_policy=authentication_policy,
+        )
+
+    database_url = os.getenv(DATABASE_URL_ENV, "").strip()
+    if not database_url:
+        raise ValueError("Production database configuration is incomplete")
+    public_origin = os.getenv(PUBLIC_ORIGIN_ENV, "").strip()
+    if not public_origin:
+        raise ValueError("Web Application Origin configuration is incomplete")
+
+    authing_values = {
+        AUTHING_APP_HOST_ENV: os.getenv(AUTHING_APP_HOST_ENV, "").strip(),
+        AUTHING_ISSUER_ENV: os.getenv(AUTHING_ISSUER_ENV, "").strip(),
+        AUTHING_APP_ID_ENV: os.getenv(AUTHING_APP_ID_ENV, "").strip(),
+        AUTHING_APP_SECRET_ENV: os.getenv(AUTHING_APP_SECRET_ENV, ""),
+        AUTHING_USER_POOL_ID_ENV: os.getenv(
+            AUTHING_USER_POOL_ID_ENV, ""
+        ).strip(),
+        AUTHING_USER_POOL_SECRET_ENV: os.getenv(
+            AUTHING_USER_POOL_SECRET_ENV,
+            "",
+        ),
+    }
+    if any(not value.strip() for value in authing_values.values()):
+        raise ValueError("Authing CIAM configuration is incomplete")
+    try:
+        provider = AuthingCustomerIdentityProvider(
+            AuthingCiamConfig(
+                app_host=authing_values[AUTHING_APP_HOST_ENV],
+                issuer=authing_values[AUTHING_ISSUER_ENV],
+                client_id=authing_values[AUTHING_APP_ID_ENV],
+                app_secret=authing_values[AUTHING_APP_SECRET_ENV],
+                user_pool_id=authing_values[AUTHING_USER_POOL_ID_ENV],
+                user_pool_secret=authing_values[
+                    AUTHING_USER_POOL_SECRET_ENV
+                ],
+            )
+        )
+    except ValueError as exc:
+        raise ValueError("Authing CIAM configuration is not valid") from exc
+
+    return create_app(
+        database_url=database_url,
+        cors_origins=tuple(
+            origin.strip()
+            for origin in os.getenv(CORS_ORIGINS_ENV, "").split(",")
+            if origin.strip()
+        ),
+        cors_allow_credentials=_environment_boolean(
+            CORS_ALLOW_CREDENTIALS_ENV,
+            default=False,
+        ),
+        authentication_policy=authentication_policy,
+        customer_identity_provider=provider,
+        public_origin=public_origin,
+        user_session_cookie_name=os.getenv(
+            USER_SESSION_COOKIE_NAME_ENV,
+            USER_SESSION_COOKIE,
+        ).strip(),
+        user_session_cookie_secure=_environment_boolean(
+            USER_SESSION_COOKIE_SECURE_ENV,
+            default=True,
+        ),
+        user_session_cookie_domain=(
+            os.getenv(USER_SESSION_COOKIE_DOMAIN_ENV, "").strip() or None
+        ),
+    )
+
+
+def _environment_boolean(name: str, *, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
 def create_app(
     database_url: str = "sqlite:///./dev.db",
     cors_origins: tuple[str, ...] = DEV_CORS_ORIGINS,
+    cors_allow_credentials: bool = False,
     authentication_policy: AuthenticationPolicy | None = None,
     customer_identity_provider: CustomerIdentityProvider | None = None,
     allowed_login_return_destinations: frozenset[str] = frozenset({"/"}),
@@ -252,6 +380,9 @@ def create_app(
     audit_retention_failure_step: str | None = None,
     user_session_database_failure: bool = False,
     device_session_revocation_failure: str | None = None,
+    user_session_cookie_name: str = USER_SESSION_COOKIE,
+    user_session_cookie_secure: bool = True,
+    user_session_cookie_domain: str | None = None,
 ) -> FastAPI:
     resolved_authentication_policy = (
         authentication_policy
@@ -260,14 +391,18 @@ def create_app(
             os.getenv(AUTHENTICATION_ENVIRONMENT_ENV)
         )
     )
-    if (
-        HumanCredentialType.USER_SESSION
-        in resolved_authentication_policy.accepted_human_credentials
-        and customer_identity_provider is None
-    ):
-        raise ValueError(
-            "Customer Identity Provider is required when User Sessions are enabled"
-        )
+    production_identity_environment = (
+        resolved_authentication_policy.environment
+        in {
+            AuthenticationEnvironment.STAGING,
+            AuthenticationEnvironment.PRODUCTION,
+        }
+    )
+    production_secret_vault_selected = (
+        production_identity_environment
+        and os.getenv(SECRET_VAULT_PROVIDER_ENV, "dev").strip().lower()
+        != "dev"
+    )
     if (
         identity_audit_observer_enabled
         and resolved_authentication_policy.environment
@@ -292,20 +427,15 @@ def create_app(
         raise ValueError(
             "Secret Access Audit observer is allowed only in the test environment"
         )
-    if personal_onboarding_failure_step is not None:
-        if (
-            resolved_authentication_policy.environment
-            != AuthenticationEnvironment.TEST
-        ):
-            raise ValueError(
-                "Personal onboarding failure injection is allowed only "
-                "in the test environment"
-            )
-        if (
-            personal_onboarding_failure_step
-            not in PERSONAL_ONBOARDING_FAILURE_STEPS
-        ):
-            raise ValueError("Unsupported Personal onboarding failure step")
+    if (
+        personal_onboarding_failure_step is not None
+        and resolved_authentication_policy.environment
+        != AuthenticationEnvironment.TEST
+    ):
+        raise ValueError(
+            "Personal onboarding failure injection is allowed only "
+            "in the test environment"
+        )
     if (
         user_session_database_failure
         and resolved_authentication_policy.environment
@@ -315,15 +445,91 @@ def create_app(
             "User Session database failure injection is allowed only "
             "in the test environment"
         )
-    if device_session_revocation_failure is not None:
+    if (
+        device_session_revocation_failure is not None
+        and resolved_authentication_policy.environment
+        != AuthenticationEnvironment.TEST
+    ):
+        raise ValueError(
+            "Device Session revocation failure injection is allowed "
+            "only in the test environment"
+        )
+    if (
+        audit_retention_failure_step is not None
+        and resolved_authentication_policy.environment
+        != AuthenticationEnvironment.TEST
+    ):
+        raise ValueError(
+            "Audit retention failure injection is allowed only "
+            "in the test environment"
+        )
+    if (
+        production_identity_environment
+        and database_url.strip().lower().startswith("sqlite")
+    ):
+        raise ValueError(
+            "Production identity configuration requires an authoritative database"
+        )
+    if production_identity_environment:
+        parsed_public_origin = urlparse(public_origin)
         if (
-            resolved_authentication_policy.environment
-            != AuthenticationEnvironment.TEST
+            parsed_public_origin.scheme != "https"
+            or not parsed_public_origin.hostname
+            or parsed_public_origin.username is not None
+            or parsed_public_origin.password is not None
+            or parsed_public_origin.path not in {"", "/"}
+            or parsed_public_origin.params
+            or parsed_public_origin.query
+            or parsed_public_origin.fragment
         ):
             raise ValueError(
-                "Device Session revocation failure injection is allowed "
-                "only in the test environment"
+                "Web Application Origin must be a single HTTPS origin"
             )
+    if (
+        production_identity_environment
+        and not production_secret_vault_selected
+    ):
+        raise ValueError(
+            "Production identity configuration requires a production SecretVault"
+        )
+    if production_identity_environment:
+        secret_vault_preflight = run_kms_preflight()
+        if secret_vault_preflight.status == "failed":
+            raise ValueError(
+                "Production SecretVault configuration is not ready: "
+                f"{secret_vault_preflight.message}"
+            )
+        if not user_session_cookie_secure:
+            raise ValueError(
+                "Production User Session Cookie must be Secure"
+            )
+        if not user_session_cookie_name.startswith("__Host-"):
+            raise ValueError(
+                "Production User Session Cookie name must start with __Host-"
+            )
+        if user_session_cookie_domain is not None:
+            raise ValueError(
+                "Production User Session Cookie must not set Domain"
+            )
+        if cors_allow_credentials:
+            raise ValueError(
+                "Production CORS must not allow credentials"
+            )
+    if (
+        HumanCredentialType.USER_SESSION
+        in resolved_authentication_policy.accepted_human_credentials
+        and customer_identity_provider is None
+    ):
+        raise ValueError(
+            "Customer Identity Provider is required when User Sessions are enabled"
+        )
+    if personal_onboarding_failure_step is not None:
+        if (
+            personal_onboarding_failure_step
+            not in PERSONAL_ONBOARDING_FAILURE_STEPS
+        ):
+            raise ValueError("Unsupported Personal onboarding failure step")
+    if device_session_revocation_failure is not None:
         if device_session_revocation_failure not in {
             "database",
             "operation",
@@ -342,26 +548,60 @@ def create_app(
             "and one day"
         )
     if audit_retention_failure_step is not None:
-        if (
-            resolved_authentication_policy.environment
-            != AuthenticationEnvironment.TEST
-        ):
-            raise ValueError(
-                "Audit retention failure injection is allowed only "
-                "in the test environment"
-            )
         if audit_retention_failure_step != "before_cleanup":
             raise ValueError(
                 "Unsupported audit retention failure step"
             )
     engine = build_engine(database_url)
 
+    def authoritative_database_is_ready(*, initialize: bool) -> bool:
+        try:
+            if initialize:
+                init_db(engine)
+            else:
+                with engine.connect() as connection:
+                    connection.execute(text("SELECT 1"))
+        except Exception:
+            return False
+        return True
+
+    def production_secret_vault_is_ready() -> bool:
+        if not production_secret_vault_selected:
+            return True
+        try:
+            readiness = run_kms_live_smoke()
+        except Exception:
+            return False
+        return readiness.status == "passed"
+
+    def customer_identity_provider_is_ready() -> bool:
+        if (
+            HumanCredentialType.USER_SESSION
+            not in resolved_authentication_policy.accepted_human_credentials
+        ):
+            return True
+        assert customer_identity_provider is not None
+        try:
+            customer_identity_provider.check_availability()
+        except Exception:
+            return False
+        return True
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        init_db(engine)
+        app.state.authoritative_database_healthy = (
+            authoritative_database_is_ready(initialize=True)
+        )
+        app.state.production_secret_vault_healthy = (
+            production_secret_vault_is_ready()
+        )
+        app.state.customer_identity_provider_healthy = (
+            customer_identity_provider_is_ready()
+        )
         if (
             HumanCredentialType.DEV_AUTH
             in resolved_authentication_policy.accepted_human_credentials
+            and app.state.authoritative_database_healthy
         ):
             _ensure_dev_auth_scope(engine)
         app.state.identity_status_synchronization_healthy = True
@@ -423,6 +663,9 @@ def create_app(
     )
 
     app.state.authentication_policy = resolved_authentication_policy
+    app.state.authoritative_database_healthy = False
+    app.state.production_secret_vault_healthy = False
+    app.state.customer_identity_provider_healthy = False
     app.state.customer_identity_provider = customer_identity_provider
     app.state.allowed_login_return_destinations = allowed_login_return_destinations
     app.state.allowed_recent_authentication_return_destinations = (
@@ -444,12 +687,15 @@ def create_app(
     app.state.device_session_revocation_failure = (
         device_session_revocation_failure
     )
+    app.state.user_session_cookie_secure = user_session_cookie_secure
+    app.state.user_session_cookie_name = user_session_cookie_name
+    app.state.user_session_cookie_domain = user_session_cookie_domain
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),
         allow_methods=["*"],
         allow_headers=["*"],
-        allow_credentials=False,
+        allow_credentials=cors_allow_credentials,
     )
 
     @app.exception_handler(RequestValidationError)
@@ -469,6 +715,35 @@ def create_app(
 
     @app.get("/health")
     def health(response: Response) -> dict[str, str]:
+        app.state.production_secret_vault_healthy = (
+            production_secret_vault_is_ready()
+        )
+        if not app.state.production_secret_vault_healthy:
+            response.status_code = 503
+            return {
+                "status": "unavailable",
+                "component": "production_secret_vault",
+            }
+        app.state.authoritative_database_healthy = (
+            authoritative_database_is_ready(
+                initialize=not app.state.authoritative_database_healthy,
+            )
+        )
+        if not app.state.authoritative_database_healthy:
+            response.status_code = 503
+            return {
+                "status": "unavailable",
+                "component": "authoritative_database",
+            }
+        app.state.customer_identity_provider_healthy = (
+            customer_identity_provider_is_ready()
+        )
+        if not app.state.customer_identity_provider_healthy:
+            response.status_code = 503
+            return {
+                "status": "unavailable",
+                "component": "customer_identity_provider",
+            }
         if not app.state.identity_status_synchronization_healthy:
             response.status_code = 503
             return {
@@ -633,4 +908,4 @@ def _ensure_dev_auth_scope(engine) -> None:
         session.commit()
 
 
-app = create_app()
+app = create_configured_app()
