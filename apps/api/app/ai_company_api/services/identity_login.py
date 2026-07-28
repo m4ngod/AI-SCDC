@@ -38,6 +38,7 @@ from ai_company_api.services.identity_status_synchronization import (
 from ai_company_api.services.identity_device_sessions import (
     coarse_device_description,
 )
+from ai_company_api.services.identity_rollout import IdentityRolloutPolicy
 from ai_company_api.services.provider_logout_continuations import (
     replace_provider_logout_continuation,
 )
@@ -339,10 +340,11 @@ def _start_authentication_transaction(
 def complete_login_callback(
     session: Session,
     *,
-    provider: CustomerIdentityProvider,
+    provider: CustomerIdentityProvider | None,
     request: Request,
     state_value: str,
     code: str,
+    rollout_policy: IdentityRolloutPolicy,
     personal_onboarding_failure_step: str | None = None,
     now: datetime | None = None,
 ) -> Response:
@@ -441,6 +443,16 @@ def complete_login_callback(
             terminalize_transaction=False,
         )
 
+    if not rollout_policy.oidc_login_enabled:
+        return _reject_callback(
+            session,
+            transaction=transaction,
+            correlation_id=transaction.correlation_id,
+            reason_code="identity_rollout_disabled",
+            error="identity_login_disabled",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    assert provider is not None
     try:
         token_response = provider.exchange_code(
             code=code,
@@ -587,12 +599,29 @@ def complete_login_callback(
             correlation_id=transaction.correlation_id,
             reason_code="authentication_method_not_satisfied",
         )
-    onboarding_created = external_identity is None
-    if external_identity is None:
-        legacy_user = _legacy_user_matching_email(
+    legacy_user = (
+        _legacy_user_matching_email(
             session,
             identity_claims.email,
         )
+        if external_identity is None
+        else None
+    )
+    if not rollout_policy.admits_login(
+        email=identity_claims.email,
+        has_external_identity=external_identity is not None,
+        has_legacy_account=legacy_user is not None,
+    ):
+        return _reject_callback(
+            session,
+            transaction=transaction,
+            correlation_id=transaction.correlation_id,
+            reason_code="rollout_stage_not_eligible",
+            error="identity_rollout_denied",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    onboarding_created = external_identity is None
+    if external_identity is None:
         if legacy_user is not None:
             return _require_explicit_account_link(
                 session,

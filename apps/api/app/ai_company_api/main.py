@@ -24,6 +24,7 @@ from ai_company_api.db.session import (
     build_engine,
     get_session_dependency,
     init_db,
+    plan_identity_schema_migration,
     session_generator,
 )
 from ai_company_api.schemas.api import (
@@ -72,6 +73,11 @@ from ai_company_api.services.customer_identity_provider import (
 from ai_company_api.services.identity_login import (
     PERSONAL_ONBOARDING_FAILURE_STEPS,
 )
+from ai_company_api.services.identity_rollout import (
+    IdentityRolloutStage,
+    identity_rollout_policy,
+    revoke_user_sessions_for_security_rollback,
+)
 from ai_company_api.services.identity_status_synchronization import (
     maintain_identity_status_synchronization,
 )
@@ -107,6 +113,17 @@ AUTHING_USER_POOL_SECRET_ENV = "AI_SCDC_AUTHING_USER_POOL_SECRET"
 USER_SESSION_COOKIE_NAME_ENV = "AI_SCDC_USER_SESSION_COOKIE_NAME"
 USER_SESSION_COOKIE_SECURE_ENV = "AI_SCDC_USER_SESSION_COOKIE_SECURE"
 USER_SESSION_COOKIE_DOMAIN_ENV = "AI_SCDC_USER_SESSION_COOKIE_DOMAIN"
+IDENTITY_ROLLOUT_STAGE_ENV = "AI_SCDC_IDENTITY_ROLLOUT_STAGE"
+IDENTITY_INTERNAL_EMAIL_ALLOWLIST_ENV = (
+    "AI_SCDC_IDENTITY_INTERNAL_EMAIL_ALLOWLIST"
+)
+IDENTITY_RELEASE_GATES_PASSED_ENV = (
+    "AI_SCDC_IDENTITY_RELEASE_GATES_PASSED"
+)
+IDENTITY_SECURITY_ROLLBACK_ENV = "AI_SCDC_IDENTITY_SECURITY_ROLLBACK"
+IDENTITY_SCHEMA_MIGRATION_MODE_ENV = (
+    "AI_SCDC_IDENTITY_SCHEMA_MIGRATION_MODE"
+)
 SECRET_REQUEST_FIELDS = {"secret_value", "token"}
 REDACTED_SECRET_INPUT = "[redacted]"
 
@@ -272,6 +289,7 @@ def create_configured_app() -> FastAPI:
         return create_app(
             database_url=os.getenv(DATABASE_URL_ENV, "sqlite:///./dev.db"),
             authentication_policy=authentication_policy,
+            identity_rollout_stage=IdentityRolloutStage.DISABLED,
         )
 
     database_url = os.getenv(DATABASE_URL_ENV, "").strip()
@@ -281,36 +299,61 @@ def create_configured_app() -> FastAPI:
     if not public_origin:
         raise ValueError("Web Application Origin configuration is incomplete")
 
-    authing_values = {
-        AUTHING_APP_HOST_ENV: os.getenv(AUTHING_APP_HOST_ENV, "").strip(),
-        AUTHING_ISSUER_ENV: os.getenv(AUTHING_ISSUER_ENV, "").strip(),
-        AUTHING_APP_ID_ENV: os.getenv(AUTHING_APP_ID_ENV, "").strip(),
-        AUTHING_APP_SECRET_ENV: os.getenv(AUTHING_APP_SECRET_ENV, ""),
-        AUTHING_USER_POOL_ID_ENV: os.getenv(
-            AUTHING_USER_POOL_ID_ENV, ""
-        ).strip(),
-        AUTHING_USER_POOL_SECRET_ENV: os.getenv(
-            AUTHING_USER_POOL_SECRET_ENV,
-            "",
-        ),
-    }
-    if any(not value.strip() for value in authing_values.values()):
-        raise ValueError("Authing CIAM configuration is incomplete")
-    try:
-        provider = AuthingCustomerIdentityProvider(
-            AuthingCiamConfig(
-                app_host=authing_values[AUTHING_APP_HOST_ENV],
-                issuer=authing_values[AUTHING_ISSUER_ENV],
-                client_id=authing_values[AUTHING_APP_ID_ENV],
-                app_secret=authing_values[AUTHING_APP_SECRET_ENV],
-                user_pool_id=authing_values[AUTHING_USER_POOL_ID_ENV],
-                user_pool_secret=authing_values[
-                    AUTHING_USER_POOL_SECRET_ENV
-                ],
+    rollout_stage = os.getenv(
+        IDENTITY_ROLLOUT_STAGE_ENV,
+        IdentityRolloutStage.DISABLED.value,
+    ).strip()
+    security_rollback = _environment_boolean(
+        IDENTITY_SECURITY_ROLLBACK_ENV,
+        default=False,
+    )
+    provider: CustomerIdentityProvider | None = None
+    if not security_rollback:
+        authing_values = {
+            AUTHING_APP_HOST_ENV: os.getenv(
+                AUTHING_APP_HOST_ENV,
+                "",
+            ).strip(),
+            AUTHING_ISSUER_ENV: os.getenv(
+                AUTHING_ISSUER_ENV,
+                "",
+            ).strip(),
+            AUTHING_APP_ID_ENV: os.getenv(
+                AUTHING_APP_ID_ENV,
+                "",
+            ).strip(),
+            AUTHING_APP_SECRET_ENV: os.getenv(
+                AUTHING_APP_SECRET_ENV,
+                "",
+            ),
+            AUTHING_USER_POOL_ID_ENV: os.getenv(
+                AUTHING_USER_POOL_ID_ENV,
+                "",
+            ).strip(),
+            AUTHING_USER_POOL_SECRET_ENV: os.getenv(
+                AUTHING_USER_POOL_SECRET_ENV,
+                "",
+            ),
+        }
+        if any(not value.strip() for value in authing_values.values()):
+            raise ValueError("Authing CIAM configuration is incomplete")
+        try:
+            provider = AuthingCustomerIdentityProvider(
+                AuthingCiamConfig(
+                    app_host=authing_values[AUTHING_APP_HOST_ENV],
+                    issuer=authing_values[AUTHING_ISSUER_ENV],
+                    client_id=authing_values[AUTHING_APP_ID_ENV],
+                    app_secret=authing_values[AUTHING_APP_SECRET_ENV],
+                    user_pool_id=authing_values[AUTHING_USER_POOL_ID_ENV],
+                    user_pool_secret=authing_values[
+                        AUTHING_USER_POOL_SECRET_ENV
+                    ],
+                )
             )
-        )
-    except ValueError as exc:
-        raise ValueError("Authing CIAM configuration is not valid") from exc
+        except ValueError as exc:
+            raise ValueError(
+                "Authing CIAM configuration is not valid"
+            ) from exc
 
     return create_app(
         database_url=database_url,
@@ -337,6 +380,18 @@ def create_configured_app() -> FastAPI:
         user_session_cookie_domain=(
             os.getenv(USER_SESSION_COOKIE_DOMAIN_ENV, "").strip() or None
         ),
+        identity_rollout_stage=rollout_stage,
+        identity_release_gates_passed=frozenset(
+            _environment_csv(IDENTITY_RELEASE_GATES_PASSED_ENV)
+        ),
+        identity_internal_email_allowlist=frozenset(
+            _environment_csv(IDENTITY_INTERNAL_EMAIL_ALLOWLIST_ENV)
+        ),
+        identity_security_rollback=security_rollback,
+        identity_schema_migration_mode=os.getenv(
+            IDENTITY_SCHEMA_MIGRATION_MODE_ENV,
+            "apply",
+        ).strip(),
     )
 
 
@@ -350,6 +405,14 @@ def _environment_boolean(name: str, *, default: bool) -> bool:
     if normalized == "false":
         return False
     raise ValueError(f"{name} must be true or false")
+
+
+def _environment_csv(name: str) -> tuple[str, ...]:
+    return tuple(
+        value.strip()
+        for value in os.getenv(name, "").split(",")
+        if value.strip()
+    )
 
 
 def create_app(
@@ -383,6 +446,11 @@ def create_app(
     user_session_cookie_name: str = USER_SESSION_COOKIE,
     user_session_cookie_secure: bool = True,
     user_session_cookie_domain: str | None = None,
+    identity_rollout_stage: IdentityRolloutStage | str | None = None,
+    identity_release_gates_passed: frozenset[str] = frozenset(),
+    identity_internal_email_allowlist: frozenset[str] = frozenset(),
+    identity_security_rollback: bool = False,
+    identity_schema_migration_mode: str = "apply",
 ) -> FastAPI:
     resolved_authentication_policy = (
         authentication_policy
@@ -398,6 +466,38 @@ def create_app(
             AuthenticationEnvironment.PRODUCTION,
         }
     )
+    resolved_rollout_stage = identity_rollout_stage
+    if resolved_rollout_stage is None and customer_identity_provider is None:
+        resolved_rollout_stage = IdentityRolloutStage.DISABLED
+    resolved_identity_rollout_policy = identity_rollout_policy(
+        environment=resolved_authentication_policy.environment,
+        stage=resolved_rollout_stage,
+        passed_release_gates=identity_release_gates_passed,
+        internal_email_allowlist=identity_internal_email_allowlist,
+        security_rollback=identity_security_rollback,
+    )
+    if identity_schema_migration_mode not in {"apply", "dry_run"}:
+        raise ValueError("Identity schema migration mode must be apply or dry_run")
+    if (
+        identity_schema_migration_mode == "dry_run"
+        and resolved_identity_rollout_policy.stage
+        != IdentityRolloutStage.DISABLED
+    ):
+        raise ValueError(
+            "Identity schema dry run requires the disabled rollout stage"
+        )
+    if (
+        resolved_identity_rollout_policy.security_rollback
+        and HumanCredentialType.USER_SESSION
+        in resolved_authentication_policy.accepted_human_credentials
+    ):
+        resolved_authentication_policy = AuthenticationPolicy(
+            environment=resolved_authentication_policy.environment,
+            accepted_human_credentials=(
+                resolved_authentication_policy.accepted_human_credentials
+                - {HumanCredentialType.USER_SESSION}
+            ),
+        )
     production_secret_vault_selected = (
         production_identity_environment
         and os.getenv(SECRET_VAULT_PROVIDER_ENV, "dev").strip().lower()
@@ -523,6 +623,13 @@ def create_app(
         raise ValueError(
             "Customer Identity Provider is required when User Sessions are enabled"
         )
+    if (
+        resolved_identity_rollout_policy.oidc_login_enabled
+        and customer_identity_provider is None
+    ):
+        raise ValueError(
+            "Customer Identity Provider is required when OIDC login is enabled"
+        )
     if personal_onboarding_failure_step is not None:
         if (
             personal_onboarding_failure_step
@@ -565,6 +672,13 @@ def create_app(
             return False
         return True
 
+    def identity_schema_state() -> tuple[bool, tuple[str, ...]]:
+        try:
+            pending_actions = plan_identity_schema_migration(engine)
+        except Exception:
+            return False, ()
+        return not pending_actions, pending_actions
+
     def production_secret_vault_is_ready() -> bool:
         if not production_secret_vault_selected:
             return True
@@ -587,11 +701,30 @@ def create_app(
             return False
         return True
 
+    def security_rollback_sessions_are_revoked() -> bool:
+        if not resolved_identity_rollout_policy.security_rollback:
+            return True
+        try:
+            with Session(engine) as rollback_session:
+                revoke_user_sessions_for_security_rollback(
+                    rollback_session,
+                    now=identity_clock(),
+                )
+        except Exception:
+            return False
+        return True
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.authoritative_database_healthy = (
-            authoritative_database_is_ready(initialize=True)
+            authoritative_database_is_ready(
+                initialize=identity_schema_migration_mode == "apply"
+            )
         )
+        (
+            app.state.identity_schema_ready,
+            app.state.identity_pending_schema_actions,
+        ) = identity_schema_state()
         app.state.production_secret_vault_healthy = (
             production_secret_vault_is_ready()
         )
@@ -604,8 +737,21 @@ def create_app(
             and app.state.authoritative_database_healthy
         ):
             _ensure_dev_auth_scope(engine)
+        app.state.identity_security_rollback_healthy = (
+            not resolved_identity_rollout_policy.security_rollback
+        )
+        if (
+            app.state.authoritative_database_healthy
+            and app.state.identity_schema_ready
+        ):
+            app.state.identity_security_rollback_healthy = (
+                security_rollback_sessions_are_revoked()
+            )
         app.state.identity_status_synchronization_healthy = True
         app.state.audit_retention_healthy = True
+        if not app.state.identity_schema_ready:
+            yield
+            return
         stop_identity_status_synchronization = Event()
         stop_audit_retention = Event()
         async with create_task_group() as task_group:
@@ -690,6 +836,11 @@ def create_app(
     app.state.user_session_cookie_secure = user_session_cookie_secure
     app.state.user_session_cookie_name = user_session_cookie_name
     app.state.user_session_cookie_domain = user_session_cookie_domain
+    app.state.identity_rollout_policy = resolved_identity_rollout_policy
+    app.state.identity_schema_migration_mode = identity_schema_migration_mode
+    app.state.identity_schema_ready = False
+    app.state.identity_pending_schema_actions = ()
+    app.state.identity_security_rollback_healthy = True
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),
@@ -726,7 +877,10 @@ def create_app(
             }
         app.state.authoritative_database_healthy = (
             authoritative_database_is_ready(
-                initialize=not app.state.authoritative_database_healthy,
+                initialize=(
+                    identity_schema_migration_mode == "apply"
+                    and not app.state.authoritative_database_healthy
+                ),
             )
         )
         if not app.state.authoritative_database_healthy:
@@ -734,6 +888,25 @@ def create_app(
             return {
                 "status": "unavailable",
                 "component": "authoritative_database",
+            }
+        (
+            app.state.identity_schema_ready,
+            app.state.identity_pending_schema_actions,
+        ) = identity_schema_state()
+        if not app.state.identity_schema_ready:
+            response.status_code = 503
+            return {
+                "status": "unavailable",
+                "component": "identity_schema_migration",
+            }
+        app.state.identity_security_rollback_healthy = (
+            security_rollback_sessions_are_revoked()
+        )
+        if not app.state.identity_security_rollback_healthy:
+            response.status_code = 503
+            return {
+                "status": "unavailable",
+                "component": "identity_security_rollback",
             }
         app.state.customer_identity_provider_healthy = (
             customer_identity_provider_is_ready()

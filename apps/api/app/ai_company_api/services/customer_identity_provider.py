@@ -228,6 +228,11 @@ class DeterministicFakeCustomerIdentityProvider:
         return OidcTokenResponse(
             id_token=id_token,
             access_token=f"fake-access-token-{code}",
+            logout_hint=(
+                str(record["logout_hint"])
+                if record["logout_hint"] is not None
+                else None
+            ),
         )
 
     def validate_id_token(
@@ -310,6 +315,7 @@ class DeterministicFakeCustomerIdentityProvider:
         authenticated_at: datetime | None = None,
         authentication_context: str | None = None,
         satisfy_requested_authentication: bool = True,
+        logout_hint: str | None = None,
     ) -> str:
         parsed = urlparse(authorization_url)
         expected = urlparse(self.discover().authorization_endpoint)
@@ -345,6 +351,7 @@ class DeterministicFakeCustomerIdentityProvider:
             "token_valid": token_valid,
             "authenticated_at": authenticated_at,
             "authentication_context": authentication_context,
+            "logout_hint": logout_hint,
             "used": False,
         }
         self._codes[code] = record

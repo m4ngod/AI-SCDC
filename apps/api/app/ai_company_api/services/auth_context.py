@@ -225,6 +225,11 @@ def _resolve_auth_context(
         return _dev_auth_context(request)
 
     if user_session_cookie_name(request) in request.cookies:
+        if not request.app.state.identity_rollout_policy.cookie_authentication_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User Session authentication is disabled",
+            )
         if HumanCredentialType.USER_SESSION not in accepted_credentials:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

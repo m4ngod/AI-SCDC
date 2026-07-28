@@ -357,6 +357,17 @@ class ProviderLogoutContinuation(SQLModel, table=True):
 
 class IdentityAuditEvent(SQLModel, table=True):
     __tablename__ = "identity_audit_event"
+    __table_args__ = (
+        Index(
+            "uq_identity_security_rollback_correlation",
+            "correlation_id",
+            unique=True,
+            sqlite_where=text("event_type = 'identity_security_rollback'"),
+            postgresql_where=text(
+                "event_type = 'identity_security_rollback'"
+            ),
+        ),
+    )
 
     id: str = Field(
         default_factory=lambda: prefixed_id("identity_audit"),
