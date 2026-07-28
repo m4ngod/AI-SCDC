@@ -324,6 +324,37 @@ class LoginTransaction(SQLModel, table=True):
     completed_at: datetime | None = None
 
 
+class ProviderLogoutContinuation(SQLModel, table=True):
+    __tablename__ = "provider_logout_continuation"
+    __table_args__ = (
+        Index(
+            "ix_provider_logout_continuation_device_status",
+            "device_session_id",
+            "status",
+        ),
+    )
+
+    id: str = Field(
+        default_factory=lambda: prefixed_id("provider_logout"),
+        primary_key=True,
+    )
+    device_session_id: str = Field(
+        index=True,
+        foreign_key="device_session.id",
+    )
+    sealed_provider_hint: str | None = None
+    status: str = Field(default="available", index=True)
+    correlation_id: str | None = Field(default=None, index=True)
+    browser_secret_hash: str | None = None
+    browser_secret_expires_at: datetime | None = Field(
+        default=None,
+        index=True,
+    )
+    consumed_at: datetime | None = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class IdentityAuditEvent(SQLModel, table=True):
     __tablename__ = "identity_audit_event"
 

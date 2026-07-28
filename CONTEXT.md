@@ -75,11 +75,11 @@ The most recent successfully retrieved CIAM account state for an External Identi
 _Avoid_: Live CIAM Status, Local User Status, Session Expiry
 
 **Customer Identity Provider**:
-Alibaba Cloud IDaaS CIAM is the initial production identity provider for individual, self-service customers in the mainland-China release. It authenticates people and supplies OIDC identity assertions; AI-SCDC still owns User, Account, Workspace, authorization, and User Session state. Using CIAM does not imply invitation-only registration or a real-world company membership model.
+Authing Public Cloud is the initial production identity provider for individual, self-service customers. It authenticates people and supplies OIDC identity assertions; AI-SCDC still owns User, Account, Workspace, authorization, and User Session state. Using CIAM does not imply invitation-only registration or a real-world company membership model.
 _Avoid_: Account, User Session, Workspace Authorization
 
 **Email Sign-In**:
-The initial self-service registration and login method: Alibaba Cloud IDaaS CIAM verifies a one-time code sent to the customer's email address. AI-SCDC does not store a password or require a phone number, and other password, SMS, and social-login methods remain outside the initial production slice.
+The initial self-service registration and login method: Authing Public Cloud verifies a one-time code sent to the customer's email address. AI-SCDC does not store a password or require a phone number, and other password, SMS, and social-login methods remain outside the initial production slice.
 _Avoid_: Password Login, SMS Login, Social Login
 
 **Login Transaction**:
@@ -102,8 +102,12 @@ _Avoid_: User Session Renewal, Role Check, Routine Workspace Activity
 One independently revocable User Session created for a browser profile or future native installation. A User may have multiple concurrent Device Sessions without a fixed product limit. AI-SCDC records only coarse operational metadata rather than a persistent device fingerprint. A revoked device must complete fresh CIAM email verification before it can create another User Session.
 _Avoid_: User, Device Fingerprint, Worker Session
 
+**Provider Logout Continuation**:
+A server-side, single-use Sign Out record bound to exactly one Device Session. It holds an opaque, sealed provider logout hint while the Device Session is active, replaces that hint after Recent Authentication, and at Sign Out binds it to a short-lived host-only browser secret. Consumption, provider-logout outcome, and the corresponding Identity Audit Event commit atomically; superseded or consumed hints are erased. It is not a Login Transaction or User Session.
+_Avoid_: Login Transaction, Session Credential, Refresh Token
+
 **Sign Out**:
-An explicit user action that first revokes the current AI-SCDC User Session and clears its persistent cookie, then makes a best-effort redirect to the CIAM end-session endpoint for the current browser. Closing a tab, browser, or computer is not Sign Out and preserves the User Session. Failure of CIAM logout never reverses the local revocation.
+An explicit user action that first revokes the current AI-SCDC User Session and clears its persistent cookie, then makes a best-effort redirect to the CIAM end-session endpoint for the current browser. When the provider requires a logout credential, AI-SCDC exposes only a short-lived, one-time same-origin continuation to browser code and consumes the server-held credential during the final provider redirect. The validated provider-bound `303 Location` is the sole response permitted to carry a raw ID Token hint; JSON, page content, JavaScript, Cookies, application logs, telemetry, audits, and errors remain token-free. Closing a tab, browser, or computer is not Sign Out and preserves the User Session. Failure of CIAM logout never reverses the local revocation.
 _Avoid_: Close, Session Expiry, Sign Out All Devices
 
 **Workspace API Token**:

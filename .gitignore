@@ -3,6 +3,9 @@
 .worktrees
 .worktrees/
 .venv/
+.env
+.env.local
+.secrets/
 __pycache__/
 .pytest_cache/
 .mypy_cache/

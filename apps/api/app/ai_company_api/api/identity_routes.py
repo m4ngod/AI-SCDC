@@ -53,7 +53,10 @@ from ai_company_api.services.identity_login import (
     start_login,
     start_recent_authentication,
 )
-from ai_company_api.services.identity_logout import sign_out_current_device
+from ai_company_api.services.identity_logout import (
+    continue_provider_logout,
+    sign_out_current_device,
+)
 from ai_company_api.services.identity_audit import record_identity_audit_event
 from ai_company_api.services.external_identity_restoration import (
     restore_external_identity,
@@ -201,6 +204,19 @@ def post_logout(
         request=request,
         provider=request.app.state.customer_identity_provider,
         device_session=device_session,
+        now=request.app.state.identity_clock(),
+    )
+
+
+@router.get("/logout/provider")
+def get_provider_logout(
+    request: Request,
+    session: SessionDep,
+) -> Response:
+    return continue_provider_logout(
+        session,
+        request=request,
+        provider=request.app.state.customer_identity_provider,
         now=request.app.state.identity_clock(),
     )
 
