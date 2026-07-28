@@ -653,12 +653,6 @@ def test_provider_callback_errors_are_safely_classified_and_recoverable(
             "nonce_mismatch",
         ),
         (
-            "identity_locked",
-            "failed",
-            "recent_authentication_failed",
-            "identity_status_inactive",
-        ),
-        (
             "provider_unavailable",
             "provider_unavailable",
             "identity_provider_unavailable",
@@ -708,8 +702,6 @@ def test_recent_authentication_callback_failures_recover_without_mutation(
         }
         if failure_case == "nonce_mismatch":
             issue_options["nonce"] = "wrong-nonce"
-        elif failure_case == "identity_locked":
-            issue_options["identity_status"] = "locked"
         elif failure_case == "authentication_too_old":
             issue_options["authenticated_at"] = clock() - timedelta(minutes=2)
         elif failure_case == "authentication_method_mismatch":

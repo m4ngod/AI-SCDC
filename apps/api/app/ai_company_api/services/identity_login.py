@@ -31,6 +31,10 @@ from ai_company_api.services.customer_identity_provider import (
     ValidatedExternalIdentity,
 )
 from ai_company_api.services.identity_audit import record_identity_audit_event
+from ai_company_api.services.identity_status_synchronization import (
+    INACTIVE_IDENTITY_STATUSES,
+    record_confirmed_identity_status,
+)
 from ai_company_api.services.identity_device_sessions import (
     coarse_device_description,
 )
@@ -514,11 +518,29 @@ def complete_login_callback(
             reason_code="identity_status_unavailable",
         )
     except CustomerIdentityProviderError:
-        return _reject_callback(
+        return _provider_unavailable_callback(
             session,
             transaction=transaction,
+            reason_code="identity_status_unavailable",
+        )
+    external_identity = session.exec(
+        select(ExternalIdentity).where(
+            ExternalIdentity.issuer == identity_claims.issuer,
+            ExternalIdentity.subject == identity_claims.subject,
+        )
+    ).first()
+    if (
+        identity_status in INACTIVE_IDENTITY_STATUSES
+        and external_identity is not None
+    ):
+        record_confirmed_identity_status(
+            session,
+            external_identity=external_identity,
+            confirmed_status=identity_status,
+            now=current_time,
             correlation_id=transaction.correlation_id,
-            reason_code="identity_status_invalid",
+            device_session_id=transaction.requested_session_id,
+            record_reconciliation=True,
         )
     if identity_status != "active":
         return _reject_callback(
@@ -545,12 +567,6 @@ def complete_login_callback(
 
     transaction_id = transaction.id
     correlation_id = transaction.correlation_id
-    external_identity = session.exec(
-        select(ExternalIdentity).where(
-            ExternalIdentity.issuer == identity_claims.issuer,
-            ExternalIdentity.subject == identity_claims.subject,
-        )
-    ).first()
     verified_email_authentication_time = (
         _validated_recent_email_authentication_time(
             identity_claims,
@@ -631,6 +647,14 @@ def complete_login_callback(
 
     session_secret = secrets.token_urlsafe(32)
     now = current_time
+    record_confirmed_identity_status(
+        session,
+        external_identity=external_identity,
+        confirmed_status="active",
+        now=now,
+        correlation_id=transaction.correlation_id,
+        record_reconciliation=False,
+    )
     recent_authenticated_at = verified_email_authentication_time
     device_session = DeviceSession(
         user_id=user.id,
@@ -851,10 +875,16 @@ def _complete_recent_authentication(
     transaction.status = "completed"
     transaction.completed_session_id = device_session.id
     transaction.completed_at = now
-    external_identity.last_confirmed_status = "active"
-    external_identity.updated_at = now
+    record_confirmed_identity_status(
+        session,
+        external_identity=external_identity,
+        confirmed_status="active",
+        now=now,
+        correlation_id=transaction.correlation_id,
+        device_session_id=device_session.id,
+        record_reconciliation=False,
+    )
     session.add(transaction)
-    session.add(external_identity)
     record_identity_audit_event(
         session,
         event_type="session_credential_rotated",

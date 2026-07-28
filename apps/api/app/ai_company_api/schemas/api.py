@@ -992,6 +992,19 @@ class AccountLinkRead(BaseModel):
     external_identity_id: str
 
 
+class ExternalIdentityRestore(BaseModel):
+    issuer: AuditedStringInput = ""
+    subject: AuditedStringInput = ""
+    reason: AuditedStringInput = ""
+
+
+class ExternalIdentityRestoreRead(BaseModel):
+    status: Literal["restored"]
+    correlation_id: str
+    user_id: str
+    external_identity_id: str
+
+
 class DevIdentity(BaseModel):
     user_id: str
     workspace_id: str | None

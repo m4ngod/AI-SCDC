@@ -1,4 +1,5 @@
 import secrets
+from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -8,17 +9,22 @@ from sqlmodel import Session, select
 
 from ai_company_api.db.session import get_session_dependency
 from ai_company_api.models.entities import (
+    CloudRun,
     DeviceSession,
     IdentityAuditEvent,
     Organization,
     OrganizationMember,
     SecretAccessAuditLog,
+    User,
     Workspace,
+    WorkspaceRole,
 )
 from ai_company_api.schemas.api import (
     AccountLinkCreate,
     AccountLinkRead,
     DeviceSessionListRead,
+    ExternalIdentityRestore,
+    ExternalIdentityRestoreRead,
     SignOutRead,
     WorkspaceSelectionUpdate,
 )
@@ -40,6 +46,9 @@ from ai_company_api.services.identity_login import (
 )
 from ai_company_api.services.identity_logout import sign_out_current_device
 from ai_company_api.services.identity_audit import record_identity_audit_event
+from ai_company_api.services.external_identity_restoration import (
+    restore_external_identity,
+)
 from ai_company_api.services.identity_device_sessions import (
     DeviceSessionRevocationOperationError,
     active_device_sessions,
@@ -50,6 +59,7 @@ from ai_company_api.services.identity_device_sessions import (
 from ai_company_api.services.recent_authentication import (
     require_recent_authentication,
 )
+from ai_company_api.services.worker_callback_auth import hash_callback_token
 
 
 router = APIRouter(prefix="/auth", tags=["identity"])
@@ -586,6 +596,223 @@ def post_test_workspace_api_token(
     return {"token": token}
 
 
+@router.post(
+    "/test/grant-identity-operator",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def post_test_grant_identity_operator(
+    request: Request,
+    auth: SelectionAuthDep,
+) -> Response:
+    if not request.app.state.identity_test_support_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    current_device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(current_device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="test_operator_setup_requires_user_session",
+        )
+    request.app.state.identity_operator_user_ids = frozenset(
+        {
+            *request.app.state.identity_operator_user_ids,
+            auth.user_id,
+        }
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/test/secondary-workspace-api-token",
+    status_code=status.HTTP_201_CREATED,
+)
+def post_test_secondary_workspace_api_token(
+    request: Request,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> dict[str, str]:
+    if not request.app.state.identity_test_support_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    current_device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(current_device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="test_token_setup_requires_user_session",
+        )
+
+    suffix = secrets.token_hex(8)
+    now = request.app.state.identity_clock()
+    account = Organization(
+        name=f"Identity test account {suffix}",
+        created_at=now,
+        updated_at=now,
+    )
+    workspace = Workspace(
+        organization_id=account.id,
+        name=f"Identity test workspace {suffix}",
+        created_at=now,
+        updated_at=now,
+    )
+    token = f"scdc_test_{secrets.token_urlsafe(32)}"
+    membership = OrganizationMember(
+        organization_id=account.id,
+        workspace_id=workspace.id,
+        user_id=auth.user_id,
+        role=WorkspaceRole.DEVELOPER,
+        api_token_hash=hash_api_token(token),
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(account)
+    session.add(workspace)
+    session.add(membership)
+    session.commit()
+    return {
+        "token": token,
+        "organization_id": account.id,
+        "workspace_id": workspace.id,
+    }
+
+
+@router.post(
+    "/test/running-worker-callback",
+    status_code=status.HTTP_201_CREATED,
+)
+def post_test_running_worker_callback(
+    request: Request,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> dict[str, str]:
+    if not request.app.state.identity_test_support_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    current_device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(current_device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="test_worker_setup_requires_user_session",
+        )
+
+    suffix = secrets.token_hex(8)
+    cloud_run_id = f"cloud_run_identity_test_{suffix}"
+    worker_id = f"worker_identity_test_{suffix}"
+    lease_id = f"lease_identity_test_{suffix}"
+    callback_token = f"scdc_worker_test_{secrets.token_urlsafe(32)}"
+    now = request.app.state.identity_clock()
+    cloud_run = CloudRun(
+        id=cloud_run_id,
+        workspace_id=auth.workspace_id,
+        project_id=f"project_identity_test_{suffix}",
+        task_id=f"task_identity_test_{suffix}",
+        repo_id=f"repo_identity_test_{suffix}",
+        head_branch=f"codex/identity-test-{suffix}",
+        status="running",
+        queue_provider="local_db",
+        worker_id=worker_id,
+        claimed_at=now,
+        lease_id=lease_id,
+        lease_expires_at=now + timedelta(hours=1),
+        heartbeat_at=now,
+        attempt_count=1,
+        callback_token_expires_at=now + timedelta(hours=1),
+        created_at=now,
+        updated_at=now,
+    )
+    cloud_run.callback_token_hash = hash_callback_token(
+        cloud_run.id,
+        worker_id,
+        callback_token,
+    )
+    session.add(cloud_run)
+    session.commit()
+    return {
+        "cloud_run_id": cloud_run.id,
+        "worker_id": worker_id,
+        "lease_id": lease_id,
+        "callback_token": callback_token,
+    }
+
+
+@router.post(
+    "/test/local-access-control/{action}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def post_test_local_access_control(
+    action: str,
+    request: Request,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> Response:
+    if not request.app.state.identity_test_support_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    current_device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(current_device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="test_access_control_requires_user_session",
+        )
+
+    now = request.app.state.identity_clock()
+    if action == "disable-user":
+        user = session.get(User, auth.user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="Not found")
+        user.status = "disabled"
+        user.updated_at = now
+        session.add(user)
+    else:
+        membership = session.exec(
+            select(OrganizationMember).where(
+                OrganizationMember.user_id == auth.user_id,
+                OrganizationMember.organization_id == auth.organization_id,
+                OrganizationMember.workspace_id == auth.workspace_id,
+            )
+        ).first()
+        if membership is None:
+            raise HTTPException(status_code=404, detail="Not found")
+        if action == "remove-membership":
+            membership.status = "removed"
+        elif action == "set-viewer-role":
+            membership.role = WorkspaceRole.VIEWER
+        elif action == "revoke-api-token":
+            membership.api_token_hash = None
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported test access control",
+            )
+        membership.updated_at = now
+        session.add(membership)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/test/secret-access-audit-events")
 def get_secret_access_audit_events(
     request: Request,
@@ -631,3 +858,27 @@ def post_account_link(
         data=data,
         operator_user_ids=request.app.state.identity_operator_user_ids,
     )
+
+
+@router.post(
+    "/operator/external-identities/restore",
+    response_model=ExternalIdentityRestoreRead,
+)
+def post_external_identity_restoration(
+    request: Request,
+    response: Response,
+    data: ExternalIdentityRestore,
+    session: SessionDep,
+    auth: AuthDep,
+) -> ExternalIdentityRestoreRead:
+    result = restore_external_identity(
+        session,
+        request=request,
+        auth=auth,
+        data=data,
+        operator_user_ids=request.app.state.identity_operator_user_ids,
+        provider=request.app.state.customer_identity_provider,
+        now=request.app.state.identity_clock(),
+    )
+    response.headers["X-Correlation-ID"] = result.correlation_id
+    return result
