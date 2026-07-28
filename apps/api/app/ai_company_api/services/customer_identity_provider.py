@@ -16,6 +16,30 @@ class CustomerIdentityProviderUnavailable(CustomerIdentityProviderError):
     pass
 
 
+class CustomerIdentityProviderTimeout(
+    CustomerIdentityProviderUnavailable
+):
+    pass
+
+
+class CustomerIdentityProviderNetworkError(
+    CustomerIdentityProviderUnavailable
+):
+    pass
+
+
+class CustomerIdentityProviderRateLimited(
+    CustomerIdentityProviderUnavailable
+):
+    pass
+
+
+class CustomerIdentityProviderServiceUnavailable(
+    CustomerIdentityProviderUnavailable
+):
+    pass
+
+
 @dataclass(frozen=True)
 class OidcDiscovery:
     issuer: str
