@@ -135,16 +135,7 @@ def export_audit_events(
             SecretAccessAuditLog.id,
         ).limit(500)
     ).all()
-    record_identity_audit_event(
-        session,
-        event_type="audit_export_read",
-        outcome="success",
-        reason_code="operator_requested",
-        correlation_id=operation_correlation_id,
-        actor_user_id=auth.user_id,
-        user_id=auth.user_id,
-    )
-    return AuditExportRead(
+    export = AuditExportRead(
         identity_events=[
             IdentityAuditEventRead(
                 event_type=event.event_type,
@@ -189,6 +180,16 @@ def export_audit_events(
             for event in secret_events
         ],
     )
+    record_identity_audit_event(
+        session,
+        event_type="audit_export_read",
+        outcome="success",
+        reason_code="operator_requested",
+        correlation_id=operation_correlation_id,
+        actor_user_id=auth.user_id,
+        user_id=auth.user_id,
+    )
+    return export
 
 
 def run_operator_audit_retention_cleanup(
