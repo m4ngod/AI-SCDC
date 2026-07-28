@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import NoReturn
 
 from fastapi import HTTPException, status
@@ -11,6 +12,11 @@ from ai_company_api.services.auth_context import (
     get_current_auth_context,
 )
 from ai_company_api.services.secret_vault import SecretVault, get_secret_vault
+from ai_company_api.services.audit_request_context import (
+    resolved_audit_time,
+    resolved_correlation_id,
+    resolved_request_id,
+)
 
 
 def record_secret_access(
@@ -25,6 +31,9 @@ def record_secret_access(
     auth_mode: str | None = None,
     operation: str = "open",
     success: bool = True,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+    created_at: datetime | None = None,
     commit: bool = False,
 ) -> SecretAccessAuditLog:
     resolved_workspace_id = workspace_id or current_workspace_id()
@@ -38,11 +47,14 @@ def record_secret_access(
         ),
         user_id=user_id or current_user_id(),
         auth_mode=auth_mode or (context.auth_mode if context is not None else "system"),
+        request_id=resolved_request_id(request_id),
+        correlation_id=resolved_correlation_id(correlation_id),
         secret_kind=secret_kind,
         secret_id=secret_id,
         operation=operation,
         access_reason=access_reason,
         success=success,
+        created_at=resolved_audit_time(created_at),
     )
     session.add(log)
     if commit:

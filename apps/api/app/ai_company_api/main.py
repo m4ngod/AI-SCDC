@@ -2,8 +2,9 @@ from collections.abc import Generator
 from contextlib import asynccontextmanager
 from datetime import datetime
 import os
+import secrets
 from threading import Event
-from typing import Callable
+from typing import Any, Callable
 
 from anyio import create_task_group
 from fastapi import Depends, FastAPI, Request
@@ -47,6 +48,15 @@ from ai_company_api.services.auth_context import (
     get_auth_context_dependency,
     get_workspace_selection_auth_context_dependency,
 )
+from ai_company_api.services.audit_operations import (
+    maintain_audit_retention,
+)
+from ai_company_api.services.audit_request_context import (
+    AuditRequestContext,
+    MonotonicAuditClock,
+    audit_request_context_scope,
+    safe_user_agent,
+)
 from ai_company_api.services.auth_policy import (
     AUTHENTICATION_ENVIRONMENT_ENV,
     AuthenticationEnvironment,
@@ -76,8 +86,14 @@ REDACTED_SECRET_INPUT = "[redacted]"
 
 
 class UserSessionResponseStateMiddleware:
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        clock: Callable[[], datetime],
+    ) -> None:
         self.app = app
+        self.clock = MonotonicAuditClock(clock)
 
     async def __call__(
         self,
@@ -88,6 +104,29 @@ class UserSessionResponseStateMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+
+        request_id = f"request_{secrets.token_hex(16)}"
+        correlation_id = f"correlation_{secrets.token_hex(16)}"
+        headers_by_name = {
+            name.decode("latin-1").lower(): value.decode("latin-1")
+            for name, value in scope.get("headers", ())
+        }
+        client = scope.get("client")
+        client_ip_address = (
+            str(client[0])
+            if isinstance(client, tuple) and client
+            else None
+        )
+        audit_context = AuditRequestContext(
+            request_id=request_id,
+            correlation_id=correlation_id,
+            occurred_at=self.clock.next(),
+            client_ip_address=client_ip_address,
+            user_agent=safe_user_agent(
+                headers_by_name.get("user-agent")
+            ),
+            timestamp_source=self.clock.next,
+        )
 
         async def apply_response_state(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -119,15 +158,35 @@ class UserSessionResponseStateMiddleware:
                     and "x-correlation-id" not in headers
                 ):
                     headers["x-correlation-id"] = correlation_id
+                if "x-request-id" not in headers:
+                    headers["x-request-id"] = request_id
+                if (
+                    "x-correlation-id" not in headers
+                    and audit_context.has_events
+                ):
+                    headers["x-correlation-id"] = (
+                        audit_context.correlation_id
+                    )
             await send(message)
 
-        await self.app(scope, receive, apply_response_state)
+        with audit_request_context_scope(audit_context):
+            await self.app(scope, receive, apply_response_state)
 
 
 class AICompanyFastAPI(FastAPI):
+    def __init__(
+        self,
+        *args: Any,
+        audit_clock: Callable[[], datetime],
+        **kwargs: Any,
+    ) -> None:
+        self.audit_clock = audit_clock
+        super().__init__(*args, **kwargs)
+
     def build_middleware_stack(self) -> ASGIApp:
         return UserSessionResponseStateMiddleware(
             super().build_middleware_stack(),
+            clock=self.audit_clock,
         )
 
 
@@ -189,6 +248,8 @@ def create_app(
     identity_operator_user_ids: frozenset[str] = frozenset(),
     identity_clock: Callable[[], datetime] = utc_now,
     identity_status_synchronization_poll_seconds: float = 60.0,
+    audit_retention_poll_seconds: float = 3600.0,
+    audit_retention_failure_step: str | None = None,
     user_session_database_failure: bool = False,
     device_session_revocation_failure: str | None = None,
 ) -> FastAPI:
@@ -275,6 +336,24 @@ def create_app(
             "Identity status synchronization poll interval must be "
             "between zero and five minutes"
         )
+    if not 0 < audit_retention_poll_seconds <= 86400:
+        raise ValueError(
+            "Audit retention poll interval must be between zero "
+            "and one day"
+        )
+    if audit_retention_failure_step is not None:
+        if (
+            resolved_authentication_policy.environment
+            != AuthenticationEnvironment.TEST
+        ):
+            raise ValueError(
+                "Audit retention failure injection is allowed only "
+                "in the test environment"
+            )
+        if audit_retention_failure_step != "before_cleanup":
+            raise ValueError(
+                "Unsupported audit retention failure step"
+            )
     engine = build_engine(database_url)
 
     @asynccontextmanager
@@ -286,7 +365,9 @@ def create_app(
         ):
             _ensure_dev_auth_scope(engine)
         app.state.identity_status_synchronization_healthy = True
+        app.state.audit_retention_healthy = True
         stop_identity_status_synchronization = Event()
+        stop_audit_retention = Event()
         async with create_task_group() as task_group:
             if (
                 HumanCredentialType.USER_SESSION
@@ -313,12 +394,33 @@ def create_app(
                 task_group.start_soon(
                     run_identity_status_synchronization
                 )
+
+            async def run_audit_retention() -> None:
+                await maintain_audit_retention(
+                    engine=engine,
+                    clock=identity_clock,
+                    poll_seconds=audit_retention_poll_seconds,
+                    stop_event=stop_audit_retention,
+                    on_health_change=lambda healthy: setattr(
+                        app.state,
+                        "audit_retention_healthy",
+                        healthy,
+                    ),
+                    failure_step=audit_retention_failure_step,
+                )
+
+            task_group.start_soon(run_audit_retention)
             try:
                 yield
             finally:
                 stop_identity_status_synchronization.set()
+                stop_audit_retention.set()
 
-    app = AICompanyFastAPI(title="AI Company API", lifespan=lifespan)
+    app = AICompanyFastAPI(
+        title="AI Company API",
+        lifespan=lifespan,
+        audit_clock=identity_clock,
+    )
 
     app.state.authentication_policy = resolved_authentication_policy
     app.state.customer_identity_provider = customer_identity_provider
@@ -372,6 +474,12 @@ def create_app(
             return {
                 "status": "degraded",
                 "component": "identity_status_synchronization",
+            }
+        if not app.state.audit_retention_healthy:
+            response.status_code = 503
+            return {
+                "status": "degraded",
+                "component": "audit_retention",
             }
         return {"status": "ok"}
 
