@@ -41,17 +41,6 @@ WEB_CONSOLE_POLICY = AuthenticationPolicy(
         }
     ),
 )
-PRODUCTION_WEB_CONSOLE_POLICY = AuthenticationPolicy(
-    environment=AuthenticationEnvironment.PRODUCTION,
-    accepted_human_credentials=frozenset(
-        {
-            HumanCredentialType.USER_SESSION,
-            HumanCredentialType.WORKSPACE_API_TOKEN,
-        }
-    ),
-)
-
-
 def _build_app(
     database_url: str,
     provider: DeterministicFakeCustomerIdentityProvider,
@@ -437,7 +426,7 @@ def test_wildcard_cors_never_enables_browser_credentials(tmp_path) -> None:
     app = create_app(
         database_url=database_url,
         cors_origins=("*",),
-        authentication_policy=PRODUCTION_WEB_CONSOLE_POLICY,
+        authentication_policy=WEB_CONSOLE_POLICY,
         customer_identity_provider=provider,
         public_origin=WEB_APPLICATION_ORIGIN,
     )

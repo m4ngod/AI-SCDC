@@ -15,6 +15,7 @@ dependencies = [
     "httpx>=0.28.0",
     "PyJWT[crypto]>=2.10.0",
     "pydantic>=2.10.0",
+    "psycopg[binary]>=3.2.0",
     "sqlmodel>=0.0.22",
     "uvicorn>=0.32.0",
 ]

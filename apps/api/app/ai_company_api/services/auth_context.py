@@ -26,12 +26,12 @@ from ai_company_api.services.browser_request_protection import (
     enforce_cookie_request_protection,
 )
 from ai_company_api.services.user_session_credentials import (
-    USER_SESSION_COOKIE,
     USER_SESSION_PREVIOUS_SECRET_SECONDS,
     USER_SESSION_ROTATION_SECONDS,
     UserSessionCredentialRejected,
     hash_session_secret,
     resolve_user_session_credential,
+    user_session_cookie_name,
 )
 from ai_company_api.services.identity_audit import record_identity_audit_event
 from ai_company_api.services.identity_status_synchronization import (
@@ -191,7 +191,7 @@ def _resolve_auth_context(
     accepted_credentials = authentication_policy.accepted_human_credentials
 
     if (
-        USER_SESSION_COOKIE in request.cookies
+        user_session_cookie_name(request) in request.cookies
         and _has_bearer_credential(request)
     ):
         correlation_id = _record_authentication_failure(
@@ -204,6 +204,15 @@ def _resolve_auth_context(
             headers={"X-Correlation-ID": correlation_id},
         )
 
+    if (
+        _has_dev_auth_headers(request)
+        and HumanCredentialType.DEV_AUTH not in accepted_credentials
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Dev Auth is not allowed",
+        )
+
     if "authorization" in request.headers:
         if HumanCredentialType.WORKSPACE_API_TOKEN not in accepted_credentials:
             raise HTTPException(
@@ -213,14 +222,9 @@ def _resolve_auth_context(
         return _api_token_auth_context_or_audit(request, session)
 
     if _has_dev_auth_headers(request):
-        if HumanCredentialType.DEV_AUTH not in accepted_credentials:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Dev Auth is not allowed",
-            )
         return _dev_auth_context(request)
 
-    if USER_SESSION_COOKIE in request.cookies:
+    if user_session_cookie_name(request) in request.cookies:
         if HumanCredentialType.USER_SESSION not in accepted_credentials:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -388,7 +392,7 @@ def _user_session_auth_context(
     allow_workspace_selection_recovery: bool = False,
 ) -> AuthContext:
     now = _as_utc(request.app.state.identity_clock())
-    cookie_value = request.cookies.get(USER_SESSION_COOKIE, "")
+    cookie_value = request.cookies.get(user_session_cookie_name(request), "")
     try:
         resolved_credential = resolve_user_session_credential(
             session,

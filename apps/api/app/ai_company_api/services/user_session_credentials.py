@@ -4,6 +4,7 @@ from hashlib import sha256
 import hmac
 import secrets
 
+from fastapi import Request, Response
 from sqlmodel import Session
 
 from ai_company_api.models.entities import DeviceSession
@@ -14,6 +15,42 @@ USER_SESSION_COOKIE = "__Host-ai_scdc_session"
 USER_SESSION_IDLE_SECONDS = 30 * 24 * 60 * 60
 USER_SESSION_ROTATION_SECONDS = 24 * 60 * 60
 USER_SESSION_PREVIOUS_SECRET_SECONDS = 2 * 60
+
+
+def user_session_cookie_name(request: Request) -> str:
+    return request.app.state.user_session_cookie_name
+
+
+def set_user_session_cookie(
+    response: Response,
+    request: Request,
+    *,
+    value: str,
+) -> None:
+    response.set_cookie(
+        key=user_session_cookie_name(request),
+        value=value,
+        max_age=USER_SESSION_IDLE_SECONDS,
+        secure=request.app.state.user_session_cookie_secure,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        domain=request.app.state.user_session_cookie_domain,
+    )
+
+
+def delete_user_session_cookie(
+    response: Response,
+    request: Request,
+) -> None:
+    response.delete_cookie(
+        key=user_session_cookie_name(request),
+        secure=request.app.state.user_session_cookie_secure,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        domain=request.app.state.user_session_cookie_domain,
+    )
 
 
 class UserSessionCredentialRejected(RuntimeError):

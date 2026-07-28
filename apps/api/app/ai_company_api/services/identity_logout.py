@@ -18,7 +18,7 @@ from ai_company_api.services.customer_identity_provider import (
 )
 from ai_company_api.services.identity_audit import record_identity_audit_event
 from ai_company_api.services.user_session_credentials import (
-    USER_SESSION_COOKIE,
+    delete_user_session_cookie,
     hash_session_secret,
 )
 
@@ -118,13 +118,7 @@ def sign_out_current_device(
         session.commit()
 
     response = JSONResponse({"redirect_to": redirect_to})
-    response.delete_cookie(
-        key=USER_SESSION_COOKIE,
-        secure=True,
-        httponly=True,
-        samesite="lax",
-        path="/",
-    )
+    delete_user_session_cookie(response, request)
     if continuation_cookie is not None:
         response.set_cookie(
             key=PROVIDER_LOGOUT_COOKIE,
