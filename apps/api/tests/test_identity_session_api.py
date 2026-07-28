@@ -296,7 +296,12 @@ def test_session_secret_rotates_with_overlap_and_replay_revokes_the_session(
     assert "SameSite=lax" in rotated_set_cookie
     assert "Path=/" in rotated_set_cookie
     assert [response.status_code for response in overlap_responses] == [200, 200]
-    assert rotation_audit.json() == [
+    rotation_events = [
+        event
+        for event in rotation_audit.json()
+        if event["event_type"] == "session_credential_rotated"
+    ]
+    assert rotation_events == [
         {
             "event_type": "session_credential_rotated",
             "outcome": "success",
@@ -501,40 +506,47 @@ def test_high_frequency_activity_persists_session_renewal_at_most_hourly(
         for minutes in (20, 20, 20, 30, 30):
             clock.advance(timedelta(minutes=minutes))
             responses.append(client.get("/me"))
-        first_renewal_audit = client.get(
-            "/auth/test/audit-events",
-            params={
-                "correlation_id": responses[2].headers["x-correlation-id"],
-            },
-        )
-        second_renewal_audit = client.get(
-            "/auth/test/audit-events",
-            params={
-                "correlation_id": responses[4].headers["x-correlation-id"],
-            },
-        )
+        response_audits = [
+            client.get(
+                "/auth/test/audit-events",
+                params={
+                    "correlation_id": response.headers["x-correlation-id"],
+                },
+            )
+            for response in responses
+        ]
 
     assert [response.status_code for response in responses] == [200] * 5
-    assert "x-correlation-id" not in responses[0].headers
-    assert "x-correlation-id" not in responses[1].headers
-    assert "x-correlation-id" in responses[2].headers
-    assert "x-correlation-id" not in responses[3].headers
-    assert "x-correlation-id" in responses[4].headers
-    for audit in (first_renewal_audit, second_renewal_audit):
-        assert [
+    assert [
+        [
             (
                 event["event_type"],
                 event["outcome"],
                 event["reason_code"],
             )
             for event in audit.json()
-        ] == [
+            if event["event_type"] == "session_activity_renewed"
+        ]
+        for audit in response_audits
+    ] == [
+        [],
+        [],
+        [
             (
                 "session_activity_renewed",
                 "success",
                 "hourly_activity_checkpoint",
             )
-        ]
+        ],
+        [],
+        [
+            (
+                "session_activity_renewed",
+                "success",
+                "hourly_activity_checkpoint",
+            )
+        ],
+    ]
 
 
 def test_parallel_activity_creates_only_one_hourly_session_checkpoint(
@@ -566,25 +578,25 @@ def test_parallel_activity_creates_only_one_hourly_session_checkpoint(
                     (first_browser, second_browser),
                 )
             )
-        checkpoint_responses = [
-            response
+        correlation_ids = {
+            response.headers["x-correlation-id"]
             for response in responses
             if "x-correlation-id" in response.headers
+        }
+        audits = [
+            first_browser.get(
+                "/auth/test/audit-events",
+                params={"correlation_id": correlation_id},
+            )
+            for correlation_id in correlation_ids
         ]
-        audit = first_browser.get(
-            "/auth/test/audit-events",
-            params={
-                "correlation_id": checkpoint_responses[0].headers[
-                    "x-correlation-id"
-                ],
-            },
-        )
 
     assert [response.status_code for response in responses] == [200, 200]
-    assert len(checkpoint_responses) == 1
-    assert [
-        event["event_type"] for event in audit.json()
-    ] == ["session_activity_renewed"]
+    assert sum(
+        event["event_type"] == "session_activity_renewed"
+        for audit in audits
+        for event in audit.json()
+    ) == 1
 
 
 def test_cookie_authentication_fails_closed_when_session_database_is_unavailable(

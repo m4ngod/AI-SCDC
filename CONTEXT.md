@@ -67,7 +67,7 @@ An identity asserted by an external identity provider, uniquely recognized by it
 _Avoid_: User, Workspace Member
 
 **Identity Status Synchronization**:
-The production check that reconciles a User's linked CIAM account state with AI-SCDC authorization. It runs during login and Recent Authentication and at least every five minutes for Users with active Device Sessions. A locked, disabled, or missing CIAM account revokes all human User Sessions and Workspace API Tokens; restricted Worker Callback Tokens remain independently valid for already-running work.
+The production check that reconciles a User's linked CIAM account state with AI-SCDC authorization. It runs during login and Recent Authentication and at least every five minutes for Users with active Device Sessions. A locked, disabled, or missing CIAM account revokes all human User Sessions and Workspace API Tokens; restricted Worker Callback Tokens remain independently valid for already-running work. A later verified active status permits a locked identity to start a fresh login, while a disabled or missing identity also requires an audited, recently authenticated operator restoration before any fresh login; restoration never revives revoked credentials.
 _Avoid_: Login, Role Resolution, Worker Authorization
 
 **Last Confirmed Identity Status**:

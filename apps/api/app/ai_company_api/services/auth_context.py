@@ -34,6 +34,10 @@ from ai_company_api.services.user_session_credentials import (
     resolve_user_session_credential,
 )
 from ai_company_api.services.identity_audit import record_identity_audit_event
+from ai_company_api.services.identity_status_synchronization import (
+    IdentityStatusSynchronizationResult,
+    synchronize_due_identity_status,
+)
 
 
 DEV_USER_ID = "dev_user"
@@ -325,6 +329,19 @@ def _api_token_auth_context(request: Request, session: Session) -> AuthContext:
             detail="Invalid API token",
         )
     _ensure_active_membership_scope(session, member)
+    synchronization = _synchronize_request_identity_status(
+        request,
+        session,
+        user_id=member.user_id,
+    )
+    if synchronization.human_credentials_revoked:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API token",
+            headers={
+                "X-Correlation-ID": str(synchronization.correlation_id),
+            },
+        )
     return AuthContext(
         user_id=member.user_id,
         workspace_id=member.workspace_id,
@@ -341,6 +358,11 @@ def _api_token_auth_context_or_audit(
     try:
         return _api_token_auth_context(request, session)
     except HTTPException as exc:
+        if (
+            exc.headers is not None
+            and exc.headers.get("X-Correlation-ID") is not None
+        ):
+            raise
         reason_code = (
             "workspace_api_token_required"
             if exc.detail == "Bearer API token is required"
@@ -464,8 +486,23 @@ def _user_session_auth_context(
             auth_mode=USER_SESSION_AUTH_MODE,
             device_session_id=device_session.id,
         )
+    synchronization = _synchronize_request_identity_status(
+        request,
+        session,
+        user_id=device_session.user_id,
+        device_session_id=device_session.id,
+    )
+    if synchronization.human_credentials_revoked:
+        session.expire_all()
+        _invalid_user_session(
+            correlation_id=synchronization.correlation_id,
+        )
     if _as_utc(device_session.last_seen_at) + timedelta(hours=1) <= now:
-        correlation_id = secrets.token_hex(16)
+        correlation_id = getattr(
+            request.state,
+            "identity_correlation_id",
+            None,
+        ) or secrets.token_hex(16)
         result = session.execute(
             update(DeviceSession)
             .where(
@@ -496,6 +533,36 @@ def _user_session_auth_context(
         else:
             session.rollback()
     return context
+
+
+def _synchronize_request_identity_status(
+    request: Request,
+    session: Session,
+    *,
+    user_id: str,
+    device_session_id: str | None = None,
+) -> IdentityStatusSynchronizationResult:
+    provider = request.app.state.customer_identity_provider
+    if provider is None:
+        return IdentityStatusSynchronizationResult(
+            correlation_id=None,
+            human_credentials_revoked=False,
+        )
+    result = synchronize_due_identity_status(
+        session,
+        provider=provider,
+        user_id=user_id,
+        now=request.app.state.identity_clock(),
+        device_session_id=device_session_id,
+        correlation_id=getattr(
+            request.state,
+            "identity_correlation_id",
+            None,
+        ),
+    )
+    if result.correlation_id is not None:
+        request.state.identity_correlation_id = result.correlation_id
+    return result
 
 
 def _invalid_user_session(*, correlation_id: str | None = None) -> None:

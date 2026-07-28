@@ -157,6 +157,9 @@ def _upgrade_sqlite_identity_recovery_columns(engine) -> None:
     table_columns = {
         "external_identity": {
             "account_link_correlation_id": "VARCHAR",
+            "last_confirmed_at": "DATETIME",
+            "last_status_checked_at": "DATETIME",
+            "status_check_token": "VARCHAR",
         },
         "identity_audit_event": {
             "related_correlation_id": "VARCHAR",
@@ -165,7 +168,12 @@ def _upgrade_sqlite_identity_recovery_columns(engine) -> None:
         },
     }
     indexed_columns = {
-        "external_identity": ("account_link_correlation_id",),
+        "external_identity": (
+            "account_link_correlation_id",
+            "last_confirmed_at",
+            "last_status_checked_at",
+            "status_check_token",
+        ),
         "identity_audit_event": (
             "related_correlation_id",
             "actor_user_id",
@@ -204,6 +212,21 @@ def _upgrade_sqlite_identity_recovery_columns(engine) -> None:
                         f"ON {table_name} ({column_name})"
                     )
                 )
+        if "external_identity" in existing_tables:
+            connection.execute(
+                text(
+                    "UPDATE external_identity "
+                    "SET last_confirmed_at = updated_at "
+                    "WHERE last_confirmed_at IS NULL"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE external_identity "
+                    "SET last_status_checked_at = last_confirmed_at "
+                    "WHERE last_status_checked_at IS NULL"
+                )
+            )
 
 
 def _upgrade_sqlite_account_classification(engine) -> None:

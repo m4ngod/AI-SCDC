@@ -2,8 +2,10 @@ from collections.abc import Generator
 from contextlib import asynccontextmanager
 from datetime import datetime
 import os
+from threading import Event
 from typing import Callable
 
+from anyio import create_task_group
 from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -55,6 +57,9 @@ from ai_company_api.services.auth_policy import (
 from ai_company_api.services.customer_identity_provider import CustomerIdentityProvider
 from ai_company_api.services.identity_login import (
     PERSONAL_ONBOARDING_FAILURE_STEPS,
+)
+from ai_company_api.services.identity_status_synchronization import (
+    maintain_identity_status_synchronization,
 )
 from ai_company_api.services.user_session_credentials import (
     USER_SESSION_COOKIE,
@@ -183,6 +188,7 @@ def create_app(
     personal_onboarding_failure_step: str | None = None,
     identity_operator_user_ids: frozenset[str] = frozenset(),
     identity_clock: Callable[[], datetime] = utc_now,
+    identity_status_synchronization_poll_seconds: float = 60.0,
     user_session_database_failure: bool = False,
     device_session_revocation_failure: str | None = None,
 ) -> FastAPI:
@@ -264,6 +270,11 @@ def create_app(
             raise ValueError(
                 "Unsupported Device Session revocation failure mode"
             )
+    if not 0 < identity_status_synchronization_poll_seconds <= 300:
+        raise ValueError(
+            "Identity status synchronization poll interval must be "
+            "between zero and five minutes"
+        )
     engine = build_engine(database_url)
 
     @asynccontextmanager
@@ -274,7 +285,38 @@ def create_app(
             in resolved_authentication_policy.accepted_human_credentials
         ):
             _ensure_dev_auth_scope(engine)
-        yield
+        app.state.identity_status_synchronization_healthy = True
+        stop_identity_status_synchronization = Event()
+        async with create_task_group() as task_group:
+            if (
+                HumanCredentialType.USER_SESSION
+                in resolved_authentication_policy.accepted_human_credentials
+            ):
+                assert customer_identity_provider is not None
+
+                async def run_identity_status_synchronization() -> None:
+                    await maintain_identity_status_synchronization(
+                        engine=engine,
+                        provider=customer_identity_provider,
+                        clock=identity_clock,
+                        poll_seconds=(
+                            identity_status_synchronization_poll_seconds
+                        ),
+                        stop_event=stop_identity_status_synchronization,
+                        on_health_change=lambda healthy: setattr(
+                            app.state,
+                            "identity_status_synchronization_healthy",
+                            healthy,
+                        ),
+                    )
+
+                task_group.start_soon(
+                    run_identity_status_synchronization
+                )
+            try:
+                yield
+            finally:
+                stop_identity_status_synchronization.set()
 
     app = AICompanyFastAPI(title="AI Company API", lifespan=lifespan)
 
@@ -324,7 +366,13 @@ def create_app(
     app.dependency_overrides[get_session_dependency] = session_dependency
 
     @app.get("/health")
-    def health() -> dict[str, str]:
+    def health(response: Response) -> dict[str, str]:
+        if not app.state.identity_status_synchronization_healthy:
+            response.status_code = 503
+            return {
+                "status": "degraded",
+                "component": "identity_status_synchronization",
+            }
         return {"status": "ok"}
 
     @app.get("/me")

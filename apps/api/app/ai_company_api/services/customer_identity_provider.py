@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from base64 import urlsafe_b64encode
 from datetime import datetime
 from hashlib import sha256
-from threading import Event, Lock
+from threading import Condition, Event, Lock
 from time import sleep
 from typing import Protocol
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -77,7 +77,9 @@ class CustomerIdentityProvider(Protocol):
 
     def end_session_url(self, *, post_logout_redirect_uri: str) -> str | None: ...
 
-    def identity_status(self, *, issuer: str, subject: str) -> str: ...
+    def identity_status(self, *, issuer: str, subject: str) -> str:
+        """Return a status using an adapter-enforced finite I/O timeout."""
+        ...
 
 
 class DeterministicFakeCustomerIdentityProvider:
@@ -101,6 +103,14 @@ class DeterministicFakeCustomerIdentityProvider:
         self._unavailable = False
         self._unavailable_operations: set[str] = set()
         self._failed_operations: set[str] = set()
+        self._unexpected_failure_operations: set[str] = set()
+        self._identity_status_query_count = 0
+        self._identity_status_query_condition = Condition()
+        self._identity_status_lock = Lock()
+        self._block_next_identity_status_query = False
+        self._identity_status_query_started = Event()
+        self._identity_status_query_release = Event()
+        self._identity_status_query_release.set()
         self._exchange_lock = Lock()
         self._exchange_started = Event()
         self._exchange_initial_delay = 0.0
@@ -225,10 +235,26 @@ class DeterministicFakeCustomerIdentityProvider:
 
     def identity_status(self, *, issuer: str, subject: str) -> str:
         self._require_available("status")
-        try:
-            return self._identity_statuses[(issuer, subject)]
-        except KeyError as exc:
-            raise CustomerIdentityProviderError("Identity is not known") from exc
+        with self._identity_status_lock:
+            try:
+                identity_status = self._identity_statuses[(issuer, subject)]
+            except KeyError as exc:
+                raise CustomerIdentityProviderError(
+                    "Identity is not known"
+                ) from exc
+            should_block = self._block_next_identity_status_query
+            if should_block:
+                self._block_next_identity_status_query = False
+        with self._identity_status_query_condition:
+            self._identity_status_query_count += 1
+            self._identity_status_query_condition.notify_all()
+        if should_block:
+            self._identity_status_query_started.set()
+            if not self._identity_status_query_release.wait(timeout=5.0):
+                raise CustomerIdentityProviderUnavailable(
+                    "The fake identity status query timed out"
+                )
+        return identity_status
 
     def issue_authorization_code(
         self,
@@ -282,7 +308,8 @@ class DeterministicFakeCustomerIdentityProvider:
             "used": False,
         }
         self._codes[code] = record
-        self._identity_statuses[(self.issuer, subject)] = identity_status
+        with self._identity_status_lock:
+            self._identity_statuses[(self.issuer, subject)] = identity_status
         return code
 
     def set_unavailable(self, unavailable: bool = True) -> None:
@@ -293,6 +320,47 @@ class DeterministicFakeCustomerIdentityProvider:
 
     def set_failure_for(self, *operations: str) -> None:
         self._failed_operations.update(operations)
+
+    def set_unexpected_failure_for(self, *operations: str) -> None:
+        self._unexpected_failure_operations.update(operations)
+
+    def clear_unexpected_failure_for(self, *operations: str) -> None:
+        self._unexpected_failure_operations.difference_update(operations)
+
+    def set_identity_status(
+        self,
+        *,
+        issuer: str,
+        subject: str,
+        identity_status: str,
+    ) -> None:
+        with self._identity_status_lock:
+            self._identity_statuses[(issuer, subject)] = identity_status
+
+    def identity_status_query_count(self) -> int:
+        with self._identity_status_query_condition:
+            return self._identity_status_query_count
+
+    def block_next_identity_status_query(self) -> None:
+        with self._identity_status_lock:
+            self._identity_status_query_started.clear()
+            self._identity_status_query_release.clear()
+            self._block_next_identity_status_query = True
+
+    def release_blocked_identity_status_query(self) -> None:
+        self._identity_status_query_release.set()
+
+    def wait_for_identity_status_queries(
+        self,
+        *,
+        minimum: int,
+        timeout: float,
+    ) -> bool:
+        with self._identity_status_query_condition:
+            return self._identity_status_query_condition.wait_for(
+                lambda: self._identity_status_query_count >= minimum,
+                timeout=timeout,
+            )
 
     def set_end_session_endpoint(self, endpoint: str | None) -> None:
         self._end_session_endpoint = endpoint
@@ -311,6 +379,10 @@ class DeterministicFakeCustomerIdentityProvider:
         return self._exchange_started.wait(timeout)
 
     def _require_available(self, operation: str) -> None:
+        if operation in self._unexpected_failure_operations:
+            raise RuntimeError(
+                "The fake Customer Identity Provider crashed unexpectedly"
+            )
         if self._unavailable or operation in self._unavailable_operations:
             raise CustomerIdentityProviderUnavailable(
                 "The fake Customer Identity Provider is unavailable"
