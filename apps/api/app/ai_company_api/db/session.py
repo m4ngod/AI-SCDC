@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -19,6 +19,7 @@ def build_engine(database_url: str):
 
 
 def init_db(engine) -> None:
+    _upgrade_identity_additive_columns(engine)
     _upgrade_sqlite_account_classification(engine)
     _upgrade_sqlite_identity_recovery_columns(engine)
     _upgrade_sqlite_user_session_columns(engine)
@@ -38,6 +39,383 @@ def init_db(engine) -> None:
     _upgrade_sqlite_planner_run_metadata(engine)
     _upgrade_sqlite_task_execution_constraints(engine)
     _upgrade_sqlite_patch_review_uniqueness(engine)
+
+
+IDENTITY_SCHEMA_TABLES = frozenset(
+    {
+        "external_identity",
+        "account_link_recovery",
+        "device_session",
+        "login_transaction",
+        "provider_logout_continuation",
+        "identity_audit_event",
+        "audit_retention_state",
+    }
+)
+
+IDENTITY_ADDITIVE_COLUMNS = {
+    "organization": {
+        "account_kind": "VARCHAR NOT NULL DEFAULT 'legacy'",
+        "personal_owner_user_id": "VARCHAR",
+    },
+    "external_identity": {
+        "account_link_correlation_id": "VARCHAR",
+        "last_confirmed_at": "DATETIME",
+        "last_status_checked_at": "DATETIME",
+        "status_check_token": "VARCHAR",
+    },
+    "device_session": {
+        "previous_secret_hash": "VARCHAR",
+        "previous_secret_valid_until": "DATETIME",
+        "secret_rotated_at": "DATETIME",
+        "recent_authenticated_at": "DATETIME",
+        "device_description": "VARCHAR",
+    },
+    "login_transaction": {
+        "purpose": "VARCHAR NOT NULL DEFAULT 'login'",
+        "requested_session_id": "VARCHAR",
+    },
+    "identity_audit_event": {
+        "related_correlation_id": "VARCHAR",
+        "actor_user_id": "VARCHAR",
+        "operator_reason": "VARCHAR",
+        "request_id": "VARCHAR",
+        "client_ip_address": "VARCHAR",
+        "user_agent": "VARCHAR",
+    },
+    "workspace_audit_log": {
+        "request_id": "VARCHAR",
+        "correlation_id": "VARCHAR",
+    },
+    "secret_access_audit_log": {
+        "request_id": "VARCHAR",
+        "correlation_id": "VARCHAR",
+    },
+}
+
+IDENTITY_ADDITIVE_INDEXES = {
+    "organization": (
+        ("ix_organization_account_kind", ("account_kind",), False, None),
+        (
+            "uq_organization_personal_owner_user",
+            ("personal_owner_user_id",),
+            True,
+            "personal_owner_user_id IS NOT NULL",
+        ),
+    ),
+    "external_identity": (
+        (
+            "ix_external_identity_account_link_correlation_id",
+            ("account_link_correlation_id",),
+            False,
+            None,
+        ),
+        (
+            "ix_external_identity_last_confirmed_at",
+            ("last_confirmed_at",),
+            False,
+            None,
+        ),
+        (
+            "ix_external_identity_last_status_checked_at",
+            ("last_status_checked_at",),
+            False,
+            None,
+        ),
+        (
+            "ix_external_identity_status_check_token",
+            ("status_check_token",),
+            False,
+            None,
+        ),
+    ),
+    "device_session": (
+        (
+            "ix_device_session_previous_secret_valid_until",
+            ("previous_secret_valid_until",),
+            False,
+            None,
+        ),
+        (
+            "ix_device_session_secret_rotated_at",
+            ("secret_rotated_at",),
+            False,
+            None,
+        ),
+        (
+            "ix_device_session_recent_authenticated_at",
+            ("recent_authenticated_at",),
+            False,
+            None,
+        ),
+    ),
+    "login_transaction": (
+        (
+            "ix_login_transaction_purpose",
+            ("purpose",),
+            False,
+            None,
+        ),
+        (
+            "ix_login_transaction_requested_session_id",
+            ("requested_session_id",),
+            False,
+            None,
+        ),
+    ),
+    "identity_audit_event": (
+        (
+            "ix_identity_audit_event_related_correlation_id",
+            ("related_correlation_id",),
+            False,
+            None,
+        ),
+        (
+            "ix_identity_audit_event_actor_user_id",
+            ("actor_user_id",),
+            False,
+            None,
+        ),
+        (
+            "ix_identity_audit_event_request_id",
+            ("request_id",),
+            False,
+            None,
+        ),
+        (
+            "uq_identity_security_rollback_correlation",
+            ("correlation_id",),
+            True,
+            "event_type = 'identity_security_rollback'",
+        ),
+    ),
+    "workspace_audit_log": (
+        (
+            "ix_workspace_audit_log_request_id",
+            ("request_id",),
+            False,
+            None,
+        ),
+        (
+            "ix_workspace_audit_log_correlation_id",
+            ("correlation_id",),
+            False,
+            None,
+        ),
+    ),
+    "secret_access_audit_log": (
+        (
+            "ix_secret_access_audit_log_request_id",
+            ("request_id",),
+            False,
+            None,
+        ),
+        (
+            "ix_secret_access_audit_log_correlation_id",
+            ("correlation_id",),
+            False,
+            None,
+        ),
+    ),
+}
+
+
+def plan_identity_schema_migration(engine) -> tuple[str, ...]:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        existing_tables = set(inspector.get_table_names())
+        actions: list[str] = []
+        if "organization" in existing_tables:
+            organization_columns = {
+                column["name"]
+                for column in inspector.get_columns("organization")
+            }
+            if not {
+                "account_kind",
+                "personal_owner_user_id",
+            }.issubset(organization_columns):
+                actions.append("add_account_classification")
+        if not IDENTITY_SCHEMA_TABLES.issubset(existing_tables):
+            actions.append("create_identity_tables")
+        identity_extension_tables = (
+            "external_identity",
+            "device_session",
+            "login_transaction",
+            "identity_audit_event",
+        )
+        if any(
+            table_name in existing_tables
+            and not set(IDENTITY_ADDITIVE_COLUMNS[table_name]).issubset(
+                {
+                    column["name"]
+                    for column in inspector.get_columns(table_name)
+                }
+            )
+            for table_name in identity_extension_tables
+        ):
+            actions.append("extend_identity_records")
+        audit_tables = (
+            "workspace_audit_log",
+            "secret_access_audit_log",
+        )
+        audit_correlation_pending = False
+        for table_name in audit_tables:
+            if table_name not in existing_tables:
+                continue
+            audit_columns = {
+                column["name"]
+                for column in inspector.get_columns(table_name)
+            }
+            if not {"request_id", "correlation_id"}.issubset(
+                audit_columns
+            ):
+                audit_correlation_pending = True
+                continue
+            missing_correlation_count = connection.execute(
+                text(
+                    f"SELECT COUNT(*) FROM {table_name} "
+                    "WHERE correlation_id IS NULL "
+                    "OR correlation_id = ''"
+                )
+            ).scalar_one()
+            if missing_correlation_count:
+                audit_correlation_pending = True
+        if audit_correlation_pending:
+            actions.append("extend_audit_correlation")
+        return tuple(actions)
+
+
+def _upgrade_identity_additive_columns(engine) -> None:
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        existing_tables = set(inspector.get_table_names())
+        preparer = engine.dialect.identifier_preparer
+        datetime_type = (
+            "TIMESTAMP WITHOUT TIME ZONE"
+            if engine.dialect.name == "postgresql"
+            else "DATETIME"
+        )
+        for table_name, columns in IDENTITY_ADDITIVE_COLUMNS.items():
+            if table_name not in existing_tables:
+                continue
+            existing_columns = {
+                column["name"]
+                for column in inspector.get_columns(table_name)
+            }
+            quoted_table = preparer.quote(table_name)
+            for column_name, column_type in columns.items():
+                if column_name in existing_columns:
+                    continue
+                resolved_type = column_type.replace(
+                    "DATETIME",
+                    datetime_type,
+                )
+                add_column_sql = (
+                    "ADD COLUMN IF NOT EXISTS"
+                    if engine.dialect.name == "postgresql"
+                    else "ADD COLUMN"
+                )
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {quoted_table} {add_column_sql} "
+                        f"{preparer.quote(column_name)} {resolved_type}"
+                    )
+                )
+
+        if "organization" in existing_tables:
+            connection.execute(
+                text(
+                    "UPDATE organization "
+                    "SET account_kind = 'legacy' "
+                    "WHERE account_kind IS NULL OR account_kind = ''"
+                )
+            )
+        if "external_identity" in existing_tables:
+            connection.execute(
+                text(
+                    "UPDATE external_identity "
+                    "SET last_confirmed_at = updated_at "
+                    "WHERE last_confirmed_at IS NULL"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE external_identity "
+                    "SET last_status_checked_at = last_confirmed_at "
+                    "WHERE last_status_checked_at IS NULL"
+                )
+            )
+        if "device_session" in existing_tables:
+            connection.execute(
+                text(
+                    "UPDATE device_session "
+                    "SET secret_rotated_at = created_at "
+                    "WHERE secret_rotated_at IS NULL"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE device_session "
+                    "SET device_description = "
+                    "'Unknown browser on Unknown device' "
+                    "WHERE device_description IS NULL "
+                    "OR device_description = ''"
+                )
+            )
+        for table_name, legacy_prefix in (
+            ("workspace_audit_log", "legacy_workspace_audit_"),
+            ("secret_access_audit_log", "legacy_secret_access_audit_"),
+        ):
+            if table_name not in existing_tables:
+                continue
+            connection.execute(
+                text(
+                    f"UPDATE {table_name} "
+                    "SET correlation_id = :legacy_prefix || id "
+                    "WHERE correlation_id IS NULL "
+                    "OR correlation_id = ''"
+                ),
+                {"legacy_prefix": legacy_prefix},
+            )
+
+        refreshed_inspector = inspect(connection)
+        for table_name, indexes in IDENTITY_ADDITIVE_INDEXES.items():
+            if table_name not in existing_tables:
+                continue
+            existing_columns = {
+                column["name"]
+                for column in refreshed_inspector.get_columns(table_name)
+            }
+            existing_indexes = {
+                index["name"]
+                for index in refreshed_inspector.get_indexes(table_name)
+            }
+            quoted_table = preparer.quote(table_name)
+            for index_name, column_names, unique, predicate in indexes:
+                if (
+                    index_name in existing_indexes
+                    or not set(column_names).issubset(existing_columns)
+                ):
+                    continue
+                unique_sql = "UNIQUE " if unique else ""
+                quoted_columns = ", ".join(
+                    preparer.quote(column_name)
+                    for column_name in column_names
+                )
+                predicate_sql = (
+                    f" WHERE {predicate}"
+                    if predicate is not None
+                    else ""
+                )
+                connection.execute(
+                    text(
+                        f"CREATE {unique_sql}INDEX "
+                        "IF NOT EXISTS "
+                        f"{preparer.quote(index_name)} "
+                        f"ON {quoted_table} ({quoted_columns})"
+                        f"{predicate_sql}"
+                    )
+                )
 
 
 def _upgrade_sqlite_user_session_columns(engine) -> None:

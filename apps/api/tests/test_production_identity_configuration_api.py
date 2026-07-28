@@ -376,6 +376,28 @@ def test_production_process_refuses_missing_authing_configuration(
     assert "production-access-secret" not in message
 
 
+def test_local_configured_process_keeps_oidc_login_disabled_without_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        AUTHENTICATION_ENVIRONMENT_ENV,
+        AuthenticationEnvironment.LOCAL.value,
+    )
+    monkeypatch.setenv("AI_SCDC_DATABASE_URL", "sqlite://")
+
+    app = create_configured_app()
+
+    with TestClient(app) as client:
+        status = client.get("/auth/rollout-status")
+        login = client.get("/auth/login?return_to=/", follow_redirects=False)
+
+    assert status.status_code == 200
+    assert status.json()["stage"] == "disabled"
+    assert status.json()["oidc_login_enabled"] is False
+    assert login.status_code == 503
+    assert login.json() == {"error": "identity_login_disabled"}
+
+
 def test_production_process_refuses_invalid_authing_configuration_without_secret_leak(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -652,6 +674,64 @@ def test_production_module_refuses_cookie_domain_environment() -> None:
     assert completed.returncode != 0
     assert "Production User Session Cookie must not set Domain" in output
     assert "database-secret" not in output
+
+
+def test_production_security_rollback_loads_without_authing_credentials() -> None:
+    environment = complete_production_process_environment()
+    environment["AI_SCDC_IDENTITY_SECURITY_ROLLBACK"] = "true"
+    environment["AI_SCDC_IDENTITY_ROLLOUT_STAGE"] = "public"
+    for name in (
+        "AI_SCDC_AUTHING_APP_HOST",
+        "AI_SCDC_AUTHING_ISSUER",
+        "AI_SCDC_AUTHING_APP_ID",
+        "AI_SCDC_AUTHING_APP_SECRET",
+        "AI_SCDC_AUTHING_USER_POOL_ID",
+        "AI_SCDC_AUTHING_USER_POOL_SECRET",
+    ):
+        environment.pop(name, None)
+
+    completed = run_production_module(environment)
+
+    output = f"{completed.stdout}\n{completed.stderr}"
+    assert completed.returncode == 0, output
+    assert "database-secret" not in output
+    assert "production-access-secret" not in output
+
+
+def test_production_public_registration_refuses_incomplete_release_gates() -> None:
+    environment = complete_production_process_environment()
+    environment["AI_SCDC_IDENTITY_ROLLOUT_STAGE"] = "public"
+    environment["AI_SCDC_IDENTITY_RELEASE_GATES_PASSED"] = (
+        "fake_provider_automation,real_ciam_smoke"
+    )
+
+    completed = run_production_module(environment)
+
+    output = f"{completed.stdout}\n{completed.stderr}"
+    assert completed.returncode != 0
+    assert (
+        "Public self-registration requires every identity release gate"
+        in output
+    )
+    assert "database-secret" not in output
+    assert "production-access-secret" not in output
+    assert "application-secret" not in output
+    assert "user-pool-secret" not in output
+
+
+def test_production_refuses_ciam_test_tenant_rollout_stage() -> None:
+    environment = complete_production_process_environment()
+    environment["AI_SCDC_IDENTITY_ROLLOUT_STAGE"] = "ciam_test_tenant"
+
+    completed = run_production_module(environment)
+
+    output = f"{completed.stdout}\n{completed.stderr}"
+    assert completed.returncode != 0
+    assert "CIAM test-tenant rollout is not allowed in production" in output
+    assert "database-secret" not in output
+    assert "production-access-secret" not in output
+    assert "application-secret" not in output
+    assert "user-pool-secret" not in output
 
 
 @pytest.mark.parametrize(

@@ -137,7 +137,7 @@ def continue_provider_logout(
     session: Session,
     *,
     request: Request,
-    provider: CustomerIdentityProvider,
+    provider: CustomerIdentityProvider | None,
     now: datetime,
 ) -> RedirectResponse:
     fallback = f"{request.app.state.public_origin}/"
@@ -168,13 +168,18 @@ def continue_provider_logout(
     logout_hint = continuation.sealed_provider_hint
     device_session_id = continuation.device_session_id
     correlation_id = continuation.correlation_id
-    redirect_to, provider_outcome, provider_reason = (
-        _prepare_end_session_redirect(
-            provider,
-            post_logout_redirect_uri=fallback,
-            logout_hint=logout_hint,
+    if provider is None:
+        redirect_to = None
+        provider_outcome = "failure"
+        provider_reason = "identity_rollout_disabled"
+    else:
+        redirect_to, provider_outcome, provider_reason = (
+            _prepare_end_session_redirect(
+                provider,
+                post_logout_redirect_uri=fallback,
+                logout_hint=logout_hint,
+            )
         )
-    )
     result = session.execute(
         update(ProviderLogoutContinuation)
         .where(

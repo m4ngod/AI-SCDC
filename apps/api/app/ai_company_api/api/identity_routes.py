@@ -3,6 +3,7 @@ from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
@@ -89,6 +90,21 @@ def get_login(
     session: SessionDep,
     return_to: str = Query(...),
 ) -> Response:
+    if not request.app.state.identity_rollout_policy.oidc_login_enabled:
+        correlation_id = secrets.token_hex(16)
+        if request.app.state.identity_schema_ready:
+            record_identity_audit_event(
+                session,
+                event_type="login_failure",
+                outcome="failure",
+                reason_code="identity_rollout_disabled",
+                correlation_id=correlation_id,
+            )
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"error": "identity_login_disabled"},
+            headers={"X-Correlation-ID": correlation_id},
+        )
     return start_login(
         session,
         provider=request.app.state.customer_identity_provider,
@@ -157,6 +173,7 @@ def get_callback(
         request=request,
         state_value=state,
         code=code,
+        rollout_policy=request.app.state.identity_rollout_policy,
         personal_onboarding_failure_step=(
             request.app.state.personal_onboarding_failure_step
         ),
@@ -218,6 +235,19 @@ def get_provider_logout(
         request=request,
         provider=request.app.state.customer_identity_provider,
         now=request.app.state.identity_clock(),
+    )
+
+
+@router.get("/rollout-status")
+def get_rollout_status(request: Request) -> dict[str, object]:
+    return request.app.state.identity_rollout_policy.public_status(
+        schema_migration_mode=(
+            request.app.state.identity_schema_migration_mode
+        ),
+        schema_ready=request.app.state.identity_schema_ready,
+        pending_schema_actions=(
+            request.app.state.identity_pending_schema_actions
+        ),
     )
 
 
