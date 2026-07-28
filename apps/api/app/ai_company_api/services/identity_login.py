@@ -38,6 +38,9 @@ from ai_company_api.services.identity_status_synchronization import (
 from ai_company_api.services.identity_device_sessions import (
     coarse_device_description,
 )
+from ai_company_api.services.provider_logout_continuations import (
+    replace_provider_logout_continuation,
+)
 from ai_company_api.services.user_session_credentials import (
     USER_SESSION_COOKIE,
     USER_SESSION_IDLE_SECONDS,
@@ -554,6 +557,7 @@ def complete_login_callback(
             session,
             transaction=transaction,
             identity_claims=identity_claims,
+            provider_logout_hint=token_response.logout_hint,
             request=request,
             now=current_time,
         )
@@ -683,6 +687,12 @@ def complete_login_callback(
         transaction.completed_session_id = device_session.id
         transaction.completed_at = now
         session.add(transaction)
+        replace_provider_logout_continuation(
+            session,
+            device_session_id=device_session.id,
+            sealed_provider_hint=token_response.logout_hint,
+            now=now,
+        )
         if onboarding_created:
             record_identity_audit_event(
                 session,
@@ -763,6 +773,7 @@ def _complete_recent_authentication(
     *,
     transaction: LoginTransaction,
     identity_claims: ValidatedExternalIdentity,
+    provider_logout_hint: str | None,
     request: Request,
     now: datetime,
 ) -> Response:
@@ -875,6 +886,12 @@ def _complete_recent_authentication(
     transaction.status = "completed"
     transaction.completed_session_id = device_session.id
     transaction.completed_at = now
+    replace_provider_logout_continuation(
+        session,
+        device_session_id=device_session.id,
+        sealed_provider_hint=provider_logout_hint,
+        now=now,
+    )
     record_confirmed_identity_status(
         session,
         external_identity=external_identity,

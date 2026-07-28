@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from base64 import urlsafe_b64encode
 from datetime import datetime
 from hashlib import sha256
@@ -13,6 +13,30 @@ class CustomerIdentityProviderError(RuntimeError):
 
 
 class CustomerIdentityProviderUnavailable(CustomerIdentityProviderError):
+    pass
+
+
+class CustomerIdentityProviderTimeout(
+    CustomerIdentityProviderUnavailable
+):
+    pass
+
+
+class CustomerIdentityProviderNetworkError(
+    CustomerIdentityProviderUnavailable
+):
+    pass
+
+
+class CustomerIdentityProviderRateLimited(
+    CustomerIdentityProviderUnavailable
+):
+    pass
+
+
+class CustomerIdentityProviderServiceUnavailable(
+    CustomerIdentityProviderUnavailable
+):
     pass
 
 
@@ -39,8 +63,9 @@ class OidcAuthorizationRequest:
 
 @dataclass(frozen=True)
 class OidcTokenResponse:
-    id_token: str
-    access_token: str
+    id_token: str = field(repr=False)
+    access_token: str = field(repr=False)
+    logout_hint: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -75,7 +100,12 @@ class CustomerIdentityProvider(Protocol):
         expected_audience: str,
     ) -> ValidatedExternalIdentity: ...
 
-    def end_session_url(self, *, post_logout_redirect_uri: str) -> str | None: ...
+    def end_session_url(
+        self,
+        *,
+        post_logout_redirect_uri: str,
+        logout_hint: str | None = None,
+    ) -> str | None: ...
 
     def identity_status(self, *, issuer: str, subject: str) -> str:
         """Return a status using an adapter-enforced finite I/O timeout."""
@@ -226,7 +256,12 @@ class DeterministicFakeCustomerIdentityProvider:
             ),
         )
 
-    def end_session_url(self, *, post_logout_redirect_uri: str) -> str | None:
+    def end_session_url(
+        self,
+        *,
+        post_logout_redirect_uri: str,
+        logout_hint: str | None = None,
+    ) -> str | None:
         self._require_available("end_session")
         endpoint = self.discover().end_session_endpoint
         if endpoint is None:
