@@ -1005,6 +1005,67 @@ class ExternalIdentityRestoreRead(BaseModel):
     external_identity_id: str
 
 
+class AuditRetentionFixtureCreate(BaseModel):
+    age_days: int = Field(ge=0, le=5000)
+
+
+class AuditRetentionFixtureRead(BaseModel):
+    correlation_id: str
+
+
+class IdentityAuditEventRead(BaseModel):
+    event_type: str
+    outcome: str
+    reason_code: str
+    request_id: str | None
+    correlation_id: str
+    user_id: str | None
+    workspace_id: None = None
+    client_ip_address: str | None
+    user_agent: str | None
+    created_at: datetime
+
+
+class WorkspaceAuditEventRead(BaseModel):
+    operation: str
+    resource_type: str
+    resource_id: str | None
+    request_id: str | None
+    correlation_id: str | None
+    workspace_id: str
+    success: bool
+    status_code: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class SecretAccessAuditEventRead(BaseModel):
+    secret_kind: str
+    secret_id: str
+    operation: str
+    access_reason: str
+    request_id: str | None
+    correlation_id: str | None
+    workspace_id: str
+    success: bool
+    created_at: datetime
+
+
+class AuditExportRead(BaseModel):
+    identity_events: list[IdentityAuditEventRead]
+    workspace_events: list[WorkspaceAuditEventRead]
+    secret_access_events: list[SecretAccessAuditEventRead]
+
+
+class AuditRetentionCleanupRead(BaseModel):
+    status: Literal["completed"]
+    correlation_id: str
+    identity_details_removed: int
+    identity_events_deleted: int
+    workspace_events_deleted: int
+    secret_access_events_deleted: int
+
+
 class DevIdentity(BaseModel):
     user_id: str
     workspace_id: str | None

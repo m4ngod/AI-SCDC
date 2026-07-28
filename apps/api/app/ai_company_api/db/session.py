@@ -165,6 +165,17 @@ def _upgrade_sqlite_identity_recovery_columns(engine) -> None:
             "related_correlation_id": "VARCHAR",
             "actor_user_id": "VARCHAR",
             "operator_reason": "VARCHAR",
+            "request_id": "VARCHAR",
+            "client_ip_address": "VARCHAR",
+            "user_agent": "VARCHAR",
+        },
+        "workspace_audit_log": {
+            "request_id": "VARCHAR",
+            "correlation_id": "VARCHAR",
+        },
+        "secret_access_audit_log": {
+            "request_id": "VARCHAR",
+            "correlation_id": "VARCHAR",
         },
     }
     indexed_columns = {
@@ -177,6 +188,15 @@ def _upgrade_sqlite_identity_recovery_columns(engine) -> None:
         "identity_audit_event": (
             "related_correlation_id",
             "actor_user_id",
+            "request_id",
+        ),
+        "workspace_audit_log": (
+            "request_id",
+            "correlation_id",
+        ),
+        "secret_access_audit_log": (
+            "request_id",
+            "correlation_id",
         ),
     }
 

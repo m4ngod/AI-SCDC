@@ -22,6 +22,10 @@ from ai_company_api.models.entities import (
 from ai_company_api.schemas.api import (
     AccountLinkCreate,
     AccountLinkRead,
+    AuditExportRead,
+    AuditRetentionCleanupRead,
+    AuditRetentionFixtureCreate,
+    AuditRetentionFixtureRead,
     DeviceSessionListRead,
     ExternalIdentityRestore,
     ExternalIdentityRestoreRead,
@@ -29,6 +33,11 @@ from ai_company_api.schemas.api import (
     WorkspaceSelectionUpdate,
 )
 from ai_company_api.services.account_link_recovery import create_account_link
+from ai_company_api.services.audit_operations import (
+    create_audit_retention_fixture,
+    export_audit_events,
+    run_operator_audit_retention_cleanup,
+)
 from ai_company_api.services.auth_context import (
     AuthContext,
     USER_SESSION_AUTH_MODE,
@@ -629,6 +638,40 @@ def post_test_grant_identity_operator(
 
 
 @router.post(
+    "/test/audit-retention-fixture",
+    response_model=AuditRetentionFixtureRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_test_audit_retention_fixture(
+    data: AuditRetentionFixtureCreate,
+    request: Request,
+    session: SessionDep,
+    auth: SelectionAuthDep,
+) -> AuditRetentionFixtureRead:
+    if not request.app.state.identity_test_support_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    current_device_session = getattr(
+        request.state,
+        "authenticated_device_session",
+        None,
+    )
+    if (
+        auth.auth_mode != USER_SESSION_AUTH_MODE
+        or not isinstance(current_device_session, DeviceSession)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="test_audit_setup_requires_user_session",
+        )
+    return create_audit_retention_fixture(
+        session,
+        auth=auth,
+        now=request.app.state.identity_clock(),
+        age_days=data.age_days,
+    )
+
+
+@router.post(
     "/test/secondary-workspace-api-token",
     status_code=status.HTTP_201_CREATED,
 )
@@ -882,3 +925,44 @@ def post_external_identity_restoration(
     )
     response.headers["X-Correlation-ID"] = result.correlation_id
     return result
+
+
+@router.get(
+    "/operator/audit-events",
+    response_model=AuditExportRead,
+)
+def get_operator_audit_events(
+    request: Request,
+    session: SessionDep,
+    auth: AuthDep,
+    correlation_id: str | None = Query(default=None),
+    request_id: str | None = Query(default=None),
+    identity_event_type: str | None = Query(default=None),
+) -> AuditExportRead:
+    return export_audit_events(
+        session,
+        request=request,
+        auth=auth,
+        operator_user_ids=request.app.state.identity_operator_user_ids,
+        correlation_id=correlation_id,
+        request_id=request_id,
+        identity_event_type=identity_event_type,
+    )
+
+
+@router.post(
+    "/operator/audit-retention/cleanup",
+    response_model=AuditRetentionCleanupRead,
+)
+def post_operator_audit_retention_cleanup(
+    request: Request,
+    session: SessionDep,
+    auth: AuthDep,
+) -> AuditRetentionCleanupRead:
+    return run_operator_audit_retention_cleanup(
+        session,
+        request=request,
+        auth=auth,
+        operator_user_ids=request.app.state.identity_operator_user_ids,
+        now=request.app.state.identity_clock(),
+    )

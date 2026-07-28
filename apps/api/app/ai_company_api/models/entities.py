@@ -334,6 +334,7 @@ class IdentityAuditEvent(SQLModel, table=True):
     event_type: str = Field(index=True)
     outcome: str = Field(index=True)
     reason_code: str = Field(index=True)
+    request_id: str | None = Field(default=None, index=True)
     correlation_id: str = Field(index=True)
     related_correlation_id: str | None = Field(default=None, index=True)
     actor_user_id: str | None = Field(default=None, index=True)
@@ -341,7 +342,18 @@ class IdentityAuditEvent(SQLModel, table=True):
     user_id: str | None = Field(default=None, index=True)
     external_identity_id: str | None = Field(default=None, index=True)
     device_session_id: str | None = Field(default=None, index=True)
+    client_ip_address: str | None = None
+    user_agent: str | None = None
     created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class AuditRetentionState(SQLModel, table=True):
+    __tablename__ = "audit_retention_state"
+
+    id: str = Field(default="default", primary_key=True)
+    last_completed_at: datetime | None = Field(default=None, index=True)
+    claim_token: str | None = Field(default=None, index=True)
+    claimed_at: datetime | None = Field(default=None, index=True)
 
 
 class Repository(SQLModel, table=True):
@@ -699,6 +711,8 @@ class SecretAccessAuditLog(SQLModel, table=True):
     organization_id: str = Field(default="dev_organization", index=True)
     user_id: str = Field(default="dev_user", index=True)
     auth_mode: str = Field(default="system", index=True)
+    request_id: str | None = Field(default=None, index=True)
+    correlation_id: str | None = Field(default=None, index=True)
     secret_kind: str = Field(index=True)
     secret_id: str = Field(index=True)
     operation: str = Field(default="open", index=True)
@@ -718,6 +732,8 @@ class WorkspaceAuditLog(SQLModel, table=True):
     organization_id: str = Field(default="dev_organization", index=True)
     user_id: str = Field(default="dev_user", index=True)
     auth_mode: str = Field(default="system", index=True)
+    request_id: str | None = Field(default=None, index=True)
+    correlation_id: str | None = Field(default=None, index=True)
     operation: str = Field(index=True)
     resource_type: str = Field(index=True)
     resource_id: str | None = Field(default=None, index=True)

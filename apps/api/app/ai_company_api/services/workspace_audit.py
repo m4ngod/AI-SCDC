@@ -1,4 +1,5 @@
 import secrets
+from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
@@ -13,6 +14,12 @@ from ai_company_api.services.auth_context import (
     get_current_auth_context,
 )
 from ai_company_api.services.identity_audit import record_identity_audit_event
+from ai_company_api.services.audit_request_context import (
+    resolved_audit_time,
+    resolved_correlation_id,
+    resolved_request_id,
+    safe_audit_text,
+)
 from ai_company_api.services.workspace_permissions import require_workspace_permission
 
 
@@ -49,8 +56,18 @@ def redact_audit_metadata(value: Any) -> Any:
         return redacted
     if isinstance(value, list):
         return [redact_audit_metadata(item) for item in value]
-    if isinstance(value, str) and len(value) > MAX_AUDIT_STRING_LENGTH:
-        return f"{value[:MAX_AUDIT_STRING_LENGTH]}..."
+    if isinstance(value, str):
+        safe_value = safe_audit_text(
+            value,
+            max_length=MAX_AUDIT_STRING_LENGTH,
+        )
+        if safe_value is None:
+            return None
+        if safe_value == "[redacted]":
+            return safe_value
+        if len(value) > MAX_AUDIT_STRING_LENGTH:
+            return f"{safe_value}..."
+        return safe_value
     return value
 
 
@@ -69,6 +86,9 @@ def record_workspace_audit(
     organization_id: str | None = None,
     user_id: str | None = None,
     auth_mode: str | None = None,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+    created_at: datetime | None = None,
     commit: bool = False,
 ) -> WorkspaceAuditLog:
     context = get_current_auth_context()
@@ -88,6 +108,8 @@ def record_workspace_audit(
         organization_id=audit_organization_id,
         user_id=audit_user_id,
         auth_mode=audit_auth_mode,
+        request_id=resolved_request_id(request_id),
+        correlation_id=resolved_correlation_id(correlation_id),
         operation=operation,
         resource_type=resource_type,
         resource_id=resource_id,
@@ -96,6 +118,7 @@ def record_workspace_audit(
         status_code=status_code,
         error_code=error_code,
         metadata_json=redact_audit_metadata(metadata or {}),
+        created_at=resolved_audit_time(created_at),
     )
     session.add(log)
     if commit:
@@ -131,6 +154,7 @@ def require_audited_workspace_permission(
                 status_code=403,
                 error_code="insufficient_workspace_role",
                 metadata={"correlation_id": correlation_id},
+                correlation_id=correlation_id,
                 commit=False,
             )
             context = get_current_auth_context()
